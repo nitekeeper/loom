@@ -1057,38 +1057,70 @@ test('AC-15 separation: with LOOM_WS=1 the feed serves events AND messaging is u
 });
 
 /* ================================================================== */
-/* SEC-2 — deregister authorization: a caller may ONLY deregister      */
-/* itself; deregistering another agent throws NOT_AUTHORIZED.          */
+/* FR-19 / US-9 — orchestrator-driven deregistration: a REGISTERED      */
+/* caller (the lead) may deregister ANOTHER agent (a sub-agent) by name. */
+/* The trust boundary is the loopback-only, Origin-guarded transport    */
+/* (OQ-4 / SEC-1); requireRegistered still enforces Law 4. The earlier   */
+/* self-only NOT_AUTHORIZED rule (SEC-2) was reverted as it contradicted */
+/* FR-19 / US-9.                                                         */
 /* ================================================================== */
-test('SEC-2 deregister: a caller cannot deregister a DIFFERENT agent (NOT_AUTHORIZED)', async () => {
+test('FR-19 deregister: a lead CAN deregister ANOTHER agent (sub-agent) by name (US-9)', async () => {
   const { engine, db } = await freshEngine();
-  engine.register(caller(null), { name: 'alice' });
-  engine.register(caller(null), { name: 'bob' });
-  const err = expectThrows(
-    () => engine.deregister(caller('alice'), { name: 'bob' }),
-    'deregistering another agent must throw',
-  );
-  assertCode(err, 'NOT_AUTHORIZED');
-  // bob must remain ACTIVE — a denial-of-presence attempt had no effect.
-  assert.equal(db.getAgent('bob').status, 'active', 'victim agent must stay active');
+  engine.register(caller(null), { name: 'lead' });
+  engine.register(caller(null), { name: 'worker' });
+  const res = engine.deregister(caller('lead'), { name: 'worker' });
+  assert.equal(res.ok, true, 'cross-agent deregister must succeed');
+  assert.equal(res.name, 'worker');
+  // The sub-agent is now gone, excluded from the active count, row retained.
+  const worker = db.getAgent('worker');
+  assert.ok(worker, 'deregistered sub-agent row must REMAIN (shown dimmed), not be deleted');
+  assert.equal(worker.status, 'gone', 'sub-agent status must be set to gone (FR-19 / AC-12)');
+  const active = db.listAgents().filter((a) => a.status === 'active').map((a) => a.name).sort();
+  assert.deepEqual(active, ['lead'], `worker must be excluded from the active set; got ${JSON.stringify(active)}`);
+  assert.equal(db.listAgents().length, 2, 'gone sub-agent must still be present in the full list');
 });
 
-test('SEC-2 deregister: an unregistered caller cannot deregister anyone (NOT_REGISTERED)', async () => {
-  const { engine } = await freshEngine();
-  engine.register(caller(null), { name: 'alice' });
-  const err = expectThrows(
-    () => engine.deregister(caller(null), { name: 'alice' }),
-    'an unregistered caller must be rejected',
-  );
-  assertCode(err, 'NOT_REGISTERED');
+test('FR-19 deregister: cross-agent deregister is idempotent — a 2nd call still returns {ok,name}', async () => {
+  const { engine, db } = await freshEngine();
+  engine.register(caller(null), { name: 'lead' });
+  engine.register(caller(null), { name: 'worker' });
+  engine.deregister(caller('lead'), { name: 'worker' });
+  // Deregistering an already-'gone' agent must NOT throw and must return {ok,name}.
+  const again = engine.deregister(caller('lead'), { name: 'worker' });
+  assert.equal(again.ok, true, 'idempotent re-deregister must succeed, not throw');
+  assert.equal(again.name, 'worker');
+  assert.equal(db.getAgent('worker').status, 'gone', 'worker stays gone after the idempotent call');
 });
 
-test('SEC-2 deregister: self-deregistration still works (regression of AC-12)', async () => {
+test('FR-19 deregister: self-deregistration still works (AC-12)', async () => {
   const { engine, db } = await freshEngine();
   engine.register(caller(null), { name: 'alice' });
   const res = engine.deregister(caller('alice'), { name: 'alice' });
   assert.equal(res.ok, true);
+  assert.equal(res.name, 'alice');
   assert.equal(db.getAgent('alice').status, 'gone');
+});
+
+test('FR-19 deregister: an UNREGISTERED caller cannot deregister anyone (NOT_REGISTERED, Law 4)', async () => {
+  const { engine, db } = await freshEngine();
+  engine.register(caller(null), { name: 'alice' });
+  const err = expectThrows(
+    () => engine.deregister(caller(null), { name: 'alice' }),
+    'an unregistered/anonymous caller must be rejected',
+  );
+  assertCode(err, 'NOT_REGISTERED');
+  // The target was untouched — an unregistered caller had no effect.
+  assert.equal(db.getAgent('alice').status, 'active', 'target must stay active when caller is unregistered');
+});
+
+test('FR-19 deregister: a non-existent target name throws AGENT_NOT_FOUND', async () => {
+  const { engine } = await freshEngine();
+  engine.register(caller(null), { name: 'lead' });
+  const err = expectThrows(
+    () => engine.deregister(caller('lead'), { name: 'nobody' }),
+    'deregistering a name that has no agents row must throw',
+  );
+  assertCode(err, 'AGENT_NOT_FOUND');
 });
 
 /* ================================================================== */

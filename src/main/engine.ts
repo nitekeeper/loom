@@ -231,27 +231,29 @@ export function createEngine(db: LoomDb, bus: EventBus): LoomEngine {
       caller: Caller,
       params: DeregisterParams,
     ): DeregisterResult {
-      // Identity is bound to the session at register() time. A caller may
-      // ONLY deregister itself — deregistering an arbitrary agent by name
-      // is a denial-of-presence / identity-tampering primitive (SEC-2).
-      const me = requireRegistered(caller);
+      // FR-19 / US-9 intend ORCHESTRATOR-DRIVEN deregistration: the lead
+      // agent calls deregister(name) for each sub-agent when its work is
+      // done. A registered caller MAY therefore deregister ANY agent by
+      // name (itself or another) — there is no self-only restriction. The
+      // trust boundary is the loopback-only, Origin/DNS-rebinding-guarded
+      // MCP transport (OQ-4 / SEC-1), not per-call name matching; the
+      // earlier self-only rule (SEC-2) was reverted as spec-contradicting.
+      // requireRegistered still enforces Law 4 (an unregistered/anonymous
+      // session gets NOT_REGISTERED), and the operation is idempotent.
+      requireRegistered(caller);
       const name = params.name.trim();
-      if (name !== me) {
-        throw new LoomError(
-          'NOT_AUTHORIZED',
-          `caller ${me} may only deregister itself, not ${name}`,
-        );
-      }
       const agent = db.getAgent(name);
       if (agent === undefined) {
         throw new LoomError('AGENT_NOT_FOUND', `no such agent: ${name}`);
       }
 
+      // Idempotent: deregistering an already-'gone' agent is a no-op write
+      // that still returns {ok,name}. The row stays in the table (dimmed in
+      // UI, excluded from active count) — FR-19, AC-12.
       db.setAgentStatus(name, 'gone');
       db.flush();
 
-      // The row stays in the table (dimmed in UI, excluded from active
-      // count) — FR-19, AC-12. Publish the updated agent row.
+      // Publish the updated agent row.
       bus.publish({ kind: 'agent', agent: { ...agent, status: 'gone' } });
       return { ok: true, name };
     },
