@@ -230,10 +230,51 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
    ============================================================ */
 .body {
   display: grid;
-  grid-template-columns: 248px 1fr 400px;
+  grid-template-columns: 248px 1fr var(--chat-w, 400px);
   min-height: 0;
+  position: relative;
 }
 .body > * { min-height: 0; min-width: 0; }
+
+/* ============================================================
+   Chat resize splitter (FR-54 / WCAG 2.4.7, 2.1.1)
+   ------------------------------------------------------------
+   Draggable divider on the Chat pane's LEFT edge (the Viewer/Chat
+   boundary). An 8px hit area straddles the border (translateX(4px)
+   centers it over the 1px border); a 2px accent line marks the
+   grabbable seam. Pointer drag + full keyboard control; visible
+   :focus-visible ring. role="separator" for AT.
+   ============================================================ */
+.splitter {
+  position: absolute;
+  top: 0; bottom: 0;
+  right: var(--chat-w, 400px);
+  width: 8px;
+  transform: translateX(4px);
+  cursor: col-resize;
+  z-index: 5;
+  /* the visible seam: a 2px line centered in the 8px hit area */
+  background: transparent;
+  touch-action: none;
+}
+.splitter::before {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 3px;            /* center a 2px line in the 8px area */
+  width: 2px;
+  background: var(--border-soft);
+  transition: background .12s ease;
+}
+.splitter:hover::before,
+.splitter.dragging::before { background: var(--accent); }
+.splitter:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -1px; }
+.splitter:focus-visible::before { background: var(--accent); }
+
+/* While dragging: kill text selection + any grid width transition so the
+   live resize stays crisp and pointerless (FR-54 / reduced-motion safe). */
+.win.dragging { user-select: none; cursor: col-resize; }
+.win.dragging .body { transition: none; }
 
 .pane { display: flex; flex-direction: column; min-height: 0; }
 .pane.explorer { border-right: 1px solid var(--border-soft); background: var(--panel); }
@@ -520,7 +561,7 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: content-box; }
 
 @media (max-width: 1080px) {
-  .body { grid-template-columns: 210px 1fr 360px; }
+  .body { grid-template-columns: 210px 1fr var(--chat-w, 360px); }
 }
 
 /* ============================================================

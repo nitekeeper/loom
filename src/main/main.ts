@@ -37,6 +37,8 @@ interface CaptureArgs {
   inbox: string | null;
   /** Capture-only theme override ('dark' | 'light'), or null to keep config. */
   theme: string | null;
+  /** Capture-only chat-pane width override (px), or null. */
+  chatw: string | null;
   replay: boolean;
 }
 
@@ -60,6 +62,7 @@ function parseCapture(argv: string[]): CaptureArgs | null {
     channel: flagValue(argv, '--channel'),
     inbox: flagValue(argv, '--inbox'),
     theme: flagValue(argv, '--theme'),
+    chatw: flagValue(argv, '--chatw'),
     replay: argv.includes('--replay'),
   };
 }
@@ -74,6 +77,7 @@ function indexUrl(capture: CaptureArgs | null): string {
   if (capture.channel) params.set('channel', capture.channel);
   if (capture.inbox) params.set('inbox', capture.inbox);
   if (capture.theme) params.set('theme', capture.theme);
+  if (capture.chatw) params.set('chatw', capture.chatw);
   const qs = params.toString();
   return qs ? `${base}?${qs}` : base;
 }
