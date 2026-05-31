@@ -1,0 +1,9 @@
+# Normalize all text files to LF in the repo and working tree.
+# (CRLF in shebang scripts like bin/loom.cjs breaks execution on Linux.)
+* text=auto eol=lf
+
+# Binary assets — never apply line-ending conversion.
+*.png binary
+*.bin binary
+*.wasm binary
+*.ico binary

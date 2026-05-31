@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      Strict Content-Security-Policy — defense-in-depth for Law 1
+      ("nothing executes"). This is the renderer-side complement to the
+      safe markdown renderer + neutralized links.
+        - default-src 'none'           : deny everything not explicitly allowed
+        - script-src 'self'            : only the bundled renderer.js may run;
+                                         NO inline scripts, NO remote scripts.
+        - style-src 'self' 'unsafe-inline' : bundled CSS + React inline style
+                                         attributes (no remote stylesheets).
+        - img-src 'self' data:         : local + data-uri only (image PREVIEW
+                                         is a placeholder, never a decoded file).
+        - connect-src 'none'           : renderer makes no network calls; all
+                                         data arrives via the IPC preload bridge.
+        - font-src 'self'              : bundled fonts only.
+      No 'unsafe-eval'; no remote origins; agent-authored content can never
+      navigate or execute.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loom</title>
+    <link rel="stylesheet" href="./renderer.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- The ONLY script. Bundled by esbuild (IIFE). No inline JS anywhere. -->
+    <script src="./renderer.js"></script>
+  </body>
+</html>

@@ -1,0 +1,3 @@
+scratch notes — not part of the audit.
+- check the rate limiter config before prod
+- ask lead about the staging db snapshot

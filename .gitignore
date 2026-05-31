@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Build output (esbuild -> dist/)
+dist/
+
+# Per-session SQLite store + runtime state (NFR-7, OQ-2)
+.loom/
+**/.loom/
+
+# Logs, OS + editor cruft
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Capture/smoke artifacts
+*.png.tmp
+/tmp/loom_*.png
+
+# Windows (WSL) alternate-data-stream cruft
+*:Zone.Identifier
+
+# Claude Code harness runtime state
+.claude/

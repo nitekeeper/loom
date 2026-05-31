@@ -1,0 +1,45 @@
+{
+  "compilerOptions": {
+    /* Type-checking only. esbuild does all bundling/emit. */
+    "noEmit": true,
+
+    /* Language level: Electron 33 bundles Node 20 + Chromium 130 (V8 13). */
+    "target": "ES2021",
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
+
+    /* Module strategy — see CONTRACTS.md "Module strategy".
+       We author every file as ESM (import/export). esbuild then emits
+       per-target formats: main=cjs, preload=cjs, renderer=iife.
+       "bundler" resolution matches esbuild's behavior and lets tsc
+       type-check the same import graph esbuild bundles. */
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+
+    /* React 18 automatic runtime. */
+    "jsx": "react-jsx",
+
+    /* Strictness — non-negotiable for a frozen contract surface. */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": false,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules", "dist", "documents", "test"]
+}

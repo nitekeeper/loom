@@ -1,0 +1,41 @@
+{
+  "name": "loom",
+  "version": "0.5.0",
+  "description": "A desktop viewer with a built-in chat layer that AI agents use to communicate, watched live by a human.",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/main.cjs",
+  "bin": {
+    "loom": "bin/loom.cjs"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "electron .",
+    "loom": "node bin/loom.cjs",
+    "test": "node --test test/acceptance.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "chokidar": "^4.0.3",
+    "markdown-it": "^14.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sql.js": "^1.13.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^20.19.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/sql.js": "^1.4.9",
+    "@types/ws": "^8.18.0",
+    "electron": "33.4.11",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.9.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
