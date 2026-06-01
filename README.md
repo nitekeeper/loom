@@ -117,6 +117,32 @@ The chosen folder is the Law 3 sandbox boundary: Loom confines all file access t
 >
 > **Default icon / no exe branding.** The executable keeps the **default Electron icon** and generic version metadata — custom icon + exe metadata require `rcedit` (which needs Wine) and are intentionally skipped in the Wine-free build.
 
+### Windows installer (NSIS, built by CI)
+
+For a **proper installer** — a `Loom-Setup-<version>.exe` with a Start Menu shortcut, a desktop shortcut, an uninstaller, and a "choose install directory" step — Loom uses [`electron-builder`](https://www.electron.build) on a **real Windows runner**. The NSIS installer **cannot be built on Linux** (it needs `makensis`, which needs Wine), so it is produced by **GitHub Actions on `windows-latest`** via the **`Windows installer`** workflow (`.github/workflows/windows-installer.yml`). The same job also emits an unpacked **portable `.exe`**.
+
+**To build it:**
+
+- **Tagged release** — push a version tag and the workflow builds *and* publishes a GitHub Release with the installer attached:
+  ```bash
+  git tag v0.5.0
+  git push origin v0.5.0
+  ```
+- **Manual** — trigger the workflow with no tag (builds the installer as a downloadable artifact, no Release):
+  ```bash
+  gh workflow run "Windows installer"
+  ```
+  …or use the **Actions** tab → **Windows installer** → **Run workflow**.
+
+**To get the installer:**
+
+- On a **tag** build: download `Loom-Setup-<version>.exe` from the **GitHub Release**.
+- On **any** build (tag or manual): download it from the workflow run's **`loom-windows-installer`** artifact (Actions → the run → Artifacts).
+
+**Installing on Windows:** run `Loom-Setup-<version>.exe`. It is a **standard per-user installer** (no admin required) — it lets you choose the install directory, creates Start Menu and desktop shortcuts named **Loom**, and registers an uninstaller (Settings → Apps, or Add/Remove Programs). Launched from the Start Menu, Loom shows the **"Choose a folder for Loom to open"** picker (same as the portable build), since a shortcut launch has no folder argument.
+
+> **Unsigned — SmartScreen will warn.** The installer is **not code-signed** (no certificate), so Windows SmartScreen shows a *"Windows protected your PC"* dialog on first run. Click **More info → Run anyway** to proceed. As with the portable build, the installer is **built on CI but UNVERIFIED on Windows** until smoke-tested on a real Windows PC — **smoke-test it before relying on it.**
+
 ---
 
 ## How agents connect
