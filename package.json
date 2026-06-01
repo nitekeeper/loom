@@ -13,8 +13,8 @@
     "build": "node build.mjs",
     "package:win": "node scripts/pack-win.mjs",
     "make:icon": "node scripts/make-icon.mjs",
-    "dist:win": "electron-builder --win nsis portable --publish never",
-    "dist:mac": "electron-builder --mac dmg zip --publish never",
+    "dist:win": "electron-builder --config electron-builder.config.cjs --win nsis portable --publish never",
+    "dist:mac": "electron-builder --config electron-builder.config.cjs --mac dmg zip --publish never",
     "start": "electron .",
     "loom": "node bin/loom.cjs",
     "test": "node --test test/acceptance.mjs",
@@ -43,75 +43,5 @@
   },
   "engines": {
     "node": ">=20.0.0"
-  },
-  "build": {
-    "appId": "com.nitekeeper.loom",
-    "productName": "Loom",
-    "copyright": "Copyright © 2026 nitekeeper",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**",
-      "package.json"
-    ],
-    "asar": true,
-    "asarUnpack": [
-      "dist/sql-wasm.wasm"
-    ],
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build/icon.ico"
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Loom",
-      "runAfterFinish": true,
-      "artifactName": "Loom-Setup-${version}.${ext}"
-    },
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "arm64",
-            "x64"
-          ]
-        }
-      ],
-      "category": "public.app-category.developer-tools",
-      "icon": "build/icon.png",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
-    },
-    "dmg": {
-      "title": "Loom ${version}"
-    }
   }
 }

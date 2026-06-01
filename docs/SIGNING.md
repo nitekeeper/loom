@@ -14,7 +14,7 @@ This document lists every required secret and how to obtain the certificates.
 | Platform | Today (no secrets) | After you add the secrets |
 |----------|--------------------|---------------------------|
 | **Windows** | Unsigned `.exe` — SmartScreen warns ("Windows protected your PC") | Authenticode-signed `.exe` — no SmartScreen warning (EV) / reduced warning (OV) |
-| **macOS** | Ad-hoc unsigned `.dmg`/`.zip` — Gatekeeper blocks ("can't be opened" / "is damaged") | Developer ID–signed **and notarized** — opens with no Gatekeeper friction |
+| **macOS** | Unsigned `.dmg`/`.zip` (`mac.identity: null`) — Gatekeeper blocks ("can't be opened" / "is damaged") | Developer ID–signed **and notarized** — opens with no Gatekeeper friction |
 
 The unsigned builds are fully functional installers; the only difference is the
 OS trust prompt. **You do not need certificates to ship — they only remove the
@@ -24,25 +24,70 @@ warnings.** Until the secrets exist, every CI build stays unsigned and green.
 
 ## How the conditional signing works (why no-secret builds stay green)
 
-Both pipelines pass certificate material **only** through `${{ secrets.* }}`
-expressions in an `env:` block on the build step. GitHub renders an unset secret
-as an **empty string**, and electron-builder treats empty credentials as "do not
-sign":
+Signing is made **truly conditional** by two cooperating pieces: a config file
+that branches on the environment, and a workflow step that exports the signing
+env **only when a real cert secret exists**.
 
-- **Windows** — electron-builder signs only if `CSC_LINK` is a non-empty base64
-  `.pfx`. No `WIN_CSC_LINK` secret → `CSC_LINK=""` → signing is skipped, the
-  unsigned installer is produced exactly as today (no error).
-- **macOS** — `CSC_IDENTITY_AUTO_DISCOVERY` is set to the GitHub expression
-  `${{ secrets.MAC_CSC_LINK != '' }}`, which resolves to the string `false` when
-  the cert secret is absent. With auto-discovery off and `CSC_LINK` empty,
-  electron-builder does an **ad-hoc unsigned** build (today's behavior) — it does
-  **not** error on a missing identity. Separately, notarization runs only if the
-  `APPLE_*` credentials are present (see *Notarization toggle* below); with no
-  secrets they are empty, so notarization is skipped silently.
+### 1. The build config lives in `electron-builder.config.cjs`
+
+The electron-builder configuration is a CommonJS file at the repo root
+(`electron-builder.config.cjs`), **not** the old `build` key in `package.json`
+(that key was removed). Being executable JS, it computes the macOS signing fields
+from the environment at build time:
+
+```js
+const signed = Boolean(process.env.CSC_LINK);     // see step 2 — set only when a cert exists
+mac.identity        = signed ? undefined : null;  // null = PROVEN UNSIGNED (no ad-hoc); undefined = auto-discover Developer ID
+mac.hardenedRuntime = signed;                      // hardened runtime ONLY when signing
+mac.entitlements        = signed ? 'build/entitlements.mac.plist' : undefined;
+mac.entitlementsInherit = signed ? 'build/entitlements.mac.plist' : undefined;
+// mac.notarize is left UNSET -> electron-builder notarizes only when APPLE_* + a signature are present.
+```
+
+So with **no** `CSC_LINK` the config yields `mac.identity: null` — the *proven
+unsigned* build (no hardened runtime, no entitlements), identical in effect to
+the build that ships today. With `CSC_LINK` present it flips to auto-discovering
+the Developer ID identity, with the hardened runtime + entitlements required for
+notarization.
+
+> Because the file is named `electron-builder.config.cjs` (not the bare
+> `electron-builder.cjs` that electron-builder auto-detects), every invocation
+> passes it explicitly with `--config electron-builder.config.cjs` — the npm
+> `dist:win` / `dist:mac` scripts and both CI workflows. Without that flag
+> electron-builder would silently fall back to its built-in defaults and fail.
+
+### 2. The workflow exports the signing env ONLY when the cert secret is non-empty
+
+The critical fix: an unset GitHub secret renders as an **empty string**, and
+electron-builder 26 treats a *defined-but-empty* `CSC_LINK` as a **certificate
+path**, tries to load it from the working directory, and fails with
+`… not a file` → exit 1. (This is exactly what broke the macOS tag build.) An
+empty `CSC_LINK` must therefore never reach electron-builder.
+
+Each workflow has a **`Configure code signing`** step (`shell: bash`) that runs
+*before* the build. It receives the secrets in its own `env:` block and appends
+the signing variables to `$GITHUB_ENV` **only when the cert secret is non-empty**:
+
+- **Windows** — if `WIN_CSC_LINK` is non-empty, it exports `CSC_LINK` +
+  `CSC_KEY_PASSWORD`; otherwise it exports **nothing**, so `CSC_LINK` stays
+  genuinely **unset** and the unsigned installer is produced (no error).
+- **macOS** — if `MAC_CSC_LINK` is non-empty, it exports `CSC_LINK`,
+  `CSC_KEY_PASSWORD`, and `CSC_IDENTITY_AUTO_DISCOVERY=true` (plus the `APPLE_*`
+  trio *only if* `APPLE_ID` is also set, enabling notarization). If
+  `MAC_CSC_LINK` is empty, it exports **only** `CSC_IDENTITY_AUTO_DISCOVERY=false`
+  (no `CSC_LINK` at all), so electron-builder does the proven unsigned build and
+  skips notarization silently.
+
+The `Build …` step carries **no** inline `CSC_*` / `APPLE_*` env — it inherits
+whatever `Configure code signing` chose to export. This guarantees `CSC_LINK` is
+**unset (not empty)** for unsigned builds, so the config's `signed` branch is
+`false` and electron-builder never tries to load a non-existent cert.
 
 No certificate, password, or Apple credential is ever echoed, written to a file,
 committed, or printed in the run log — secrets are referenced solely via
-`${{ secrets.NAME }}` and consumed directly by electron-builder.
+`${{ secrets.NAME }}`, passed into the step's `env:`, and guarded by a `[ -n … ]`
+test before being appended to `$GITHUB_ENV`. The step prints only a
+`Signing: ON` / `Signing: OFF` status line, never a value.
 
 ---
 
@@ -148,29 +193,31 @@ the standard flow here, or open an issue to wire up Azure Trusted Signing.
 
 ### Notarization toggle — important
 
-`mac.notarize` is **left unset** in `package.json` on purpose. In electron-builder
-26, notarization runs **only when the Apple credentials are present in the
-environment**:
+`mac.notarize` is **left unset** in `electron-builder.config.cjs` on purpose. In
+electron-builder 26, notarization runs **only when the Apple credentials are
+present in the environment**:
 
-- **No `APPLE_*` secrets** → the `APPLE_*` env vars are empty → electron-builder
-  generates no notarize options and **skips notarization silently** (no error).
-  This is what keeps the unsigned CI build green.
+- **No `APPLE_*` secrets** → the `Configure code signing` step does not export
+  them → electron-builder generates no notarize options and **skips notarization
+  silently** (no error). This is what keeps the unsigned CI build green.
 - **`APPLE_*` secrets present** (plus a real Developer ID cert via `MAC_CSC_LINK`)
   → electron-builder notarizes the signed app automatically.
 
 So **adding the five macOS secrets is the only action needed** — you do **not**
-have to edit `package.json`. (If you ever want notarization explicitly forced on
-or off regardless of env, set `mac.notarize: true` / `false` in `package.json` —
-but the default env-driven behavior is the recommended setup and needs no change.)
+have to edit any config. (If you ever want notarization explicitly forced on or
+off regardless of env, set `mac.notarize: true` / `false` in
+`electron-builder.config.cjs` — but the default env-driven behavior is the
+recommended setup and needs no change.)
 
 > **Caveat — don't set the `APPLE_*` secrets without `MAC_CSC_LINK`.** Notarizing
-> an ad-hoc/unsigned app fails. Always add the Developer ID cert secret together
+> an unsigned app fails. Always add the Developer ID cert secret together
 > with the notarization credentials, never the Apple creds alone.
 
-The hardened runtime (`hardenedRuntime: true`) and entitlements
-(`build/entitlements.mac.plist`, tracked in git) are required for notarization
-and are already configured; they are only enforced when the app is actually
-signed, so they do not affect the unsigned ad-hoc build.
+The hardened runtime and entitlements (`build/entitlements.mac.plist`, tracked in
+git) are computed by the config's `signed` branch: they are enabled **only when
+the build is actually signed** (a cert secret is present), and are omitted from
+the unsigned build entirely (`hardenedRuntime: false`, no entitlements). They are
+required for notarization and engage automatically together with signing.
 
 ---
 

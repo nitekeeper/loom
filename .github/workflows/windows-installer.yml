@@ -4,6 +4,14 @@ name: Windows installer
 # This Linux dev box has no Wine/makensis, so the Windows installer can
 # ONLY be built here on windows-latest.
 #
+# Signing is CONDITIONAL on repo secrets. The "Configure code signing" step
+# exports CSC_LINK into $GITHUB_ENV ONLY when WIN_CSC_LINK is non-empty, so an
+# unsigned build sees CSC_LINK genuinely UNSET (not a defined-but-empty string,
+# which electron-builder 26 would try to load as a cert path and fail on). No
+# secret -> proven UNSIGNED installer; secret -> Authenticode-signed .exe.
+# Adding WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD is the only action needed. See
+# docs/SIGNING.md.
+#
 # Triggers:
 #   - push a tag `vX.Y.Z`  -> builds AND publishes a GitHub Release
 #   - manual `workflow_dispatch` -> builds, artifact only (no Release)
@@ -38,19 +46,45 @@ jobs:
       - name: Build app bundles (esbuild -> dist/)
         run: npm run build
 
-      - name: Build Windows installer + portable (electron-builder)
-        # Code signing is CONDITIONAL on the presence of repo secrets.
-        # electron-builder signs the .exe / installer IFF CSC_LINK is a
-        # non-empty base64 .pfx. When the WIN_CSC_LINK secret is unset, the
-        # ${{ secrets.* }} expressions render as EMPTY strings, so CSC_LINK
-        # is empty -> electron-builder skips signing and produces the same
-        # UNSIGNED installers as today (no error). Add WIN_CSC_LINK +
-        # WIN_CSC_KEY_PASSWORD secrets to turn signing on automatically on
-        # the next build — no workflow change needed. See docs/SIGNING.md.
+      - name: Configure code signing
+        # Conditionally EXPORT the signing env into $GITHUB_ENV so it is
+        # genuinely UNSET for unsigned builds — NOT a defined-but-empty
+        # string. This matters: electron-builder 26 treats a defined-but-empty
+        # CSC_LINK as a cert PATH and tries to load it from cwd -> "not a file"
+        # -> exit 1. By writing CSC_LINK to $GITHUB_ENV ONLY when the secret is
+        # non-empty, the unsigned build sees no CSC_LINK at all and the
+        # electron-builder.config.cjs `signed` branch resolves to the proven
+        # UNSIGNED config. Add WIN_CSC_LINK + WIN_CSC_KEY_PASSWORD secrets to
+        # turn signing on automatically on the next build — no workflow change
+        # needed. See docs/SIGNING.md. The secret values are referenced ONLY
+        # via this step's env block and never echoed.
+        shell: bash
         env:
-          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: npx electron-builder --win nsis portable --publish never
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -n "$WIN_CSC_LINK" ]; then
+            {
+              echo "CSC_LINK=$WIN_CSC_LINK"
+              echo "CSC_KEY_PASSWORD=$WIN_CSC_KEY_PASSWORD"
+            } >> "$GITHUB_ENV"
+            echo "Signing: ON"
+          else
+            echo "Signing: OFF (no WIN_CSC_LINK secret) — unsigned build"
+          fi
+
+      - name: Build Windows installer + portable (electron-builder)
+        # No inline CSC env here: signing is driven entirely by what the
+        # "Configure code signing" step appended to $GITHUB_ENV. With no
+        # secret, CSC_LINK is UNSET -> electron-builder skips signing and
+        # produces the proven UNSIGNED installers (no error). With the
+        # secret, CSC_LINK is set -> electron-builder signs the .exe.
+        #
+        # --config: the build config lives in electron-builder.config.cjs (NOT
+        # in package.json's removed `build` key). electron-builder only
+        # auto-detects `electron-builder.{cjs,js,yml,...}`, NOT the
+        # `*.config.cjs` name, so it is passed explicitly here.
+        run: npx electron-builder --config electron-builder.config.cjs --win nsis portable --publish never
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
