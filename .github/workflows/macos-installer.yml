@@ -50,7 +50,11 @@ jobs:
         run: npm run build
 
       - name: Build macOS dmg + zip (electron-builder, unsigned)
-        run: npx electron-builder --mac dmg zip --publish never
+        # No target/arch args on the CLI: let the package.json `mac.target`
+        # config drive it (dmg + zip, each for BOTH arm64 + x64). Passing
+        # `--mac dmg zip` would override the config arch list and build only
+        # the runner's host arch (arm64), dropping the Intel build.
+        run: npx electron-builder --mac --publish never
 
       - name: Upload installer artifacts
         uses: actions/upload-artifact@v4
