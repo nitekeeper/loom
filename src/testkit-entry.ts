@@ -40,6 +40,13 @@ export type { Search } from './main/search.js';
 export { createSandbox } from './main/sandbox.js';
 export type { Sandbox } from './main/sandbox.js';
 
+// The recursive file watcher (FR-14, FR-39). Electron-free: node:fs/node:path
+// + bus + chokidar fallback. Re-exported so the acceptance suite can prove the
+// live FileEvent contract (add/change/unlink/addDir/unlinkDir, containment,
+// ignore filtering) over a real temp dir via the native recursive engine.
+export { createWatcher } from './main/watcher.js';
+export type { WatcherHandle } from './main/watcher.js';
+
 // Cross-OS path normalization (Law 3 contract <-> native fs). Pure fns,
 // parameterized by the path module so the acceptance suite can pin BOTH
 // POSIX and the WINDOWS expectation (via path.win32) on a Linux host.
