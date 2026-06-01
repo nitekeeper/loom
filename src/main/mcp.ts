@@ -43,6 +43,10 @@ import {
   type Caller,
   type LoomEngine,
 } from '../shared/types.js';
+// The MCP server advertises this version in its initialize handshake. Pulled
+// from package.json at BUILD time (esbuild inlines the JSON), so it tracks the
+// real app version automatically and can never drift from a hardcoded string.
+import { version as LOOM_VERSION } from '../../package.json';
 
 export interface McpServerHandle {
   /** Begin listening on 127.0.0.1:7077. */
@@ -172,7 +176,7 @@ export function createMcpServer(engine: LoomEngine): McpServerHandle {
    *  register() mutates `caller.name` so the binding follows the session. */
   function buildServer(caller: Caller): McpServer {
     const server = new McpServer(
-      { name: 'loom', version: '0.5.0' },
+      { name: 'loom', version: LOOM_VERSION },
       { capabilities: { tools: {} } },
     );
 
