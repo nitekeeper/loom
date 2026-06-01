@@ -28,6 +28,7 @@ import type {
   SessionCounters,
   Theme,
 } from '../../shared/types.js';
+import { diffOverrides } from './keybindings.js';
 
 /** Capture hints parsed from location.search (used by --capture). */
 export interface CaptureHints {
@@ -71,11 +72,18 @@ export interface LoomStore {
 
   /* ---- observer actions (read-only navigation, FR-37/45/47/50) ---- */
   selectFile(path: string): void;
+  /** Dismiss the open file → return the Viewer to the empty state (FR-42). */
+  closeFile(): void;
   setActiveChannel(name: string): void;
   openInbox(agentName: string): void;
   closeInbox(): void;
   /** Persist + apply theme via the bridge (FR-37, AC-20). */
   setTheme(theme: Theme): Promise<void>;
+  /** Persist + apply the RESOLVED keyboard bindings: optimistically update
+   *  the view-model, then write the sparse user-override map through the
+   *  bridge (mirror of setTheme). The caller passes the full resolved map;
+   *  this action persists only the entries differing from defaults. */
+  setKeybindings(resolved: Record<string, string>): Promise<void>;
   /** Toggle PAUSED <-> LIVE through the main process (FR-36). */
   togglePause(): Promise<void>;
 }
@@ -396,6 +404,14 @@ export function createStore(): LoomStore {
     set({ selected: path });
   };
 
+  // Dismiss the open file: set UI-local `selected` back to null so the Viewer
+  // re-renders its empty "Select a file to view it" state (FR-42). Mirrors
+  // selectFile's set()+emit() path; no main-process round-trip (selection is
+  // renderer-local UI state, not part of the frozen InitialState contract).
+  const closeFile = (): void => {
+    set({ selected: null });
+  };
+
   const setActiveChannel = (name: string): void => {
     // Switching channels also leaves any open inbox lens.
     set({ activeChannel: name, inboxAgent: null });
@@ -412,6 +428,17 @@ export function createStore(): LoomStore {
   const setTheme = async (theme: Theme): Promise<void> => {
     set({ theme });
     await window.loom.setTheme(theme);
+  };
+
+  // Optimistically apply the full resolved bindings to the view-model, then
+  // persist ONLY the sparse overrides (entries differing from defaults)
+  // through the bridge — mirror of setTheme. The renderer dispatcher reads
+  // vm.keybindings, so the optimistic update takes effect immediately.
+  const setKeybindings = async (
+    resolved: Record<string, string>,
+  ): Promise<void> => {
+    set({ keybindings: resolved });
+    await window.loom.setKeybindings(diffOverrides(resolved));
   };
 
   const togglePause = async (): Promise<void> => {
@@ -431,10 +458,12 @@ export function createStore(): LoomStore {
     subscribe,
     start,
     selectFile,
+    closeFile,
     setActiveChannel,
     openInbox,
     closeInbox,
     setTheme,
+    setKeybindings,
     togglePause,
   };
 }

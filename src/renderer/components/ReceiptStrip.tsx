@@ -78,9 +78,18 @@ export function ReceiptStrip(props: ReceiptStripProps): JSX.Element {
 
   // Dismissable (SC 1.4.13, A11Y-02): Escape closes and returns focus to the
   // trigger so the keyboard user is not stranded.
+  //
+  // De-confliction with the document-level file-close Escape handler
+  // (A11Y-CLOSE-05): when this tooltip consumes Escape it BOTH stops
+  // propagation (so the bubble-phase document handler never fires) AND calls
+  // preventDefault (so even if the event ever reached that handler, its
+  // `e.defaultPrevented` guard is a second, independent barrier). The result:
+  // an Escape that dismisses a receipt breakdown can NEVER also close the open
+  // file (SC 2.1.2 robustness), regardless of future event-delegation changes.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
     if (e.key === 'Escape' && open) {
       e.stopPropagation();
+      e.preventDefault();
       setOpen(false);
       triggerRef.current?.focus();
     }

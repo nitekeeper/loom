@@ -36,6 +36,9 @@ import type { LoomDb } from './db.js';
 import type { EventBus } from './eventbus.js';
 import type { Sandbox } from './sandbox.js';
 import { wsEnabled } from './ws.js';
+// Pure (DOM/Node-free) keybinding core — merges persisted user overrides
+// over the defaults so the boot snapshot carries the FULL resolved map.
+import { resolveBindings } from '../renderer/lib/keybindings.js';
 
 /** Debounce for COUNTERS recompute+push (telemetry tick). */
 const COUNTERS_DEBOUNCE_MS = 100;
@@ -143,6 +146,9 @@ class IpcWiringImpl implements IpcWiring {
       messages: this.buildMessageViews(),
       counters: this.computeCounters(),
       wsEnabled: wsEnabled(),
+      // Resolve the persisted user OVERRIDES over the defaults so the
+      // renderer receives the full commandId -> combo map (mirror of theme).
+      keybindings: resolveBindings(cfg.keybindings),
     };
   }
 
@@ -165,6 +171,13 @@ class IpcWiringImpl implements IpcWiring {
     ipcMain.handle(IPC.SET_THEME, (_evt, theme: Theme): void => {
       config.setTheme(theme);
     });
+
+    ipcMain.handle(
+      IPC.SET_KEYBINDINGS,
+      (_evt, map: Record<string, string>): void => {
+        config.setKeybindings(map);
+      },
+    );
 
     ipcMain.handle(IPC.SET_LIVE_STATE, (_evt, state: LiveState): void => {
       // The human can PAUSE (sticky) or release back to the auto machine.

@@ -32,7 +32,7 @@
  * ============================================================ */
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1319,4 +1319,591 @@ test('SEC-5: a neutralized link renders with NO href attribute (not href="#")', 
   assert.match(html, /<a\b/i, 'an anchor element is still rendered');
   assert.match(html, /open/, 'the link text still renders');
   assert.doesNotMatch(html, /\bhref\s*=/i, 'a neutralized link must carry NO href attribute');
+});
+
+/* ================================================================== */
+/* A11Y-CLOSE-05 — Escape coordination contract (SC 2.1.2 / 2.4.3).    */
+/* The document-level file-close Escape handler must:                  */
+/*  (a) IGNORE an Escape a tooltip already consumed (defaultPrevented), */
+/*      so dismissing a receipt breakdown never also closes the file;  */
+/*  (b) IGNORE Escape when nothing is open, when the key is not Escape, */
+/*      or when focus is in an editable control;                       */
+/*  (c) CLOSE + rescue focus when the unmounting × button is focused    */
+/*      (A11Y-CLOSE-01), else CLOSE in place (treeitem stays mounted).  */
+/* Pinned via the pure decideEscapeClose() the App handler delegates to. */
+/* ================================================================== */
+test('A11Y-CLOSE-05: a tooltip-consumed Escape (defaultPrevented) does NOT close the file', async () => {
+  const { decideEscapeClose } = await kit();
+  assert.equal(typeof decideEscapeClose, 'function', 'testkit must export decideEscapeClose');
+  // A receipt tooltip consumed Escape: stopPropagation + preventDefault. Even
+  // if the event reaches the document handler, defaultPrevented must veto close.
+  const action = decideEscapeClose({
+    isEscape: true,
+    defaultPrevented: true,
+    hasOpenFile: true,
+    editableTarget: false,
+    focusOnCloseButton: false,
+  });
+  assert.equal(action, 'ignore', 'a consumed Escape must never close the open file');
+});
+
+test('A11Y-CLOSE-05: Escape with NO tooltip open and a file open closes it (in place)', async () => {
+  const { decideEscapeClose } = await kit();
+  const action = decideEscapeClose({
+    isEscape: true,
+    defaultPrevented: false,
+    hasOpenFile: true,
+    editableTarget: false,
+    focusOnCloseButton: false,
+  });
+  assert.equal(action, 'close-in-place', 'a clean Escape with a file open must close it');
+});
+
+test('A11Y-CLOSE-01: Escape while the × close button is focused closes AND rescues focus', async () => {
+  const { decideEscapeClose } = await kit();
+  const action = decideEscapeClose({
+    isEscape: true,
+    defaultPrevented: false,
+    hasOpenFile: true,
+    editableTarget: false,
+    focusOnCloseButton: true,
+  });
+  assert.equal(
+    action,
+    'close-rescue-focus',
+    'Escape from the unmounting × button must take the focus-rescue close path (SC 2.4.3)',
+  );
+});
+
+test('A11Y-CLOSE-05: Escape is ignored with nothing open, a non-Escape key, or an editable target', async () => {
+  const { decideEscapeClose } = await kit();
+  // Nothing open.
+  assert.equal(
+    decideEscapeClose({ isEscape: true, defaultPrevented: false, hasOpenFile: false, editableTarget: false, focusOnCloseButton: false }),
+    'ignore',
+    'Escape with no open file is a no-op',
+  );
+  // Not the Escape key.
+  assert.equal(
+    decideEscapeClose({ isEscape: false, defaultPrevented: false, hasOpenFile: true, editableTarget: false, focusOnCloseButton: false }),
+    'ignore',
+    'a non-Escape key never closes the file',
+  );
+  // Editable target — don't hijack.
+  assert.equal(
+    decideEscapeClose({ isEscape: true, defaultPrevented: false, hasOpenFile: true, editableTarget: true, focusOnCloseButton: false }),
+    'ignore',
+    'Escape inside an editable control must not close the file',
+  );
+});
+
+/* ================================================================== */
+/* FOLD — indentation-based code folding (computeFoldRanges).          */
+/* A PURE function over RAW source text: it measures leading           */
+/* whitespace to decide which already-escaped lines a header hides     */
+/* (LAW 1 — no parsing/eval). Ranges are {header,start,end}, all       */
+/* 0-based; start..end inclusive are hidden when the header collapses;  */
+/* the header line and the dedent line after `end` stay VISIBLE.       */
+/* These pin: nesting, blank-line inclusion, dedent visibility, the    */
+/* >=2-hidden-lines (trivial-block) skip, and the flat-file no-op.     */
+/* ================================================================== */
+test('FOLD computeFoldRanges: nested indentation yields the expected parent + child ranges', async () => {
+  const { computeFoldRanges } = await kit();
+  assert.equal(typeof computeFoldRanges, 'function', 'testkit must re-export computeFoldRanges');
+  // 0 outer header; 1 body; 2 inner header; 3-4 inner body; 5 inner dedent (})
+  // 6 outer body; 7 outer dedent (}). Header iff next non-blank line is deeper.
+  const src = [
+    'function outer() {', // 0 header
+    '  const a = 1;', //     1
+    '  if (a) {', //         2 header (nested)
+    '    doThing();', //     3
+    '    doOther();', //     4
+    '  }', //                5 dedent — stays VISIBLE
+    '  return a;', //        6
+    '}', //                  7 dedent — stays VISIBLE
+  ].join('\n');
+  const ranges = computeFoldRanges(src);
+  // Outer hides 1..6 (the closing `}` at 7 is NOT hidden); inner hides 3..4
+  // (the closing `}` at 5 is NOT hidden). Child nests inside the parent body.
+  assert.deepEqual(
+    ranges,
+    [
+      { header: 0, start: 1, end: 6 },
+      { header: 2, start: 3, end: 4 },
+    ],
+    `nested ranges incorrect; got ${JSON.stringify(ranges)}`,
+  );
+  // Explicit nesting check: the inner range lies entirely within the outer body.
+  const [outer, inner] = ranges;
+  assert.ok(
+    inner.start > outer.start && inner.end <= outer.end,
+    'the child fold range must nest inside the parent fold body',
+  );
+});
+
+test('FOLD computeFoldRanges: a flat (no-deeper-line) file yields NO ranges', async () => {
+  const { computeFoldRanges } = await kit();
+  const flat = ['alpha', 'beta', 'gamma', 'delta'].join('\n');
+  assert.deepEqual(
+    computeFoldRanges(flat),
+    [],
+    'a file with no increasing indentation must produce zero fold ranges',
+  );
+});
+
+test('FOLD computeFoldRanges: a blank line INSIDE a block is included in the folded body', async () => {
+  const { computeFoldRanges } = await kit();
+  // The blank at line 2 sits between two deeper lines, so it is part of the
+  // body; the dedent line `g = 5` at index 5 stays visible (NOT folded).
+  const src = [
+    'def f():', //      0 header
+    '    x = 1', //     1
+    '', //              2 blank INSIDE the block
+    '    y = 2', //     3
+    '    return x', //  4
+    'g = 5', //         5 dedent — stays VISIBLE
+  ].join('\n');
+  const ranges = computeFoldRanges(src);
+  assert.deepEqual(
+    ranges,
+    [{ header: 0, start: 1, end: 4 }],
+    `the interspersed blank line must be inside the folded body; got ${JSON.stringify(ranges)}`,
+  );
+  // The blank line (index 2) must fall within the hidden span.
+  const r = ranges[0];
+  assert.ok(2 >= r.start && 2 <= r.end, 'the blank line index must be hidden when folded');
+});
+
+test('FOLD computeFoldRanges: the closing-dedent line is NOT hidden (stays visible)', async () => {
+  const { computeFoldRanges } = await kit();
+  const src = [
+    'block {', //       0 header
+    '  line one;', //   1
+    '  line two;', //   2
+    '}', //             3 closing dedent — MUST stay visible
+  ].join('\n');
+  const ranges = computeFoldRanges(src);
+  assert.equal(ranges.length, 1, 'exactly one fold region expected');
+  const r = ranges[0];
+  assert.equal(r.header, 0);
+  assert.equal(r.start, 1, 'the first hidden line is the line after the header');
+  assert.equal(r.end, 2, 'the LAST hidden line is the deepest body line, not the closing brace');
+  // The closing brace (index 3) must be OUTSIDE the hidden span.
+  assert.ok(3 > r.end, 'the closing-dedent line must NOT be folded (it stays visible)');
+});
+
+test('FOLD computeFoldRanges: a trivial 1-line block is SKIPPED (needs >= 2 hidden lines)', async () => {
+  const { computeFoldRanges } = await kit();
+  const src = [
+    'if (x) {', //   0 header — but only ONE body line follows
+    '  one();', //   1  (single hidden line -> below the >=2 threshold)
+    '}', //          2 dedent
+  ].join('\n');
+  assert.deepEqual(
+    computeFoldRanges(src),
+    [],
+    'a block that would hide only one line must NOT be emitted (trivial)',
+  );
+  // Sanity: a TWO-line body of the same shape DOES fold — proves the test can
+  // fail for the right reason (the skip is the >=2 rule, not a blanket no-op).
+  const two = ['if (x) {', '  one();', '  two();', '}'].join('\n');
+  assert.deepEqual(
+    computeFoldRanges(two),
+    [{ header: 0, start: 1, end: 2 }],
+    'a two-line body must fold (confirming the trivial-skip is threshold-based)',
+  );
+});
+
+test('FOLD computeFoldRanges: a leading TAB is normalized to spaces (tab/space indent agree)', async () => {
+  const { computeFoldRanges, TAB_WIDTH } = await kit();
+  assert.equal(typeof TAB_WIDTH, 'number', 'testkit must export the TAB_WIDTH constant');
+  // Tab-indented body must fold identically to a space-indented equivalent.
+  const tabbed = ['root {', '\tline1;', '\tline2;', '}'].join('\n');
+  const spaced = ['root {', '    line1;', '    line2;', '}'].join('\n');
+  assert.deepEqual(
+    computeFoldRanges(tabbed),
+    computeFoldRanges(spaced),
+    'tab- and space-indented bodies must yield identical fold ranges',
+  );
+  assert.deepEqual(computeFoldRanges(tabbed), [{ header: 0, start: 1, end: 2 }]);
+});
+
+test('FOLD computeFoldRanges: is pure + deterministic (identical input -> identical output)', async () => {
+  const { computeFoldRanges } = await kit();
+  const src = ['a {', '  b;', '  c;', '}'].join('\n');
+  assert.deepEqual(
+    computeFoldRanges(src),
+    computeFoldRanges(src),
+    'computeFoldRanges must be deterministic (no clock/random dependence)',
+  );
+});
+
+/* ------------------------------------------------------------------ */
+/* FOLD label geometry — the hidden-line COUNT the Viewer's accessible  */
+/* names use ("Expand N hidden lines" / "Collapse N lines", A11Y-FOLD-  */
+/* 02/04/07) is exactly end-start+1 of the emitted range. Pin it so a   */
+/* range-shape change can't silently desync the announced count.        */
+/* ------------------------------------------------------------------ */
+test('FOLD label count: hiddenCount (end-start+1) matches the body the Viewer hides', async () => {
+  const { computeFoldRanges } = await kit();
+  const src = ['outer {', '  a;', '  b;', '  c;', '}'].join('\n');
+  const ranges = computeFoldRanges(src);
+  assert.equal(ranges.length, 1, 'one region expected');
+  const r = ranges[0];
+  const hiddenCount = r.end - r.start + 1;
+  assert.equal(hiddenCount, 3, 'the count powering the accessible name must equal the hidden-line span');
+});
+
+/* ------------------------------------------------------------------ */
+/* FOLD-UX-03 (documented asymmetry) — pinned against the REAL fixtures  */
+/* so the intentional MIN_HIDDEN>=2 behavior cannot regress silently:    */
+/*   server.ts -> only the multi-line /users/:id handler folds           */
+/*   db.ts     -> zero chevrons (both bodies are a single line)          */
+/* If the product later lowers MIN_HIDDEN this test fails LOUDLY,         */
+/* forcing the decision (and this expectation) to be revisited together.  */
+/* ------------------------------------------------------------------ */
+test('FOLD-UX-03 fixtures: MIN_HIDDEN>=2 yields the documented chevron asymmetry', async () => {
+  const { computeFoldRanges } = await kit();
+  const serverTs = readFileSync(
+    path.join(root, 'fixtures', 'acme-api', 'src', 'server.ts'),
+    'utf8',
+  );
+  const dbTs = readFileSync(
+    path.join(root, 'fixtures', 'acme-api', 'src', 'db.ts'),
+    'utf8',
+  );
+  const serverRanges = computeFoldRanges(serverTs);
+  // Exactly one foldable region: the /users/:id handler header (0-based line 7,
+  // i.e. source line 8) hiding its >=2-line body. The 1-line /users handler is
+  // intentionally NOT foldable.
+  assert.equal(
+    serverRanges.length,
+    1,
+    `server.ts must expose exactly one fold region; got ${JSON.stringify(serverRanges)}`,
+  );
+  assert.equal(serverRanges[0].header, 7, 'the foldable header is the /users/:id handler line');
+  assert.ok(
+    serverRanges[0].end - serverRanges[0].start + 1 >= 2,
+    'the folded body must hide >= MIN_HIDDEN lines',
+  );
+  // db.ts: both exported functions have single-line bodies -> nothing folds.
+  assert.deepEqual(
+    computeFoldRanges(dbTs),
+    [],
+    'db.ts (two 1-line bodies) must show zero chevrons under MIN_HIDDEN>=2',
+  );
+});
+
+/* ------------------------------------------------------------------ */
+/* FOLD-UX-04 (accepted limitation) — indentation folding folds VISUAL   */
+/* indentation, not syntactic blocks. This PINS the documented behavior  */
+/* (ternary / continuation / comment-block "headers" still fold) so the  */
+/* limitation is explicit and any future trailing-char refinement is a   */
+/* deliberate, test-visible change — NOT a silent drift. Law 1 holds:    */
+/* nothing is parsed/evaluated; only already-escaped rows are hidden.    */
+/* ------------------------------------------------------------------ */
+test('FOLD-UX-04 limitation: a multi-line ternary continuation still folds (indentation, not blocks)', async () => {
+  const { computeFoldRanges } = await kit();
+  const ternary = ['const v = cond', '  ? whenTrue', '  : whenFalse;', 'next();'].join('\n');
+  assert.deepEqual(
+    computeFoldRanges(ternary),
+    [{ header: 0, start: 1, end: 2 }],
+    'documented: an indented ternary continuation is treated as a foldable region',
+  );
+  const call = ['const x = foo(', '  a,', '  b,', ');'].join('\n');
+  assert.deepEqual(
+    computeFoldRanges(call),
+    [{ header: 0, start: 1, end: 2 }],
+    'documented: a multi-line call continuation folds (the `);` dedent stays visible)',
+  );
+});
+
+/* ============================================================
+ * Keyboard Shortcuts core (FR-54) — pure data + combo logic.
+ * ------------------------------------------------------------
+ * The customizable-shortcuts feature rests on a DOM-free core
+ * (src/renderer/lib/keybindings.ts) re-exported from the testkit:
+ * eventToCombo, resolveBindings, findConflict, isValidBinding,
+ * COMMANDS, DEFAULT_BINDINGS. These pin the combo normalization,
+ * override merge, conflict detection, validation, and a rebind+reset
+ * round-trip on the pure data — no React/DOM needed.
+ * ============================================================ */
+
+/** Build a KeyboardEvent-like object for eventToCombo. */
+const keyEvent = (key, mods = {}) => ({
+  key,
+  ctrlKey: !!mods.ctrl,
+  metaKey: !!mods.meta,
+  shiftKey: !!mods.shift,
+  altKey: !!mods.alt,
+});
+
+test('FR-54 eventToCombo: canonical modifier order is Ctrl, Alt, Shift, then key', async () => {
+  const { eventToCombo } = await kit();
+  // All modifiers + a letter -> fixed order regardless of how they are set.
+  assert.equal(
+    eventToCombo(keyEvent('k', { shift: true, alt: true, ctrl: true })),
+    'Ctrl+Alt+Shift+K',
+    'modifiers must serialize in the fixed Ctrl, Alt, Shift order',
+  );
+  assert.equal(
+    eventToCombo(keyEvent('k', { ctrl: true, shift: true })),
+    'Ctrl+Shift+K',
+    'Ctrl+Shift+letter -> Ctrl+Shift+K',
+  );
+});
+
+test('FR-54 eventToCombo: metaKey (Cmd) maps to the SAME Ctrl token as ctrlKey', async () => {
+  const { eventToCombo } = await kit();
+  const fromMeta = eventToCombo(keyEvent('b', { meta: true }));
+  const fromCtrl = eventToCombo(keyEvent('b', { ctrl: true }));
+  assert.equal(fromMeta, 'Ctrl+B', 'Cmd+B must normalize to Ctrl+B');
+  assert.equal(fromMeta, fromCtrl, 'Cmd and Ctrl must produce an identical combo');
+});
+
+test('FR-54 eventToCombo: key casing is normalized and Escape stays Escape', async () => {
+  const { eventToCombo } = await kit();
+  // A shifted letter reports key='K' but the modifier is also present.
+  assert.equal(
+    eventToCombo(keyEvent('K', { ctrl: true, shift: true })),
+    'Ctrl+Shift+K',
+    'an upper-case key char must normalize to the same canonical letter',
+  );
+  // Lower vs upper single char agree once normalized.
+  assert.equal(
+    eventToCombo(keyEvent('t', { ctrl: true })),
+    eventToCombo(keyEvent('T', { ctrl: true })),
+    'k and K must canonicalize identically',
+  );
+  // Escape is a named key — passes through unchanged, no modifiers.
+  assert.equal(eventToCombo(keyEvent('Escape')), 'Escape', 'Escape stays Escape');
+  // The pause default uses a literal dot key.
+  assert.equal(eventToCombo(keyEvent('.', { ctrl: true })), 'Ctrl+.', 'Ctrl+. preserved');
+});
+
+test('FR-54 eventToCombo: a pure-modifier press yields only the modifier list', async () => {
+  const { eventToCombo, isValidBinding } = await kit();
+  // Holding Ctrl alone: key is the modifier name itself.
+  const combo = eventToCombo(keyEvent('Control', { ctrl: true }));
+  assert.equal(combo, 'Ctrl', 'a lone Ctrl press serializes to just "Ctrl"');
+  assert.equal(
+    isValidBinding(combo),
+    false,
+    'a pure-modifier combo must be rejected by isValidBinding',
+  );
+});
+
+test('FR-54 resolveBindings: user overrides win over defaults; others keep defaults', async () => {
+  const { resolveBindings, DEFAULT_BINDINGS } = await kit();
+  const resolved = resolveBindings({ toggleTheme: 'Ctrl+Shift+T' });
+  assert.equal(resolved.toggleTheme, 'Ctrl+Shift+T', 'the overridden binding must win');
+  assert.equal(
+    resolved.toggleExplorer,
+    DEFAULT_BINDINGS.toggleExplorer,
+    'a non-overridden command must keep its default',
+  );
+  // All 7 commands present in the resolved map.
+  assert.equal(Object.keys(resolved).length, 7, 'resolved map covers all 7 commands');
+});
+
+test('FR-54 resolveBindings: missing/corrupt overrides fall back to defaults', async () => {
+  const { resolveBindings, DEFAULT_BINDINGS } = await kit();
+  assert.deepEqual(resolveBindings(null), { ...DEFAULT_BINDINGS }, 'null -> defaults');
+  assert.deepEqual(resolveBindings(undefined), { ...DEFAULT_BINDINGS }, 'undefined -> defaults');
+  // An invalid (pure-modifier) override is ignored, keeping the default.
+  const resolved = resolveBindings({ foldAll: 'Ctrl', unknownCmd: 'Ctrl+Z' });
+  assert.equal(
+    resolved.foldAll,
+    DEFAULT_BINDINGS.foldAll,
+    'an invalid override must be dropped, keeping the default',
+  );
+  assert.equal(resolved.unknownCmd, undefined, 'an unknown command id must not leak in');
+});
+
+test('FR-54 findConflict: detects a taken combo and respects exceptId', async () => {
+  const { findConflict, resolveBindings, DEFAULT_BINDINGS } = await kit();
+  const bindings = resolveBindings({});
+  // toggleExplorer default is Ctrl+B — assigning Ctrl+B to toggleChat collides.
+  const taken = findConflict(bindings, DEFAULT_BINDINGS.toggleExplorer, 'toggleChat');
+  assert.equal(taken, 'toggleExplorer', 'must report the command already holding the combo');
+  // Excluding the owner itself reports no conflict (re-confirming its own key).
+  const selfExcluded = findConflict(
+    bindings,
+    DEFAULT_BINDINGS.toggleExplorer,
+    'toggleExplorer',
+  );
+  assert.equal(selfExcluded, null, 'exceptId must exclude the queried command itself');
+  // A free combo collides with nothing.
+  assert.equal(
+    findConflict(bindings, 'Ctrl+Alt+Shift+F9', null),
+    null,
+    'an unused combo must report no conflict',
+  );
+});
+
+test('FR-54 isValidBinding: rejects empty + pure-modifier, accepts real keys', async () => {
+  const { isValidBinding } = await kit();
+  assert.equal(isValidBinding(''), false, 'empty string rejected');
+  assert.equal(isValidBinding('Ctrl'), false, 'lone Ctrl rejected');
+  assert.equal(isValidBinding('Ctrl+Shift'), false, 'Ctrl+Shift (no key) rejected');
+  assert.equal(isValidBinding('Alt'), false, 'lone Alt rejected');
+  assert.equal(isValidBinding('Ctrl+B'), true, 'Ctrl+B accepted');
+  assert.equal(isValidBinding('Escape'), true, 'Escape accepted');
+  assert.equal(isValidBinding('Ctrl+Shift+K'), true, 'Ctrl+Shift+K accepted');
+});
+
+test('FR-54 isValidBinding: rejects STRUCTURALLY-malformed combos no keypress can produce (KB-1)', async () => {
+  const { isValidBinding } = await kit();
+  // Empty segments (a leading/trailing/double '+').
+  assert.equal(isValidBinding('+K'), false, 'leading + (empty modifier segment) rejected');
+  assert.equal(isValidBinding('Ctrl+'), false, 'trailing + (empty key segment) rejected');
+  assert.equal(isValidBinding('Ctrl+ +K'), false, 'a blank middle segment rejected');
+  assert.equal(isValidBinding(' '), false, 'a lone space is not a key token');
+  // Lower-case / unknown / non-canonical modifier or key tokens.
+  assert.equal(isValidBinding('a+b'), false, 'lowercase a+b is not a canonical combo');
+  assert.equal(isValidBinding('garbagekey'), false, 'a multi-char non-named key rejected');
+  // Modifier ordering + repeats (canonical order is Ctrl, Alt, Shift).
+  assert.equal(isValidBinding('Shift+Ctrl+K'), false, 'out-of-order modifiers rejected');
+  assert.equal(isValidBinding('Alt+Ctrl+K'), false, 'Alt before Ctrl rejected');
+  assert.equal(isValidBinding('Ctrl+Ctrl+K'), false, 'repeated modifier rejected');
+  assert.equal(isValidBinding('Ctrl+Shift+Alt+K'), false, 'Shift before Alt rejected');
+  // Genuinely valid shapes still pass (so the guard is not over-tight).
+  assert.equal(isValidBinding('Ctrl+Alt+Shift+ArrowLeft'), true, 'full-modifier named key accepted');
+  assert.equal(isValidBinding('Ctrl+.'), true, 'punctuation key accepted');
+  assert.equal(isValidBinding('Alt+/'), true, 'a non-leading single modifier + punctuation accepted');
+  assert.equal(isValidBinding('F9'), true, 'a function key accepted');
+  assert.equal(isValidBinding('Ctrl+Space'), true, 'Ctrl+Space accepted');
+});
+
+test('FR-54 resolveBindings: a structurally-invalid override NEVER shadows a command (KB-1)', async () => {
+  const { resolveBindings, DEFAULT_BINDINGS } = await kit();
+  // The KB-1 failure mode: a corrupt persisted combo that no keypress matches
+  // must NOT be applied (it would silently kill the command). It must fall
+  // back to the command's working default.
+  for (const bad of ['garbagekey', '+K', 'a+b', ' ', 'Ctrl+ +K', 'Shift+Ctrl+K']) {
+    const resolved = resolveBindings({ toggleChat: bad });
+    assert.equal(
+      resolved.toggleChat,
+      DEFAULT_BINDINGS.toggleChat,
+      `a corrupt override ${JSON.stringify(bad)} must drop to the default, never shadow the command`,
+    );
+  }
+});
+
+test('FR-54 formatCombo: maps Ctrl -> "Ctrl/Cmd" for display; leaves others (KB-6)', async () => {
+  const { formatCombo } = await kit();
+  assert.equal(formatCombo('Ctrl+Shift+K'), 'Ctrl/Cmd+Shift+K', 'Ctrl shows as Ctrl/Cmd');
+  assert.equal(formatCombo('Ctrl+B'), 'Ctrl/Cmd+B', 'single-modifier Ctrl shows as Ctrl/Cmd');
+  assert.equal(formatCombo('Escape'), 'Escape', 'a bare named key is unchanged');
+  assert.equal(formatCombo('Ctrl+Space'), 'Ctrl/Cmd+Space', 'Space token is preserved in display');
+  assert.equal(formatCombo('Ctrl+.'), 'Ctrl/Cmd+.', 'punctuation preserved in display');
+  assert.equal(formatCombo(''), '', 'empty combo formats to empty string');
+});
+
+test('FR-54 eventToCombo: the space key normalizes to the readable "Space" token (KB-6)', async () => {
+  const { eventToCombo } = await kit();
+  assert.equal(eventToCombo(keyEvent(' ')), 'Space', "key=' ' serializes to 'Space'");
+  assert.equal(eventToCombo(keyEvent(' ', { ctrl: true })), 'Ctrl+Space', "Ctrl+' ' -> 'Ctrl+Space'");
+  // Legacy 'Spacebar' alias also normalizes.
+  assert.equal(eventToCombo(keyEvent('Spacebar')), 'Space', "'Spacebar' alias -> 'Space'");
+});
+
+test('FR-54 isReserved: the fixed Ctrl/Cmd+Comma opener is reserved + un-assignable (KB-2)', async () => {
+  const { isReserved, RESERVED_COMBOS, findConflict, isValidBinding } = await kit();
+  assert.equal(isReserved('Ctrl+,'), true, 'the opener combo is reserved');
+  assert.equal(isReserved('Ctrl+B'), false, 'a normal command combo is not reserved');
+  assert.equal(RESERVED_COMBOS.has('Ctrl+,'), true, 'RESERVED_COMBOS contains the opener');
+  // The opener combo is itself a structurally-valid combo (so the ONLY thing
+  // stopping its assignment is the reserved check, which the panel enforces).
+  assert.equal(isValidBinding('Ctrl+,'), true, 'Ctrl+, is a real combo; reservation is what blocks it');
+  // It collides with nothing in the default set (it is not a command binding).
+  const { resolveBindings } = await kit();
+  assert.equal(findConflict(resolveBindings({}), 'Ctrl+,', null), null, 'no command holds the opener combo');
+});
+
+test('FR-54 isPlatformCritical: load-bearing native combos flagged for a soft warning (KB-5)', async () => {
+  const { isPlatformCritical } = await kit();
+  assert.equal(isPlatformCritical('Ctrl+R'), true, 'reload flagged');
+  assert.equal(isPlatformCritical('Ctrl+W'), true, 'close flagged');
+  assert.equal(isPlatformCritical('Ctrl+Q'), true, 'quit flagged');
+  assert.equal(isPlatformCritical('F5'), true, 'F5 reload flagged');
+  assert.equal(isPlatformCritical('Ctrl+J'), false, 'a normal command combo not flagged');
+  assert.equal(isPlatformCritical('Ctrl+Shift+K'), false, 'an app shortcut not flagged');
+});
+
+test('FR-54 planReassign: a default-equals-assigned collision never duplicates a binding (KB-3)', async () => {
+  const { planReassign, resolveBindings, DEFAULT_BINDINGS } = await kit();
+  const working = resolveBindings({});
+  // From defaults, reassign foldAll's default (Ctrl+K) onto toggleChat. The
+  // displaced command (foldAll) reverting to its default WOULD re-collide, so
+  // it must be VACATED + flagged for rebind — NOT silently left on Ctrl+K.
+  const plan = planReassign(working, 'toggleChat', DEFAULT_BINDINGS.foldAll, 'foldAll');
+  assert.equal(plan.next.toggleChat, DEFAULT_BINDINGS.foldAll, 'the new owner keeps the captured combo');
+  assert.equal(plan.displacedNeedsRebind, true, 'the displaced command needs a fresh key');
+  assert.equal(plan.next.foldAll, '', 'the displaced command is vacated, not left duplicating the combo');
+  // INVARIANT: no two commands share a non-empty combo after a reassign.
+  const counts = {};
+  for (const c of Object.values(plan.next)) {
+    if (!c) continue;
+    counts[c] = (counts[c] ?? 0) + 1;
+  }
+  assert.ok(
+    Object.values(counts).every((n) => n === 1),
+    'no combo may be held by more than one command after reassign',
+  );
+});
+
+test('FR-54 planReassign: a free displaced default is restored (no spurious vacate) (KB-3)', async () => {
+  const { planReassign, DEFAULT_BINDINGS } = await kit();
+  // toggleTheme rebound to Ctrl+Y, so its default Ctrl+T is now FREE. Capturing
+  // Ctrl+Y for togglePause conflicts with toggleTheme; reassign must restore
+  // toggleTheme to its (free) default Ctrl+T with no rebind needed.
+  const working = { ...DEFAULT_BINDINGS, toggleTheme: 'Ctrl+Y' };
+  const plan = planReassign(working, 'togglePause', 'Ctrl+Y', 'toggleTheme');
+  assert.equal(plan.next.togglePause, 'Ctrl+Y', 'new owner keeps the captured combo');
+  assert.equal(plan.next.toggleTheme, DEFAULT_BINDINGS.toggleTheme, 'displaced reverts to its now-free default');
+  assert.equal(plan.displacedNeedsRebind, false, 'no rebind needed when the default is free');
+  assert.equal(plan.displacedCombo, DEFAULT_BINDINGS.toggleTheme, 'displacedCombo reports the restored default');
+});
+
+test('FR-54 diffOverrides: a vacated ("") binding is never persisted (KB-3)', async () => {
+  const { diffOverrides, DEFAULT_BINDINGS } = await kit();
+  // A vacated displaced command (combo '') must NOT leak into the sparse map —
+  // it falls back to its default on resolve.
+  const overrides = diffOverrides({ ...DEFAULT_BINDINGS, foldAll: '' });
+  assert.equal(overrides.foldAll, undefined, 'a vacated/invalid binding is not persisted');
+  assert.deepEqual(overrides, {}, 'only the (empty) vacate yields no override entry');
+  // A real differing binding still persists.
+  const o2 = diffOverrides({ ...DEFAULT_BINDINGS, foldAll: 'Ctrl+Shift+G' });
+  assert.deepEqual(o2, { foldAll: 'Ctrl+Shift+G' }, 'a real rebind still persists');
+});
+
+test('FR-54 rebind + reset round-trip on the pure data (defaults <-> override)', async () => {
+  const { resolveBindings, diffOverrides, DEFAULT_BINDINGS, findConflict } = await kit();
+  // Start from defaults.
+  let resolved = resolveBindings({});
+  assert.deepEqual(resolved, { ...DEFAULT_BINDINGS }, 'start at defaults');
+  // Rebind toggleTheme to a free combo; the sparse override holds only it.
+  const newCombo = 'Ctrl+Shift+Y';
+  assert.equal(findConflict(resolved, newCombo, 'toggleTheme'), null, 'new combo is free');
+  resolved = { ...resolved, toggleTheme: newCombo };
+  const overrides = diffOverrides(resolved);
+  assert.deepEqual(
+    overrides,
+    { toggleTheme: newCombo },
+    'diffOverrides must persist ONLY the changed binding (sparse)',
+  );
+  // Re-resolving the persisted sparse map reproduces the working state.
+  assert.deepEqual(
+    resolveBindings(overrides),
+    resolved,
+    'persisted sparse overrides must re-resolve to the same full map',
+  );
+  // Reset: back to defaults yields an EMPTY override map.
+  const afterReset = { ...DEFAULT_BINDINGS };
+  assert.deepEqual(
+    diffOverrides(afterReset),
+    {},
+    'after reset the sparse override map must be empty (all defaults)',
+  );
 });

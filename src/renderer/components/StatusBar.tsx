@@ -14,15 +14,118 @@
  * carries a text label (aria-label / aria-pressed) so state is not
  * conveyed by color alone.
  * ============================================================ */
-import type { JSX } from 'react';
+import type { JSX, Ref } from 'react';
 import type { LiveState, SessionCounters, Theme } from '../../shared/types.js';
 
 export interface StatusBarProps {
   liveState: LiveState;
   counters: SessionCounters;
   theme: Theme;
+  /** True when the Explorer pane is collapsed (drives the toggle's state). */
+  explorerHidden: boolean;
+  /** Collapse/expand the Explorer pane (also bound to Ctrl/Cmd+B in App).
+   *  `viaKeyboard` lets App move focus into a re-shown Explorer only on a
+   *  keyboard activation, never on a mouse click (UX-4). */
+  onToggleExplorer(viaKeyboard?: boolean): void;
+  /** Ref to the toggle <button> so App can restore focus when the Explorer
+   *  collapses out from under the keyboard (no lost focus / no trap). */
+  explorerToggleRef?: Ref<HTMLButtonElement>;
+  /** True when the Chat pane is collapsed (drives the chat toggle's state). */
+  chatHidden: boolean;
+  /** Collapse/expand the Chat pane (also bound to Ctrl/Cmd+J in App).
+   *  `viaKeyboard` lets App move focus into a re-shown Chat only on a
+   *  keyboard activation, never on a mouse click (UX-4). */
+  onToggleChat(viaKeyboard?: boolean): void;
+  /** Ref to the chat toggle <button> so App can restore focus when the Chat
+   *  collapses out from under the keyboard (no lost focus / no trap). */
+  chatToggleRef?: Ref<HTMLButtonElement>;
   onTogglePause(): void;
   onToggleTheme(): void;
+  /** Open the Keyboard Shortcuts panel (also bound to Ctrl/Cmd+Comma). */
+  onOpenShortcuts(): void;
+  /** Ref to the gear <button> so App can restore focus when the panel closes. */
+  shortcutsButtonRef?: Ref<HTMLButtonElement>;
+  /** True while the Shortcuts panel is open (drives the gear's expanded cue). */
+  shortcutsOpen: boolean;
+}
+
+/** Sidebar/panel glyph: a framed rectangle with a highlighted side column,
+ *  the conventional "toggle side panel" affordance. The column FILLS when the
+ *  Explorer is shown and is EMPTY (hollow) when collapsed, so the glyph itself
+ *  signals open vs collapsed at a glance (UX-3) — not by tint alone. */
+function SidebarIcon({ collapsed }: { collapsed: boolean }): JSX.Element {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="9" y1="4" x2="9" y2="20" />
+      {/* Shown: the panel column is filled (solid). Collapsed: left empty so
+          the panel reads as "off". A non-color, shape-based state cue. */}
+      {!collapsed && (
+        <rect
+          x="3"
+          y="4"
+          width="6"
+          height="16"
+          rx="2"
+          fill="currentColor"
+          stroke="none"
+        />
+      )}
+    </svg>
+  );
+}
+
+/** Chat glyph: a speech bubble — semantically mapping to "agent chat" and
+ *  instantly distinct from the file-explorer PANEL rectangle glyph at 16px, so
+ *  the two toggles can never be confused (recognition over recall — UX-CHAT-01 /
+ *  SC 1.3.1: identity not by position alone). The bubble FILLS (solid) when the
+ *  Chat is shown and is an EMPTY outline (with two interior message-line strokes
+ *  as a content cue) when collapsed, so the glyph itself signals open vs
+ *  collapsed at a glance (UX-3) — a non-color, shape-based state cue, not tint
+ *  alone. Both states draw at strokeWidth 2 in currentColor, so the visible
+ *  outline meets the non-text-contrast minimum in the resting (collapsed/
+ *  un-pressed) state regardless of the accent tint (A11Y-CHAT-03). */
+function ChatBubbleIcon({ collapsed }: { collapsed: boolean }): JSX.Element {
+  // A rounded speech bubble with a small tail at the bottom-left.
+  const bubble =
+    'M4 5h16a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 20 16H9l-4 4v-4H4a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 4 5z';
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {/* Shown: a solid (filled) bubble. Collapsed: a hollow outline so the
+          chat reads as "off". A non-color, shape-based state cue. */}
+      <path d={bubble} fill={collapsed ? 'none' : 'currentColor'} />
+      {/* Two short interior message lines — a content cue that makes the bubble
+          unambiguously a CHAT glyph. Drawn only in the hollow (collapsed) state
+          where the bubble interior is empty; in the filled state the solid body
+          already reads as chat and lines on the fill would be invisible. */}
+      {collapsed && (
+        <>
+          <line x1="7.5" y1="9.5" x2="16.5" y2="9.5" />
+          <line x1="7.5" y1="12.5" x2="13" y2="12.5" />
+        </>
+      )}
+    </svg>
+  );
 }
 
 function SunIcon(): JSX.Element {
@@ -61,6 +164,28 @@ function MoonIcon(): JSX.Element {
   );
 }
 
+/** Gear/settings glyph — the conventional "settings" affordance, here the
+ *  entry point to the Keyboard Shortcuts panel. Decorative; the accessible
+ *  name comes from the button's aria-label. */
+function GearIcon(): JSX.Element {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
 function PauseIcon(): JSX.Element {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -88,8 +213,17 @@ export function StatusBar({
   liveState,
   counters,
   theme,
+  explorerHidden,
+  onToggleExplorer,
+  explorerToggleRef,
+  chatHidden,
+  onToggleChat,
+  chatToggleRef,
   onTogglePause,
   onToggleTheme,
+  onOpenShortcuts,
+  shortcutsButtonRef,
+  shortcutsOpen,
 }: StatusBarProps): JSX.Element {
   const paused = liveState === 'PAUSED';
   // Pill carries the .paused look for both PAUSED and CAUGHT_UP (steady dot);
@@ -98,6 +232,33 @@ export function StatusBar({
 
   return (
     <div className="statusbar">
+      {/* Always visible in BOTH states so it can re-show a collapsed Explorer.
+          A11Y-EXP-04: a true toggle button uses a STABLE name describing the
+          thing toggled ("File explorer") + aria-pressed for the on/off state
+          (pressed = shown). Mixing a flipping Show/Hide verb WITH aria-pressed
+          double-encodes state and reads contradictorily ("Show… pressed").
+          The flipping verb + Ctrl/Cmd+B hint stay in the visual tooltip. */}
+      <button
+        type="button"
+        className="iconbtn"
+        ref={explorerToggleRef}
+        // A keyboard-activated button click reports detail===0 (no pointer
+        // coordinates); a real mouse click reports detail>=1. Use that to
+        // signal a keyboard activation so focus follows into a re-shown
+        // Explorer only for keyboard users (UX-4).
+        onClick={(e) => onToggleExplorer(e.detail === 0)}
+        aria-pressed={!explorerHidden}
+        aria-label="File explorer"
+        title={
+          (explorerHidden ? 'Show file explorer' : 'Hide file explorer') +
+          ' (Ctrl/Cmd+B)'
+        }
+      >
+        <SidebarIcon collapsed={explorerHidden} />
+      </button>
+
+      <span className="stat-sep" aria-hidden="true" />
+
       <span
         className={'live-pill' + (pillSteady ? ' paused' : '')}
         role="status"
@@ -128,6 +289,32 @@ export function StatusBar({
 
       <span className="grow" />
 
+      {/* Chat-pane toggle — grouped on the RIGHT with the pause + theme icon
+          buttons because the chat lives on the right edge of the body. A true
+          toggle button: STABLE name ("Agent chat") + aria-pressed for the
+          on/off state (pressed = shown). The flipping Show/Hide verb +
+          Ctrl/Cmd+J hint live in the visual tooltip only (A11Y-EXP-04). */}
+      <button
+        type="button"
+        className="iconbtn"
+        ref={chatToggleRef}
+        // A keyboard-activated button click reports detail===0 (no pointer
+        // coordinates); a real mouse click reports detail>=1. Use that to
+        // signal a keyboard activation so focus follows into a re-shown Chat
+        // only for keyboard users (UX-4).
+        onClick={(e) => onToggleChat(e.detail === 0)}
+        aria-pressed={!chatHidden}
+        aria-label="Agent chat"
+        title={
+          (chatHidden ? 'Show agent chat' : 'Hide agent chat') +
+          ' (Ctrl/Cmd+J)'
+        }
+      >
+        <ChatBubbleIcon collapsed={chatHidden} />
+      </button>
+
+      <span className="stat-sep" aria-hidden="true" />
+
       <button
         type="button"
         className="iconbtn"
@@ -151,6 +338,28 @@ export function StatusBar({
         title="Toggle theme"
       >
         {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+      </button>
+
+      <span className="stat-sep" aria-hidden="true" />
+
+      {/* Keyboard Shortcuts opener — a settings gear. aria-haspopup="dialog"
+          signals it opens a modal; aria-expanded mirrors the panel's open
+          state. Also reachable via the fixed Ctrl/Cmd+Comma (noted in the
+          tooltip). The ref lets App return focus here when the panel closes. */}
+      <button
+        type="button"
+        className="iconbtn"
+        ref={shortcutsButtonRef}
+        onClick={onOpenShortcuts}
+        aria-haspopup="dialog"
+        aria-expanded={shortcutsOpen}
+        aria-label="Keyboard shortcuts"
+        // Expose the fixed opener combo to AT (discoverable beyond the
+        // hover-only tooltip; complements the in-panel reference row, UX-04).
+        aria-keyshortcuts="Control+, Meta+,"
+        title="Keyboard shortcuts (Ctrl/Cmd+,)"
+      >
+        <GearIcon />
       </button>
     </div>
   );

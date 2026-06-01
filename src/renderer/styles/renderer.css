@@ -39,6 +39,11 @@
   --titlebar:  oklch(0.185 0.012 258);
   --border:    oklch(0.305 0.013 258);
   --border-soft: oklch(0.262 0.011 258);
+  /* A11Y-CLOSE-03 / SC 1.4.11: a stronger control boundary that clears the
+     3:1 non-text-contrast bar against the viewer-head surface (--win) AND the
+     control face (--panel-2). Measured ~3.25:1 vs --win, ~3.05:1 vs --panel-2.
+     Used by icon-button controls whose resting boundary must be perceivable. */
+  --control-border: oklch(0.52 0.013 258);
   --text:      oklch(0.94 0.008 258);
   --text-dim:  oklch(0.70 0.012 258);
   --text-faint:oklch(0.55 0.012 258);
@@ -68,6 +73,8 @@
   --titlebar:  oklch(0.965 0.003 258);
   --border:    oklch(0.88 0.005 258);
   --border-soft: oklch(0.92 0.004 258);
+  /* A11Y-CLOSE-03 / SC 1.4.11 (light): ~4.22:1 vs --win, ~3.95:1 vs --panel-2. */
+  --control-border: oklch(0.58 0.005 258);
   --text:      oklch(0.26 0.012 258);
   --text-dim:  oklch(0.46 0.012 258);
   --text-faint:oklch(0.62 0.012 258);
@@ -138,6 +145,28 @@ body {
 }
 button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
   outline-color: var(--focus-ring);
+}
+
+/* ============================================================
+   Forced-colors / Windows High Contrast (A11Y-CLOSE-06, SC 1.4.1)
+   ------------------------------------------------------------
+   In forced-colors mode the OS flattens our color-mix/oklch tints and may
+   override the custom --focus-ring, so the keyboard focus indicator and the
+   icon-button boundaries (the × close control and every .iconbtn) must be
+   pinned to SYSTEM colors to survive. The X glyph (currentColor) already
+   shows; this preserves the BOUNDARY + FOCUS affordances the tints carried.
+   ============================================================ */
+@media (forced-colors: active) {
+  /* Keep the keyboard focus ring visible with a guaranteed system color. */
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  /* Icon buttons keep a perceivable boundary (system ButtonText), not a tint
+     the OS flattens to transparent. Covers the new × close control too. */
+  .iconbtn, .viewer-close {
+    border-color: ButtonText;
+  }
 }
 
 /* ============================================================
@@ -230,9 +259,34 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
    ============================================================ */
 .body {
   display: grid;
-  grid-template-columns: 248px 1fr var(--chat-w, 400px);
+  grid-template-columns: var(--explorer-w, 248px) 1fr var(--chat-w, 400px);
   min-height: 0;
   position: relative;
+  /* A11Y-EXP-07 (reduced-motion): the grid columns are deliberately NOT
+     transitioned. If a width transition is ever added here for polish, it
+     MUST be excluded under prefers-reduced-motion — the keyboard-nudge and
+     collapse paths change these tracks outside a drag, which is exactly the
+     interaction-triggered motion SC 2.3.3 targets. The global override at the
+     bottom of this file (transition-duration: 0.001ms !important) already
+     covers it, but keep this intent explicit so a refactor can't regress. */
+}
+/* Collapsed: drop the Explorer track entirely so the Viewer (1fr) fills the
+   freed space — a two-column grid (viewer | chat). Setting --explorer-w to 0
+   alone leaves a dead empty column and shifts every pane left by one
+   (UX-1 / A11Y-EXP-01 / SC 1.4.10 Reflow). */
+.body.explorer-hidden {
+  grid-template-columns: 1fr var(--chat-w, 400px);
+}
+/* Collapsed Chat: drop the Chat track (mirror of .explorer-hidden) so the
+   Viewer (1fr) fills the freed space — a two-column grid (explorer | viewer).
+   Setting --chat-w to 0 alone leaves a dead empty column on the right
+   (UX-1 / A11Y-EXP-01 / SC 1.4.10 Reflow). */
+.body.chat-hidden {
+  grid-template-columns: var(--explorer-w, 248px) 1fr;
+}
+/* Both side panes collapsed: only the Viewer remains (a single 1fr column). */
+.body.explorer-hidden.chat-hidden {
+  grid-template-columns: 1fr;
 }
 .body > * { min-height: 0; min-width: 0; }
 
@@ -257,6 +311,15 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
   background: transparent;
   touch-action: none;
 }
+/* Explorer splitter: same 8px hit area + accent seam, but anchored to the
+   Explorer's RIGHT edge (the Explorer/Viewer boundary). translateX(-4px)
+   centers the 8px area over the 1px border (the chat one straddles via +4px
+   on the opposite side). */
+.splitter.left {
+  right: auto;
+  left: var(--explorer-w, 248px);
+  transform: translateX(-4px);
+}
 .splitter::before {
   content: "";
   position: absolute;
@@ -268,8 +331,21 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
 }
 .splitter:hover::before,
 .splitter.dragging::before { background: var(--accent); }
-.splitter:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -1px; }
-.splitter:focus-visible::before { background: var(--accent); }
+/* A11Y-EXP-06 / SC 2.4.7: an inset 2px outline on an 8px hit area is largely
+   occluded by the adjacent panel backgrounds + the 1px pane border, leaving a
+   thin, easy-to-miss focus cue. Instead drop the clipped outline and paint a
+   clearly visible focus state on the seam itself: widen the 2px line to a 4px
+   full-accent bar PLUS a box-shadow halo (var(--focus-ring)) that is NOT
+   clipped by the narrow hit area, so it reads >=3:1 against BOTH adjacent
+   panels (var(--panel) and var(--win)). The seam carries no text, so the 3:1
+   non-text-contrast minimum applies. */
+.splitter:focus-visible { outline: none; }
+.splitter:focus-visible::before {
+  left: 2px;
+  width: 4px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
 
 /* While dragging: kill text selection + any grid width transition so the
    live resize stays crisp and pointerless (FR-54 / reduced-motion safe). */
@@ -362,6 +438,26 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
   background: color-mix(in oklab, var(--warn) 8%, transparent);
 }
 .render-tag.none { color: var(--text-faint); }
+/* UX-04: the empty-state ghost chip — softer border than a real badge so it
+   reads as a quiet placeholder, not an active render-state. */
+.viewer-empty-tag { border-color: var(--border-soft); }
+
+/* Close-file control (FR-42): a real <button> reusing the .iconbtn affordances
+   (hover + :focus-visible ring). It follows the .render-tag badge (which
+   carries margin-left:auto, pushing both to the right edge). Only rendered with
+   a file open (Viewer.tsx).
+   - UX-03 / SC 2.5.8: the standard 30x30 .iconbtn size (NO undersizing) — it
+     fits the 44px head and matches the StatusBar icon buttons (visual rhythm +
+     target-size headroom). Only the corner radius is overridden.
+   - A11Y-CLOSE-03 / UX-02 / SC 1.4.11: a stronger resting boundary
+     (--control-border, >=3:1 vs the viewer-head surface in BOTH themes) so the
+     control reads as a button at rest, not a loose glyph. The icon glyph
+     (currentColor at --text-dim) already clears 3:1 as a graphical object. */
+.viewer-close {
+  border-radius: 8px;
+  border-color: var(--control-border);
+  flex: 0 0 30px;
+}
 
 .viewer-body { flex: 1; overflow: auto; }
 
@@ -374,19 +470,112 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
 }
 .safety-banner svg { flex: 0 0 auto; }
 
-/* code view */
-.code { display: grid; grid-template-columns: auto 1fr; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.62; padding: 8px 0 28px; }
-.gutter { text-align: right; color: var(--text-faint); user-select: none; padding: 0 14px 0 12px; opacity: .7; }
-.gutter span { display: block; }
-.codecol { overflow-x: auto; padding-right: 18px; }
-.codecol pre { margin: 0; }
-.codecol .ln { display: block; white-space: pre; }
+/* code view
+   ------------------------------------------------------------
+   Folding-aware 3-column grid: [fold chevron col] [line-number gutter]
+   [source]. Each VISIBLE line emits exactly three grid children (a fold
+   cell, a number, and the escaped source row), so rows stay aligned even
+   as folded lines are removed from the DOM. Hidden lines render nothing
+   (LAW 1: folding only shows/hides already-escaped rows — never re-parses).
+   Line numbers always show the TRUE 1-based index (folding never renumbers). */
+.code {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: start;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.62;
+  padding: 8px 0 28px;
+}
+/* Fold column: a fixed lane left of the gutter holding the chevron toggle (on
+   header lines) or an empty spacer (so non-foldable rows keep the gutter
+   aligned).
+   - A11Y-FOLD-01 / FOLD-UX-02 / SC 2.5.8: the lane is widened to 24px so the
+     toggle's clickable target can reach the 24x24 CSS-px AA minimum without
+     enlarging the visual chevron or disturbing the ~20.3px row rhythm. */
+.fold-col { width: 24px; display: flex; align-items: flex-start; justify-content: center; user-select: none; }
+.fold-spacer { display: block; width: 24px; height: 1em; }
+.fold-toggle {
+  appearance: none; background: transparent;
+  /* A11Y-FOLD-05 / FOLD-UX-01 / SC 1.4.11: a faint resting boundary (like the
+     .viewer-close control) so the chevron reads as an operable control at rest,
+     not a loose glyph — improving discoverability for low-vision users. */
+  border: 1px solid transparent;
+  cursor: pointer;
+  /* A11Y-FOLD-05 / FOLD-UX-01 / SC 1.4.11: bumped from --text-faint (rendered
+     ~2.2:1 once anti-aliased on a 10px glyph — below the 3:1 graphical-object
+     minimum) to --text-dim, which clears 3:1 against --win in BOTH themes with
+     headroom for the thin-stroke anti-aliasing loss. */
+  color: var(--text-dim); padding: 0; margin: 0;
+  /* A11Y-FOLD-01 / FOLD-UX-02 / SC 2.5.8: the VISUAL box stays on its ~20.3px
+     row (1.62em) so the row rhythm is undisturbed; a 24x24 hit-area overlay
+     (::before) reaches the AA minimum target size below. */
+  position: relative;
+  width: 18px; height: 1.62em;
+  display: grid; place-items: center; border-radius: 4px;
+}
+/* A11Y-FOLD-01 / FOLD-UX-02 / SC 2.5.8: extend the *target* (not the icon) to
+   24x24 CSS px with a centered transparent overlay, so low-vision/motor users
+   get the AA-minimum hit area while the chevron glyph + row height are
+   unchanged. Centered on the chevron, so adjacent-row targets overlap only
+   symmetrically (each neighbor's glyph remains the nearest centre). */
+.fold-toggle::before {
+  content: "";
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 24px; height: 24px;
+}
+.fold-toggle:hover {
+  color: var(--text); background: var(--panel-3);
+  border-color: var(--control-border);
+}
+.fold-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* Chevron rotates ▾ (expanded) -> ▸ (collapsed). The rotation is a transform,
+   so the global prefers-reduced-motion override (transition-duration ~0) makes
+   it snap rather than animate — no motion under reduced-motion. */
+.fold-chevron-icon { transition: transform 120ms ease; transform: rotate(0deg); }
+.fold-toggle[aria-expanded="false"] .fold-chevron-icon { transform: rotate(-90deg); }
+/* Line-number gutter (per-line span, honest numbering). */
+.gutter-num {
+  text-align: right; color: var(--text-faint); user-select: none;
+  padding: 0 14px 0 4px; opacity: .7; white-space: nowrap;
+}
+/* Source row: keeps the original horizontal-scroll + no-wrap behavior. */
+.ln-wrap { overflow-x: auto; padding-right: 18px; min-width: 0; }
+.ln { display: inline; white-space: pre; }
+/* Collapsed-region affordance: a subtle ellipsis after the header's code.
+   aria-hidden — the hidden-line COUNT is carried in the toggle's accessible
+   name ("Expand N hidden lines"), so this is purely visual. */
+.fold-ellipsis { color: var(--text-faint); opacity: .8; user-select: none; }
+
+/* Fold-all / Unfold-all control in the Viewer head (SOURCE files only).
+   A real text button reusing the focus-ring + pressed affordances. It sits
+   before the render-tag (which carries margin-left:auto), so it stays left-
+   adjacent to the breadcrumb while the badge + close push to the right edge. */
+.fold-all-btn {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .03em; color: var(--text-dim);
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 9px; cursor: pointer;
+}
+.fold-all-btn:hover { color: var(--text); background: var(--panel-3); }
+.fold-all-btn[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
 .tok-kw { color: var(--t-kw); } .tok-str { color: var(--t-str); }
 .tok-num { color: var(--t-num); } .tok-com { color: var(--t-com); font-style: italic; }
 .tok-punc { color: var(--t-punc); } .tok-fn { color: var(--t-fn); }
 
 /* markdown view */
-.md { padding: 20px 30px 40px; max-width: 760px; font-size: 14.5px; line-height: 1.72; color: var(--text); }
+/* UX-CHAT-02: center the 760px reading column in the available Viewer width so
+   that when the Chat (and/or Explorer) is collapsed and the Viewer grows wide,
+   the document does not hard-anchor left with a large empty band on the right.
+   margin-inline:auto keeps the comfortable measure while balancing the layout;
+   at the normal 3-pane width (Viewer barely wider than 760px) the centering is
+   negligible, so it does not regress the default reading position. */
+.md { padding: 20px 30px 40px; max-width: 760px; margin-inline: auto; font-size: 14.5px; line-height: 1.72; color: var(--text); }
 .md h1 { font-size: 26px; font-weight: 700; letter-spacing: -.02em; margin: 6px 0 14px; }
 .md h2 { font-size: 19px; font-weight: 700; letter-spacing: -.01em; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
 .md h3 { font-size: 15.5px; font-weight: 700; margin: 20px 0 8px; }
@@ -429,6 +618,9 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
 
 .empty-viewer { display: grid; place-items: center; height: 100%; color: var(--text-faint); font-size: 13px; gap: 10px; text-align: center; }
 .empty-viewer .mono { font-family: var(--font-mono); font-size: 12px; }
+/* A11Y-CLOSE-04 / SC 1.3.1: a real heading naming the empty state, kept quiet
+   to preserve the calm empty affordance (not a loud banner). */
+.empty-viewer-title { font-size: 14px; font-weight: 600; color: var(--text-dim); letter-spacing: -.01em; }
 
 /* ============================================================
    Chat  (classes consumed by the Chat subtree — owned by the
@@ -560,8 +752,268 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: content-box; }
 
+/* ============================================================
+   Keyboard Shortcuts panel (FR-54 / WCAG 2.2 AA)
+   ------------------------------------------------------------
+   A modal dialog over a dimmed backdrop. Themed via the shared
+   oklch tokens (works in dark + light). Animation is limited to a
+   fade/scale that the global prefers-reduced-motion override pins
+   to ~0ms, so it snaps under reduced motion. Every control reuses
+   the shared :focus-visible ring.
+   ============================================================ */
+.sc-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: color-mix(in oklab, var(--bg) 62%, transparent);
+  backdrop-filter: blur(2px);
+}
+.sc-dialog {
+  width: min(560px, 92%);
+  max-height: min(86%, 720px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: sc-pop 0.16s cubic-bezier(0.2, 0.8, 0.25, 1);
+}
+@keyframes sc-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+.sc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.sc-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  flex: 1;
+}
+.sc-close { flex: 0 0 30px; border-radius: 8px; border-color: var(--control-border); }
+.sc-hint {
+  padding: 12px 16px 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.sc-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 8px 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+.sc-row {
+  display: grid;
+  /* Reserve a minimum label width so a long captured combo can never collapse
+     the command name; the chip column is capped (UX-08). */
+  grid-template-columns: minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 8px;
+  border-radius: 8px;
+}
+.sc-row:hover { background: var(--panel-2); }
+.sc-row-label {
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* Visually-hidden but screen-reader-available live/region text inside the
+   dialog (A11Y-SC-01 / A11Y-SC-02 / UX-07). Mirrors the global .sr-only. */
+.sc-sr-live {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The read-only opener reference row (UX-04): same chip styling, no edit
+   affordance, not interactive. */
+.sc-row-fixed { margin-top: 4px; }
+.sc-binding-fixed {
+  cursor: default;
+  color: var(--text-dim);
+  background: var(--panel);
+  border-style: dashed;
+}
+.sc-binding-fixed:hover { background: var(--panel); border-color: var(--border); }
+/* The binding chip is a real button: click to rebind. Shows the combo +
+   an edit glyph. Capturing state is a clear accent outline + label. */
+.sc-binding {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 132px;
+  /* Cap the chip so a long captured combo (e.g. Ctrl/Cmd+Alt+Shift+ArrowLeft)
+     truncates instead of crowding the command label (UX-08). */
+  max-width: 220px;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.sc-binding:hover { background: var(--panel-3); border-color: var(--control-border); }
+.sc-binding.capturing {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+}
+/* The combo text truncates rather than forcing the chip (and thus the row)
+   wider; the full value is always announced via the live region (UX-08). */
+.sc-combo {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Non-color "Recording" cue prefixing a capturing chip so the armed state is
+   not conveyed by the accent color alone (UX-05 / WCAG 1.4.1). */
+.sc-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-family: var(--font-ui, inherit);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.sc-rec-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: sc-rec-blink 1.1s steps(2, jump-none) infinite;
+}
+@keyframes sc-rec-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.25; }
+}
+.sc-edit-glyph { color: var(--text-faint); display: inline-grid; place-items: center; }
+.sc-binding:hover .sc-edit-glyph { color: var(--text-dim); }
+.sc-binding.capturing .sc-edit-glyph { color: var(--accent); }
+
+/* Live conflict warning — a full-width alert row beneath the binding chip
+   (so it spans both grid columns). Uses the warn token (non-color cue: the
+   text spells out the collision + names the other command). */
+.sc-conflict {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--warn) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--warn) 38%, transparent);
+}
+.sc-conflict-text { font-size: 12px; color: var(--text); flex: 1; line-height: 1.45; }
+.sc-conflict-text b { font-weight: 700; }
+.sc-conflict-actions { display: inline-flex; gap: 6px; flex: 0 0 auto; }
+
+.sc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-soft);
+}
+.sc-btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 13px;
+  cursor: pointer;
+}
+.sc-btn:hover { color: var(--text); background: var(--panel-3); border-color: var(--control-border); }
+.sc-btn-primary {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.sc-btn-primary:hover {
+  color: var(--accent-ink);
+  background: color-mix(in oklab, var(--accent) 86%, black);
+  border-color: color-mix(in oklab, var(--accent) 86%, black);
+}
+/* The destructive reset action gets a subtle danger tint + extra separation
+   from the primary "Done" so it is not a near-miss for it (UX-03). */
+.sc-btn-reset {
+  border-color: color-mix(in oklab, var(--warn) 42%, var(--border));
+  color: color-mix(in oklab, var(--warn) 70%, var(--text-dim));
+}
+.sc-btn-reset:hover {
+  color: var(--warn);
+  border-color: color-mix(in oklab, var(--warn) 60%, var(--border));
+  background: color-mix(in oklab, var(--warn) 10%, transparent);
+}
+.sc-btn-danger {
+  color: var(--accent-ink);
+  background: var(--warn);
+  border-color: var(--warn);
+}
+.sc-btn-danger:hover {
+  background: color-mix(in oklab, var(--warn) 86%, black);
+  border-color: color-mix(in oklab, var(--warn) 86%, black);
+}
+/* Inline reset confirmation cluster (UX-03). */
+.sc-reset-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sc-reset-q { font-size: 12px; color: var(--text); }
+
+/* Forced-colors: keep the dialog boundary + controls perceivable. */
+@media (forced-colors: active) {
+  .sc-dialog { border-color: CanvasText; }
+  .sc-binding, .sc-btn, .sc-close, .sc-binding-fixed { border-color: ButtonText; }
+  .sc-binding.capturing { outline: 2px solid Highlight; }
+  /* The recording dot/label rely on accent color, which forced-colors flattens;
+     the "Recording" text remains as the non-color cue (UX-05). */
+  .sc-rec { color: Highlight; }
+  .sc-rec-dot { background: Highlight; }
+  .sc-btn-danger { border: 1px solid ButtonText; }
+}
+
 @media (max-width: 1080px) {
-  .body { grid-template-columns: 210px 1fr var(--chat-w, 360px); }
+  .body { grid-template-columns: var(--explorer-w, 210px) 1fr var(--chat-w, 360px); }
+  /* Keep the collapsed 2-column layout consistent at the narrow breakpoint
+     (UX-1 / A11Y-EXP-01) — the Viewer still fills the freed Explorer space. */
+  .body.explorer-hidden { grid-template-columns: 1fr var(--chat-w, 360px); }
+  /* Mirror for the Chat collapse at the narrow breakpoint. */
+  .body.chat-hidden { grid-template-columns: var(--explorer-w, 210px) 1fr; }
+  .body.explorer-hidden.chat-hidden { grid-template-columns: 1fr; }
 }
 
 /* ============================================================

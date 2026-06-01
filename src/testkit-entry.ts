@@ -38,6 +38,45 @@ export { MAX_BODY_LENGTH, MAX_NAME_LENGTH } from './shared/types.js';
 export { renderMarkdown, renderInline } from './renderer/lib/markdown.js';
 export { escapeHtml, highlightCode } from './renderer/lib/highlight.js';
 
+// Pure code-folding range computation (indentation-based; Law 1 safe — no
+// parsing/eval, operates only on raw text). Re-exported so the acceptance
+// suite can pin the fold geometry (nesting, blank-line inclusion, dedent
+// visibility, trivial-block skipping) without a DOM.
+export { computeFoldRanges, TAB_WIDTH } from './renderer/lib/fold.js';
+export type { FoldRange } from './renderer/lib/fold.js';
+
+// Pure close-file Escape coordination (A11Y-CLOSE-05). Re-exported so the
+// acceptance suite can pin the de-confliction contract (a consumed/tooltip
+// Escape never closes the file; a button-focused Escape rescues focus) without
+// a DOM. DOM-free decision logic only.
+export { decideEscapeClose } from './renderer/lib/closefile.js';
+export type { EscapeCloseAction, EscapeCloseFacts } from './renderer/lib/closefile.js';
+
+// Pure keyboard-shortcut core (FR-54). Re-exported so the acceptance suite can
+// pin combo normalization (modifier order, meta==ctrl, Escape, shift+letter),
+// override resolution, conflict detection, and binding validation without a
+// DOM. No React/DOM-instance state.
+export {
+  eventToCombo,
+  resolveBindings,
+  findConflict,
+  isValidBinding,
+  formatCombo,
+  diffOverrides,
+  planReassign,
+  isReserved,
+  isPlatformCritical,
+  RESERVED_COMBOS,
+  COMMANDS,
+  DEFAULT_BINDINGS,
+} from './renderer/lib/keybindings.js';
+export type {
+  CommandId,
+  CommandSpec,
+  KeyComboEvent,
+  ReassignPlan,
+} from './renderer/lib/keybindings.js';
+
 // Re-export the frozen types + error class so the suite can assert shapes
 // and catch typed domain errors without reaching into source paths.
 export { LoomError } from './shared/types.js';

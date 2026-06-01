@@ -307,6 +307,23 @@ export function Explorer({
             const isFlashing = flashing.has(node.path);
             const justMod = !isNew && jm.has(node.path);
 
+            // Activity suffix (NEW / just-modified) for the accessible name.
+            const activitySuffix = isNew
+              ? ' (new)'
+              : justMod
+                ? ' (just modified)'
+                : '';
+            // UX-01 / SC 3.2.4: re-activating the open file toggles it CLOSED.
+            // That toggle is otherwise silent + invisible, so the selected row
+            // advertises it — a hover title and an accessible-name suffix tell
+            // both sighted and AT users that activating again closes the file,
+            // turning an accidental-close hazard into an intentional action.
+            const rowLabel =
+              node.name +
+              activitySuffix +
+              (isSelected ? ' (selected — activate to close)' : '');
+            const rowTitle = isSelected ? `Close ${node.name}` : undefined;
+
             return (
               <div
                 key={node.path}
@@ -317,9 +334,8 @@ export function Explorer({
                 data-row-path={node.path}
                 role="treeitem"
                 aria-selected={isSelected}
-                aria-label={
-                  node.name + (isNew ? ' (new)' : justMod ? ' (just modified)' : '')
-                }
+                aria-label={rowLabel}
+                title={rowTitle}
                 tabIndex={tabIndex}
                 onClick={() => {
                   setActivePath(node.path);

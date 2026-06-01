@@ -351,6 +351,12 @@ export interface InitialState {
   counters: SessionCounters;
   /** True when the optional external ws observer feed is enabled (LOOM_WS=1). */
   wsEnabled: boolean;
+  /** RESOLVED keyboard shortcut bindings (defaults merged with the
+   *  persisted user overrides) — a full commandId -> canonical combo map
+   *  for all 7 customizable commands. The renderer dispatcher + Shortcuts
+   *  panel read this; the panel writes overrides back via SET_KEYBINDINGS.
+   *  Additive to the boot snapshot (mirrors `theme`). */
+  keybindings: Record<string, string>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -367,6 +373,13 @@ export type LiveState = 'LIVE' | 'PAUSED' | 'CAUGHT_UP';
 /** Persisted config file shape (userData/loom-config.json) (FR-37). */
 export interface LoomConfig {
   theme: Theme;
+  /** OPTIONAL user keyboard-shortcut OVERRIDES — a sparse map of
+   *  commandId -> canonical combo string, holding ONLY the bindings that
+   *  differ from the defaults. Absent/missing ⇒ all defaults. Persisted
+   *  exactly like `theme`: written via SET_KEYBINDINGS, read on boot into
+   *  the resolved InitialState.keybindings. Additive (a missing field on
+   *  an older config is tolerated as {}). */
+  keybindings?: Record<string, string>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -385,6 +398,9 @@ export const IPC = {
   GET_TREE: 'loom:tree:get',
   /** invoke(theme: Theme): void — persist the chosen theme. */
   SET_THEME: 'loom:theme:set',
+  /** invoke(map: Record<string,string>): void — persist user keyboard
+   *  shortcut OVERRIDES (sparse: only bindings differing from defaults). */
+  SET_KEYBINDINGS: 'loom:keybindings:set',
   /** invoke(state: LiveState): void — human toggled pause/live. */
   SET_LIVE_STATE: 'loom:live:set',
   /** send(LoomEvent) main->renderer — the live event feed. */
@@ -405,6 +421,9 @@ export interface LoomBridge {
   readFile(path: string): Promise<FileContent>;
   getTree(): Promise<FileNode>;
   setTheme(theme: Theme): Promise<void>;
+  /** Persist the user keyboard-shortcut OVERRIDES (sparse id -> combo map,
+   *  only entries differing from defaults). Mirrors setTheme. */
+  setKeybindings(map: Record<string, string>): Promise<void>;
   setLiveState(state: LiveState): Promise<void>;
   /** Subscribe to the live event feed. Returns an unsubscribe fn. */
   onEvent(handler: (e: LoomEvent) => void): () => void;

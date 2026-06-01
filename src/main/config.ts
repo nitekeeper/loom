@@ -14,24 +14,41 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { LoomConfig, Theme } from '../shared/types.js';
 
-export const DEFAULT_CONFIG: LoomConfig = { theme: 'dark' };
+export const DEFAULT_CONFIG: LoomConfig = { theme: 'dark', keybindings: {} };
 
 export const CONFIG_FILENAME = 'loom-config.json';
 
 export interface ConfigStore {
   read(): LoomConfig;
   setTheme(theme: Theme): void;
+  /** Persist the user keyboard-shortcut OVERRIDES (sparse id -> combo map).
+   *  Tolerates a non-object by storing {} (mirror of theme persistence). */
+  setKeybindings(map: Record<string, string>): void;
+}
+
+/** Coerce an unknown value into a sparse string->string keybinding override
+ *  map, dropping any non-string entries. Tolerates missing/corrupt input by
+ *  returning {} so a damaged config can never throw or blank a command. */
+function coerceKeybindings(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k] = v;
+    }
+  }
+  return out;
 }
 
 /** Validate + normalize an unknown parsed object into a LoomConfig. */
 function coerceConfig(parsed: unknown): LoomConfig {
+  let theme: Theme = DEFAULT_CONFIG.theme;
+  let keybindings: Record<string, string> = {};
   if (parsed && typeof parsed === 'object') {
-    const theme = (parsed as { theme?: unknown }).theme;
-    if (theme === 'dark' || theme === 'light') {
-      return { theme };
-    }
+    const t = (parsed as { theme?: unknown }).theme;
+    if (t === 'dark' || t === 'light') theme = t;
+    keybindings = coerceKeybindings((parsed as { keybindings?: unknown }).keybindings);
   }
-  return { ...DEFAULT_CONFIG };
+  return { theme, keybindings };
 }
 
 class FileConfigStore implements ConfigStore {
@@ -60,6 +77,11 @@ class FileConfigStore implements ConfigStore {
 
   setTheme(theme: Theme): void {
     this.current = { ...this.current, theme };
+    this.write(this.current);
+  }
+
+  setKeybindings(map: Record<string, string>): void {
+    this.current = { ...this.current, keybindings: coerceKeybindings(map) };
     this.write(this.current);
   }
 

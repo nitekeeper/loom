@@ -41,6 +41,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.READ_FILE,
   IPC.GET_TREE,
   IPC.SET_THEME,
+  IPC.SET_KEYBINDINGS,
   IPC.SET_LIVE_STATE,
 ]);
 
@@ -95,6 +96,9 @@ export function createBridge(): LoomBridge {
     },
     setTheme(theme: Theme): Promise<void> {
       return ipcRenderer.invoke(assertInvoke(IPC.SET_THEME), theme);
+    },
+    setKeybindings(map: Record<string, string>): Promise<void> {
+      return ipcRenderer.invoke(assertInvoke(IPC.SET_KEYBINDINGS), map);
     },
     setLiveState(state: LiveState): Promise<void> {
       return ipcRenderer.invoke(assertInvoke(IPC.SET_LIVE_STATE), state);

@@ -39,6 +39,18 @@ interface CaptureArgs {
   theme: string | null;
   /** Capture-only chat-pane width override (px), or null. */
   chatw: string | null;
+  /** Capture-only explorer-pane width override (px), or null. */
+  explorerw: string | null;
+  /** Capture-only flag to start with the Explorer collapsed. */
+  explorerHidden: boolean;
+  /** Capture-only flag to start with the Chat collapsed. */
+  chatHidden: boolean;
+  /** Capture-only flag to start a SOURCE file with all top-level folds
+   *  collapsed (so a headless screenshot can show the folded state). */
+  foldAll: boolean;
+  /** Capture-only flag to open the Keyboard Shortcuts panel on boot (so a
+   *  headless screenshot can prove the modal). */
+  shortcuts: boolean;
   replay: boolean;
 }
 
@@ -62,7 +74,16 @@ function parseCapture(argv: string[]): CaptureArgs | null {
     channel: flagValue(argv, '--channel'),
     inbox: flagValue(argv, '--inbox'),
     theme: flagValue(argv, '--theme'),
-    chatw: flagValue(argv, '--chatw'),
+    // UX-CHAT-03: standardize on the dashed `--chat-w` to match `--explorer-w`
+    // and the `--chat-hidden`/`--explorer-hidden` style. The legacy `--chatw`
+    // (no separator) is still accepted for back-compat so existing capture
+    // scripts keep working.
+    chatw: flagValue(argv, '--chat-w') ?? flagValue(argv, '--chatw'),
+    explorerw: flagValue(argv, '--explorer-w'),
+    explorerHidden: argv.includes('--explorer-hidden'),
+    chatHidden: argv.includes('--chat-hidden'),
+    foldAll: argv.includes('--fold-all'),
+    shortcuts: argv.includes('--shortcuts'),
     replay: argv.includes('--replay'),
   };
 }
@@ -78,6 +99,11 @@ function indexUrl(capture: CaptureArgs | null): string {
   if (capture.inbox) params.set('inbox', capture.inbox);
   if (capture.theme) params.set('theme', capture.theme);
   if (capture.chatw) params.set('chatw', capture.chatw);
+  if (capture.explorerw) params.set('explorerw', capture.explorerw);
+  if (capture.explorerHidden) params.set('explorerhidden', '1');
+  if (capture.chatHidden) params.set('chathidden', '1');
+  if (capture.foldAll) params.set('foldall', '1');
+  if (capture.shortcuts) params.set('shortcuts', '1');
   const qs = params.toString();
   return qs ? `${base}?${qs}` : base;
 }
@@ -147,8 +173,12 @@ interface Services {
   rootDir: string;
 }
 
-/** Boot every main-process service in the required order. */
-async function bootServices(): Promise<Services> {
+/** Boot every main-process service in the required order. When `capturing`,
+ *  a failed MCP bind (e.g. :7077 already held by a live Loom instance) is
+ *  tolerated: a headless screenshot does NOT serve the agent transport, so the
+ *  capture must still proceed rather than abort. A normal launch keeps the bind
+ *  fatal (the agent transport is required there). */
+async function bootServices(capturing = false): Promise<Services> {
   const rootDir = path.resolve(process.env.LOOM_ROOT ?? process.cwd());
 
   const db = createDb();
@@ -158,7 +188,15 @@ async function bootServices(): Promise<Services> {
   const engine = createEngine(db, bus);
 
   const mcp = createMcpServer(engine);
-  await mcp.start();
+  try {
+    await mcp.start();
+  } catch (err) {
+    if (!capturing) throw err;
+    // Capture-only graceful degradation: the screenshot path needs no MCP.
+    process.stderr.write(
+      `[loom:capture] MCP transport unavailable (${String(err)}); continuing for capture\n`,
+    );
+  }
 
   const sandbox = createSandbox(rootDir);
   const watcher = createWatcher(rootDir, bus);
@@ -191,6 +229,33 @@ function createMainWindow(services: Services): BrowserWindow {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   });
   return win;
+}
+
+/** Poll the renderer until `selector` matches an element, or `timeoutMs`
+ *  elapses. Used by the capture path to gate on real rendered content (e.g. a
+ *  pre-selected file's Viewer badge) so a deterministic screenshot never races
+ *  an async readFile. Resolves regardless on timeout so capture can't hang. */
+async function waitForRendererSelector(
+  win: BrowserWindow,
+  selector: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  const probe = `!!document.querySelector(${JSON.stringify(selector)})`;
+  while (Date.now() < deadline) {
+    if (win.isDestroyed()) return false;
+    try {
+      const found = (await win.webContents.executeJavaScript(probe)) as boolean;
+      if (found) return true;
+    } catch {
+      /* page mid-navigation; retry until the deadline */
+    }
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 50);
+      (t as { unref?: () => void }).unref?.();
+    });
+  }
+  return false;
 }
 
 /** Run the capture path (normal hidden window, WSLg-composited), then quit. */
@@ -248,11 +313,37 @@ async function runCapture(services: Services, capture: CaptureArgs): Promise<voi
       void win.loadURL(indexUrl(capture));
     });
 
+    // Deterministic content gate: when a file is pre-selected (--select), the
+    // Viewer loads its content via an async readFile IPC. Under --replay the
+    // renderer is busy folding the seeded session, so that read can resolve
+    // AFTER a fixed settle. Poll the renderer for the loaded-file signal
+    // (`.viewer .render-tag`, which only mounts once content !== null) so the
+    // capture waits for the file to actually render into the DOM. Bounded so a
+    // genuinely-absent file can't hang capture.
+    if (capture.select) {
+      await waitForRendererSelector(win, '.pane.viewer .render-tag', 8000);
+    }
+
     // Settle: a normal window emits no offscreen 'paint' event, so wait a
     // fixed interval for the renderer to fetch state + paint into WSLg's
     // backing surface before we grab the frame.
     await new Promise<void>((resolve) => {
       const t = setTimeout(resolve, CAPTURE_SETTLE_MS);
+      (t as { unref?: () => void }).unref?.();
+    });
+
+    // Compositor flush (WSLg): even once the DOM is fully updated,
+    // capturePage() on this non-offscreen window can grab a STALE composited
+    // frame (e.g. the empty Viewer painted before the file's content landed) —
+    // the DOM is correct but the rasterized surface lags. Force a fresh repaint
+    // (invalidate) and await two rAF turns so the new frame is committed and
+    // composited before we capture. This removes the residual screenshot race.
+    if (!win.isDestroyed()) win.webContents.invalidate();
+    await win.webContents.executeJavaScript(
+      'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))',
+    );
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 120);
       (t as { unref?: () => void }).unref?.();
     });
 
@@ -287,7 +378,7 @@ export function bootstrap(): void {
   app
     .whenReady()
     .then(async () => {
-      const services = await bootServices();
+      const services = await bootServices(capture !== null);
       if (capture) {
         await runCapture(services, capture);
       } else {
