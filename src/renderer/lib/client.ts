@@ -20,6 +20,7 @@
 import type {
   AgentView,
   ChannelView,
+  FileNode,
   InitialState,
   LiveState,
   LoomEvent,
@@ -71,6 +72,10 @@ export interface LoomStore {
   start(): Promise<void>;
 
   /* ---- observer actions (read-only navigation, FR-37/45/47/50) ---- */
+  /** Lazily load a directory's children (one level) and merge them into the
+   *  tree. Idempotent: a no-op if the dir is already loaded or a load is in
+   *  flight. Called when the user expands a folder in the Explorer. */
+  loadDir(path: string): void;
   selectFile(path: string): void;
   /** Dismiss the open file → return the Viewer to the empty state (FR-42). */
   closeFile(): void;
@@ -400,6 +405,62 @@ export function createStore(): LoomStore {
   /* Actions                                                          */
   /* ---------------------------------------------------------------- */
 
+  // Paths whose lazy READ_DIR is in flight, so a double-expand (click + key)
+  // can't fire two concurrent fetches.
+  const dirLoadsInFlight = new Set<string>();
+
+  /** Find a node by its root-relative path in the (possibly shallow) tree. */
+  const findNode = (node: FileNode, targetPath: string): FileNode | null => {
+    if (node.path === targetPath) return node;
+    for (const child of node.children ?? []) {
+      const found = findNode(child, targetPath);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  /** Immutably set `children` (and loaded:true) on the dir at `targetPath`,
+   *  returning a new tree (or the same reference when nothing changed so React
+   *  can skip the subtree). */
+  const withChildren = (
+    node: FileNode,
+    targetPath: string,
+    children: FileNode[],
+  ): FileNode => {
+    if (node.path === targetPath) {
+      return { ...node, children, loaded: true };
+    }
+    if (!node.children) return node;
+    let changed = false;
+    const next = node.children.map((child) => {
+      const updated = withChildren(child, targetPath, children);
+      if (updated !== child) changed = true;
+      return updated;
+    });
+    return changed ? { ...node, children: next } : node;
+  };
+
+  const loadDir = (path: string): void => {
+    if (vm === null) return;
+    if (dirLoadsInFlight.has(path)) return;
+    const node = findNode(vm.tree, path);
+    // Only load real, not-yet-loaded directories.
+    if (node === null || node.type !== 'dir' || node.loaded === true) return;
+    dirLoadsInFlight.add(path);
+    void window.loom
+      .readDir(path)
+      .then((children) => {
+        dirLoadsInFlight.delete(path);
+        if (vm === null) return;
+        set({ tree: withChildren(vm.tree, path, children) });
+      })
+      .catch(() => {
+        // A vanished/again-unreadable dir: clear the in-flight guard so a
+        // later retry can re-attempt. The folder simply stays empty.
+        dirLoadsInFlight.delete(path);
+      });
+  };
+
   const selectFile = (path: string): void => {
     set({ selected: path });
   };
@@ -457,6 +518,7 @@ export function createStore(): LoomStore {
     getViewModel: () => vm,
     subscribe,
     start,
+    loadDir,
     selectFile,
     closeFile,
     setActiveChannel,

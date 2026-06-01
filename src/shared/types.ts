@@ -255,8 +255,13 @@ export interface FileNode {
   ext: string;
   /** Present for files; classification used by the Explorer icon + Viewer. */
   kind?: FileKind;
-  /** Present for dirs; children sorted dirs-first then alpha. */
+  /** Present for dirs; children sorted dirs-first then alpha. A dir is
+   *  delivered SHALLOW (children omitted, loaded:false) until the user expands
+   *  it; the renderer then fetches its children via READ_DIR. */
   children?: FileNode[];
+  /** Dirs only: true once this directory's children have been read. A lazily-
+   *  delivered (unexpanded) dir is loaded:false with no `children` array. */
+  loaded?: boolean;
   /** File size in bytes (files only). */
   size?: number;
   /** Last modified epoch ms (files only). */
@@ -469,8 +474,11 @@ export const IPC = {
   GET_INITIAL_STATE: 'loom:state:get',
   /** invoke(path: string): FileContent — read+dispatch a sandbox file. */
   READ_FILE: 'loom:file:read',
-  /** invoke(): FileNode — re-read the sandbox tree. */
+  /** invoke(): FileNode — re-read the (shallow) sandbox tree. */
   GET_TREE: 'loom:tree:get',
+  /** invoke(path: string): FileNode[] — read ONE level of a directory's
+   *  children (lazy expand). The path is the root-relative POSIX dir path. */
+  READ_DIR: 'loom:dir:read',
   /** invoke(q: SearchQuery): SearchResults — project-wide content search,
    *  confined to the sandbox root + bounded (Law 1/3). */
   SEARCH: 'loom:search',
@@ -505,6 +513,9 @@ export interface LoomBridge {
   getInitialState(): Promise<InitialState>;
   readFile(path: string): Promise<FileContent>;
   getTree(): Promise<FileNode>;
+  /** Read ONE level of a directory's children for lazy expansion. `path` is
+   *  the root-relative POSIX dir path (the empty string is the root). */
+  readDir(path: string): Promise<FileNode[]>;
   /** Project-wide content search over the sandbox root (confined + bounded). */
   search(q: SearchQuery): Promise<SearchResults>;
   setTheme(theme: Theme): Promise<void>;

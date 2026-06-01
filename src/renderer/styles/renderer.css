@@ -425,7 +425,7 @@ html[data-platform='darwin'] .titlebar [role='heading'] {
 /* ============================================================
    Explorer
    ============================================================ */
-.tree { overflow: auto; padding: 6px 6px 16px; flex: 1; }
+.tree { overflow: auto; padding: 6px 6px 16px; flex: 1; position: relative; }
 .row {
   display: flex; align-items: center; gap: 7px;
   height: 28px; padding: 0 8px; border-radius: 7px; cursor: pointer;

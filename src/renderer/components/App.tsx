@@ -1230,6 +1230,10 @@ export function App(): JSX.Element {
             rootName={vm.rootName}
             tree={vm.tree}
             selected={vm.selected}
+            // Lazily fetch a folder's children the first time it is expanded
+            // (idempotent in the store) so subfolders are never read until the
+            // user opens them.
+            onExpandDir={(path) => store.loadDir(path)}
             onOpenSearch={openSearch}
             searchBtnRef={explorerSearchBtnRef}
             // Re-activating the ALREADY-open file toggles it closed (FR-42);

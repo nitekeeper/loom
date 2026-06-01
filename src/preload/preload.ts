@@ -42,6 +42,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.GET_INITIAL_STATE,
   IPC.READ_FILE,
   IPC.GET_TREE,
+  IPC.READ_DIR,
   IPC.SEARCH,
   IPC.SET_THEME,
   IPC.SET_KEYBINDINGS,
@@ -101,6 +102,11 @@ export function createBridge(): LoomBridge {
     },
     getTree(): Promise<FileNode> {
       return ipcRenderer.invoke(assertInvoke(IPC.GET_TREE));
+    },
+    readDir(dirPath: string): Promise<FileNode[]> {
+      // The path is forwarded as-is; the main-process sandbox is the authority
+      // on containment (Law 3). The renderer cannot widen scope.
+      return ipcRenderer.invoke(assertInvoke(IPC.READ_DIR), dirPath);
     },
     search(q: SearchQuery): Promise<SearchResults> {
       // The query is forwarded as-is; the main-process sandbox is the authority

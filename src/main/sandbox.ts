@@ -40,8 +40,17 @@ export interface Sandbox {
   readonly rootName: string;
   /** Resolve a root-relative path to an absolute one, or throw if it escapes. */
   resolveInRoot(relPath: string): string;
-  /** Build the full root-scoped tree. */
+  /** Build the SHALLOW root tree: the root plus its first level of children
+   *  only. Directories are returned unloaded (loaded:false); deeper levels are
+   *  fetched on demand via listDir() when the user expands a folder. */
   buildTree(): FileNode;
+  /** One level of children for a contained directory (root-relative POSIX
+   *  path). Used to lazily expand a folder in the explorer. */
+  listDir(relPath: string): FileNode[];
+  /** Depth-first walk of every FILE under the root (confined + skip-filtered),
+   *  bounded by `maxFiles`. Search's traversal primitive — does NOT build the
+   *  full tree. */
+  walkFiles(maxFiles: number): FileNode[];
   /** Read + dispatch a file for the Viewer (text only for renderable kinds). */
   readFile(relPath: string): FileContent;
 }
@@ -229,95 +238,145 @@ export function createSandbox(rootArg: string): Sandbox {
     return nativeToPosixRel(root, abs, path);
   }
 
-  function buildNode(abs: string, name: string, depth: number): FileNode | null {
-    let st: Stats;
-    try {
-      // stat (FOLLOWS symlinks). Symlink ESCAPES are already dropped by the
-      // realpathExistingPrefix + isInsideRoot guard in the CALLER (buildTree /
-      // the recursive loop below) BEFORE we ever recurse here, and again
-      // physically in resolveInRoot for reads (Law 3). This stat does NOT guard
-      // containment — it only CLASSIFIES file vs dir for a path already proven
-      // contained. (Same on Windows: NTFS symlinks/junctions are likewise
-      // pre-filtered by the caller's realpath check, not by this stat.)
-      st = statSync(abs, { throwIfNoEntry: true });
-    } catch {
-      return null; // vanished mid-walk; skip silently
-    }
-
-    const relPosix = toRelPosix(abs);
-
-    if (st.isDirectory()) {
-      const children: FileNode[] = [];
-      if (depth < MAX_TREE_DEPTH) {
-        let entries: Dirent[];
-        try {
-          entries = readdirSync(abs, { withFileTypes: true });
-        } catch {
-          entries = [];
-        }
-        for (const entry of entries) {
-          const entryName = entry.name;
-          if (shouldSkip(entryName)) continue;
-          const childAbs = path.join(abs, entryName);
-          // Containment guard: an entry that resolves (via symlink) out of
-          // the root is dropped from the tree entirely (Law 3).
-          const childPhysical = realpathExistingPrefix(childAbs);
-          if (childPhysical !== null && !isInsideRoot(childPhysical)) continue;
-          const child = buildNode(childAbs, entryName, depth + 1);
-          if (child) children.push(child);
-        }
-        sortNodes(children);
-      }
-      return {
-        type: 'dir',
-        name,
-        path: relPosix,
-        ext: '',
-        children,
-      };
-    }
-
-    if (st.isFile()) {
-      return {
-        type: 'file',
-        name,
-        path: relPosix,
-        ext: extensionOf(name),
-        kind: kindOf(name),
-        size: st.size,
-        mtimeMs: st.mtimeMs,
-      };
-    }
-
-    // Sockets / FIFOs / devices / dangling symlinks: not representable.
-    return null;
-  }
-
-  function buildTree(): FileNode {
+  /** Read ONE directory level: its immediate entries, skip-filtered and
+   *  containment-checked (Law 3), each classified via stat (which follows
+   *  symlinks for a path already proven contained), then sorted dirs-first
+   *  then case-insensitive alpha. This is the shared primitive behind
+   *  listChildren() / buildTree() / listDir() / walkFiles(), so all four apply
+   *  identical hygiene + ordering. Sockets/FIFOs/devices/dangling symlinks are
+   *  dropped (not representable). */
+  function classifyEntries(
+    absDir: string,
+  ): Array<{ name: string; abs: string; st: Stats }> {
     let entries: Dirent[];
     try {
-      entries = readdirSync(root, { withFileTypes: true });
+      entries = readdirSync(absDir, { withFileTypes: true });
     } catch {
-      entries = [];
+      return [];
     }
-    const children: FileNode[] = [];
+    const out: Array<{ name: string; abs: string; st: Stats }> = [];
     for (const entry of entries) {
-      const entryName = entry.name;
-      if (shouldSkip(entryName)) continue;
-      const childAbs = path.join(root, entryName);
+      const name = entry.name;
+      if (shouldSkip(name)) continue;
+      const childAbs = path.join(absDir, name);
+      // Containment guard: an entry that resolves (via symlink) out of the
+      // root is dropped entirely (Law 3).
       const childPhysical = realpathExistingPrefix(childAbs);
       if (childPhysical !== null && !isInsideRoot(childPhysical)) continue;
-      const child = buildNode(childAbs, entryName, 1);
-      if (child) children.push(child);
+      let st: Stats;
+      try {
+        // FOLLOWS symlinks — only CLASSIFIES a path already proven contained.
+        st = statSync(childAbs, { throwIfNoEntry: true });
+      } catch {
+        continue; // vanished mid-walk; skip silently
+      }
+      if (!st.isDirectory() && !st.isFile()) continue;
+      out.push({ name, abs: childAbs, st });
     }
-    sortNodes(children);
+    out.sort((a, b) => {
+      const ad = a.st.isDirectory();
+      const bd = b.st.isDirectory();
+      if (ad !== bd) return ad ? -1 : 1;
+      const an = a.name.toLowerCase();
+      const bn = b.name.toLowerCase();
+      if (an < bn) return -1;
+      if (an > bn) return 1;
+      // Tie-break on exact name so the order is fully deterministic.
+      if (a.name < b.name) return -1;
+      if (a.name > b.name) return 1;
+      return 0;
+    });
+    return out;
+  }
+
+  /** Build a FILE node with full metadata. */
+  function fileNode(name: string, relPosix: string, st: Stats): FileNode {
+    return {
+      type: 'file',
+      name,
+      path: relPosix,
+      ext: extensionOf(name),
+      kind: kindOf(name),
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+    };
+  }
+
+  /** Build a SHALLOW directory node: its children are NOT read yet
+   *  (loaded:false, no `children` array). The renderer fetches them via
+   *  listDir() only when the user expands the folder — so opening a repo never
+   *  reads (or renders) files in unopened subfolders. */
+  function dirNodeShallow(name: string, relPosix: string): FileNode {
+    return {
+      type: 'dir',
+      name,
+      path: relPosix,
+      ext: '',
+      loaded: false,
+    };
+  }
+
+  /** The immediate children of `absDir`, one level deep — directories shallow
+   *  (unloaded), files fully described. */
+  function listChildren(absDir: string): FileNode[] {
+    return classifyEntries(absDir).map((e) =>
+      e.st.isDirectory()
+        ? dirNodeShallow(e.name, toRelPosix(e.abs))
+        : fileNode(e.name, toRelPosix(e.abs), e.st),
+    );
+  }
+
+  /** The root node plus ONLY its first level of children (FR-2). Deeper levels
+   *  load lazily via listDir() on expand. The root itself is marked loaded. */
+  function buildTree(): FileNode {
     return {
       type: 'dir',
       name: rootName,
       path: '',
       ext: '',
-      children,
+      loaded: true,
+      children: listChildren(root),
     };
+  }
+
+  /** One level of children for a contained directory, addressed by its
+   *  root-relative POSIX path (the renderer contract). Powers lazy expansion.
+   *  Throws (via resolveInRoot) on any escape; returns [] when the path is not
+   *  a directory (e.g. it vanished, or it is a file). */
+  function listDir(relPath: string): FileNode[] {
+    const abs = resolveInRoot(relPath);
+    let st: Stats;
+    try {
+      st = statSync(abs, { throwIfNoEntry: true });
+    } catch {
+      return [];
+    }
+    if (!st.isDirectory()) return [];
+    return listChildren(abs);
+  }
+
+  /** Depth-first collect of every FILE under the root (confined + skip-
+   *  filtered), in the same dirs-first / alpha order the tree shows, bounded by
+   *  `maxFiles`. This is SEARCH's traversal primitive: it walks the filesystem
+   *  on the fly and NEVER materializes the full directory tree, so the explorer
+   *  tree can stay shallow + lazy. Returns FILE nodes only (callers match file
+   *  NAMES via node.path and CONTENT via readFile()). */
+  function walkFiles(maxFiles: number): FileNode[] {
+    const out: FileNode[] = [];
+    const visit = (absDir: string, depth: number): void => {
+      if (out.length >= maxFiles) return;
+      if (depth > MAX_TREE_DEPTH) return;
+      for (const e of classifyEntries(absDir)) {
+        if (out.length >= maxFiles) return;
+        if (e.st.isDirectory()) {
+          visit(e.abs, depth + 1);
+        } else {
+          out.push(fileNode(e.name, toRelPosix(e.abs), e.st));
+        }
+      }
+    };
+    visit(root, 1);
+    return out;
   }
 
   function readFile(relPath: string): FileContent {
@@ -358,6 +417,8 @@ export function createSandbox(rootArg: string): Sandbox {
     rootName,
     resolveInRoot,
     buildTree,
+    listDir,
+    walkFiles,
     readFile,
   };
 }
@@ -373,19 +434,4 @@ function shouldSkip(name: string): boolean {
   // Skip all dotfiles/dotdirs (secrets, caches) but never '.'/'..'.
   if (name.startsWith('.')) return true;
   return false;
-}
-
-/** Sort: directories first, then case-insensitive alpha, stable. */
-function sortNodes(nodes: FileNode[]): void {
-  nodes.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-    const an = a.name.toLowerCase();
-    const bn = b.name.toLowerCase();
-    if (an < bn) return -1;
-    if (an > bn) return 1;
-    // Tie-break on exact name so the order is fully deterministic.
-    if (a.name < b.name) return -1;
-    if (a.name > b.name) return 1;
-    return 0;
-  });
 }

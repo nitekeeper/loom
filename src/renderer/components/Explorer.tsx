@@ -25,6 +25,11 @@ export interface ExplorerProps {
   tree: FileNode;
   selected: string | null;
   onSelect(path: string): void;
+  /** Fetch a directory's children on expand (lazy load). Fired with the dir's
+   *  root-relative path whenever the user opens a folder; the store loads its
+   *  one level of children and merges them into `tree`. Idempotent in the
+   *  store, so re-opening an already-loaded dir is a no-op. */
+  onExpandDir?(path: string): void;
   /** Paths currently flashing (recent FileEvent). */
   flashing: ReadonlySet<string>;
   /** Paths recently changed — persistent "just modified" dot (FR-39c). */
@@ -96,24 +101,36 @@ interface FlatRow {
   open?: boolean;
 }
 
-/** Flatten the tree into visible rows, honoring the open/closed set.
- *  A directory defaults to OPEN unless its path is in `closed`. */
+/** Flatten the tree into visible rows, honoring the `open` set. Directories
+ *  default to COLLAPSED: a dir is expanded only when its path is in `open`.
+ *  This keeps the rendered row list tiny on a large repo (top level only) and
+ *  — paired with lazy loading — means children are never fetched or laid out
+ *  until the user actually opens the folder. */
 function flatten(
   roots: readonly FileNode[],
-  closed: ReadonlySet<string>,
+  open: ReadonlySet<string>,
   depth: number,
   out: FlatRow[],
 ): void {
   for (const node of roots) {
     if (node.type === 'dir') {
-      const open = !closed.has(node.path);
-      out.push({ node, depth, isDir: true, open });
-      if (open) flatten(node.children ?? [], closed, depth + 1, out);
+      const isOpen = open.has(node.path);
+      out.push({ node, depth, isDir: true, open: isOpen });
+      // children is undefined until the dir is lazily loaded; `?? []` keeps a
+      // freshly-opened-but-not-yet-loaded dir rendering as empty until the
+      // READ_DIR result arrives and repopulates it.
+      if (isOpen) flatten(node.children ?? [], open, depth + 1, out);
     } else {
       out.push({ node, depth, isDir: false });
     }
   }
 }
+
+/** Fixed row height (px) — must match `.row { height }` in renderer.css. Used
+ *  to window the flattened list so only on-screen rows are in the DOM. */
+const ROW_H = 28;
+/** Extra rows rendered above/below the viewport so fast scrolls stay smooth. */
+const OVERSCAN = 8;
 
 function FileIcon({ node }: { node: FileNode }): JSX.Element {
   const ic = iconFor(node);
@@ -129,6 +146,7 @@ export function Explorer({
   tree,
   selected,
   onSelect,
+  onExpandDir,
   flashing,
   justModified,
   newlyAdded,
@@ -138,29 +156,70 @@ export function Explorer({
   const jm = justModified ?? new Set<string>();
   const na = newlyAdded ?? new Set<string>();
 
-  // Directory open/closed state lives here (was per-TreeNode useState) so the
-  // flattened visible-row list — and thus arrow navigation — stays correct.
-  // Default OPEN: a path is only in this set once explicitly collapsed.
-  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set<string>());
+  // Which directories are EXPANDED. Default COLLAPSED (empty set): a dir shows
+  // its children only once the user opens it — so a freshly-opened repo renders
+  // just its top level, and lazy loading fetches deeper levels on demand.
+  const [open, setOpen] = useState<ReadonlySet<string>>(new Set<string>());
   // The roving-tabindex active row path (the single row with tabIndex 0).
   const [activePath, setActivePath] = useState<string | null>(null);
 
   const roots = tree.children ?? [];
   const rows: FlatRow[] = [];
-  flatten(roots, closed, 0, rows);
+  flatten(roots, open, 0, rows);
+  // Stable handle to the latest rows for the (memoized) focusPath, which must
+  // locate a row by path AFTER a virtualized scroll without re-creating itself.
+  const rowsRef = useRef<FlatRow[]>(rows);
+  rowsRef.current = rows;
 
   const treeRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  const toggleDir = useCallback((path: string, want?: boolean): void => {
-    setClosed((prev) => {
-      const next = new Set(prev);
-      const isClosed = next.has(path);
-      const shouldClose = want === undefined ? !isClosed : !want;
-      if (shouldClose) next.add(path);
-      else next.delete(path);
-      return next;
-    });
+  // --- virtualization: track scroll + viewport so only on-screen rows render.
+  // Defaults are generous so the FIRST paint (before refs/measurements exist)
+  // still windows rather than dumping every row into the DOM — that initial
+  // all-rows render is exactly what froze a large tree.
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(800);
+
+  useEffect(() => {
+    const el = treeRef.current;
+    if (!el) return;
+    const update = (): void => {
+      setScrollTop(el.scrollTop);
+      setViewportH(el.clientHeight);
+    };
+    update();
+    el.addEventListener('scroll', update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('scroll', update);
+      ro.disconnect();
+    };
   }, []);
+
+  // Expand/collapse a directory. Opening fires onExpandDir so the store can
+  // lazily fetch the dir's children (idempotent there). `want` forces a state.
+  const toggleDir = useCallback(
+    (path: string, want?: boolean): void => {
+      let didOpen = false;
+      setOpen((prev) => {
+        const isOpen = prev.has(path);
+        const shouldOpen = want === undefined ? !isOpen : want;
+        if (shouldOpen === isOpen) {
+          didOpen = shouldOpen;
+          return prev;
+        }
+        const next = new Set(prev);
+        if (shouldOpen) next.add(path);
+        else next.delete(path);
+        didOpen = shouldOpen;
+        return next;
+      });
+      if (didOpen) onExpandDir?.(path);
+    },
+    [onExpandDir],
+  );
 
   // Keep the active row valid as the visible set changes (e.g. a collapse
   // hides the previously-active row). Fall back to the first row.
@@ -168,14 +227,41 @@ export function Explorer({
   const effectiveActive =
     activeIndex >= 0 ? activePath : (rows[0]?.node.path ?? null);
 
-  // Move focus to the row element for the given path (roving tabindex).
+  // Set when a keyboard move targets a row that may be windowed-out of the DOM;
+  // the focus effect below grabs it once it renders.
+  const pendingFocusRef = useRef<string | null>(null);
+
+  // Move focus to the row for `path` (roving tabindex). With virtualization the
+  // target row may not be mounted yet, so we first scroll it into range, then
+  // defer the actual .focus() to the effect that runs after the render commits.
   const focusPath = useCallback((path: string): void => {
     setActivePath(path);
+    pendingFocusRef.current = path;
+    const el = treeRef.current;
+    const idx = rowsRef.current.findIndex((r) => r.node.path === path);
+    if (el && idx >= 0) {
+      const listTop = listRef.current?.offsetTop ?? 0;
+      const rowTop = listTop + idx * ROW_H;
+      const rowBottom = rowTop + ROW_H;
+      if (rowTop < el.scrollTop) el.scrollTop = rowTop;
+      else if (rowBottom > el.scrollTop + el.clientHeight) {
+        el.scrollTop = rowBottom - el.clientHeight;
+      }
+    }
+  }, []);
+
+  // After each render, focus the pending row once it exists in the DOM.
+  useEffect(() => {
+    const path = pendingFocusRef.current;
+    if (path === null) return;
     const el = treeRef.current?.querySelector<HTMLElement>(
       `[data-row-path="${CSS.escape(path)}"]`,
     );
-    el?.focus();
-  }, []);
+    if (el) {
+      el.focus();
+      pendingFocusRef.current = null;
+    }
+  });
 
   const onRowKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>, index: number): void => {
@@ -253,6 +339,19 @@ export function Explorer({
     }
   }, [activeIndex, rows]);
 
+  // Virtualization window: only rows intersecting the viewport (± overscan) are
+  // mounted. `.tree` is position:relative, so the list wrapper's offsetTop is
+  // its distance below the scroll-content top (the sandbox notice) — subtract
+  // it from scrollTop to get the scroll position WITHIN the list.
+  const listOffset = listRef.current?.offsetTop ?? 0;
+  const relTop = Math.max(0, scrollTop - listOffset);
+  const firstVisible = Math.max(0, Math.floor(relTop / ROW_H) - OVERSCAN);
+  const lastVisible = Math.min(
+    rows.length,
+    Math.ceil((relTop + viewportH) / ROW_H) + OVERSCAN,
+  );
+  const visibleRows = rows.slice(firstVisible, lastVisible);
+
   return (
     <div className="pane explorer">
       <div className="pane-head">
@@ -303,48 +402,67 @@ export function Explorer({
             <span>This folder is empty.</span>
           </div>
         ) : (
-          rows.map((row, index) => {
-            const { node, depth, isDir, open } = row;
-            const pad = { paddingLeft: 8 + depth * 14 };
-            // Roving tabindex: exactly one row (the active one) is tabbable.
-            const tabIndex = node.path === effectiveActive ? 0 : -1;
+          <div
+            ref={listRef}
+            className="tree-list"
+            // Full-height spacer so the scrollbar reflects ALL rows even though
+            // only the visible window is mounted; each row is absolutely placed
+            // at its index * ROW_H.
+            style={{ position: 'relative', height: rows.length * ROW_H }}
+          >
+            {visibleRows.map((row, i) => {
+              const index = firstVisible + i;
+              const { node, depth, isDir, open } = row;
+              const pad = {
+                paddingLeft: 8 + depth * 14,
+                position: 'absolute' as const,
+                top: index * ROW_H,
+                left: 0,
+                right: 0,
+                height: ROW_H,
+              };
+              // Roving tabindex: exactly one row (the active one) is tabbable.
+              const tabIndex = node.path === effectiveActive ? 0 : -1;
 
-            if (isDir) {
-              return (
-                <div
-                  key={node.path}
-                  className="row"
-                  style={pad}
-                  data-row-path={node.path}
-                  role="treeitem"
-                  aria-expanded={open}
-                  aria-label={`${node.name} folder`}
-                  tabIndex={tabIndex}
-                  onClick={() => {
-                    setActivePath(node.path);
-                    toggleDir(node.path);
-                  }}
-                  onFocus={() => setActivePath(node.path)}
-                  onKeyDown={(e) => onRowKeyDown(e, index)}
-                >
-                  <span className={'twirl' + (open ? ' open' : '')} aria-hidden="true">
-                    ▶
-                  </span>
-                  <span
-                    className="fileicon"
-                    style={{ background: 'transparent', color: 'var(--text-faint)' }}
-                    aria-hidden="true"
+              if (isDir) {
+                return (
+                  <div
+                    key={node.path}
+                    className="row"
+                    style={pad}
+                    data-row-path={node.path}
+                    role="treeitem"
+                    aria-expanded={open}
+                    aria-label={`${node.name} folder`}
+                    tabIndex={tabIndex}
+                    onClick={() => {
+                      setActivePath(node.path);
+                      toggleDir(node.path);
+                    }}
+                    onFocus={() => setActivePath(node.path)}
+                    onKeyDown={(e) => onRowKeyDown(e, index)}
                   >
-                    ▤
-                  </span>
-                  <span className="fname" style={{ fontWeight: 600, color: 'var(--text-dim)' }}>
-                    {node.name}
-                  </span>
-                </div>
-              );
-            }
+                    <span className={'twirl' + (open ? ' open' : '')} aria-hidden="true">
+                      ▶
+                    </span>
+                    <span
+                      className="fileicon"
+                      style={{ background: 'transparent', color: 'var(--text-faint)' }}
+                      aria-hidden="true"
+                    >
+                      ▤
+                    </span>
+                    <span
+                      className="fname"
+                      style={{ fontWeight: 600, color: 'var(--text-dim)' }}
+                    >
+                      {node.name}
+                    </span>
+                  </div>
+                );
+              }
 
-            const isSelected = selected === node.path;
+              const isSelected = selected === node.path;
             const isNew = na.has(node.path);
             const isFlashing = flashing.has(node.path);
             const justMod = !isNew && jm.has(node.path);
@@ -398,8 +516,9 @@ export function Explorer({
                   />
                 )}
               </div>
-            );
-          })
+              );
+            })}
+          </div>
         )}
       </div>
     </div>

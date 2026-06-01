@@ -193,11 +193,11 @@ interface Services {
   rootDir: string;
 }
 
-/** Boot every main-process service in the required order. When `capturing`,
- *  a failed MCP bind (e.g. :7077 already held by a live Loom instance) is
- *  tolerated: a headless screenshot does NOT serve the agent transport, so the
- *  capture must still proceed rather than abort. A normal launch keeps the bind
- *  fatal (the agent transport is required there).
+/** Boot every main-process service in the required order. A failed MCP bind
+ *  (e.g. :7077 already held by a live Loom instance, even after scanning the
+ *  next ports) is tolerated on BOTH paths: a headless capture needs no agent
+ *  transport, and a normal launch must still open the viewer for the human
+ *  rather than crash. The bind is therefore never fatal — see the catch below.
  *
  *  `rootDir` is the already-resolved + validated sandbox root (Law 3 boundary).
  *  Resolution happens in resolveRoot() before boot so the (possibly async,
@@ -213,10 +213,19 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   try {
     await mcp.start();
   } catch (err) {
-    if (!capturing) throw err;
-    // Capture-only graceful degradation: the screenshot path needs no MCP.
+    // The agent transport scans MCP_PORT..+N for a free port; if EVERY
+    // candidate is held (or the bind otherwise fails), DO NOT abort the
+    // launch — the human viewer must still open. We degrade gracefully on
+    // BOTH the capture path and a normal launch: a missing agent transport
+    // means agents can't connect to THIS instance (the one holding the port
+    // already serves them), but the file viewer + live feed work regardless.
+    // Previously a normal launch rethrew here, so a stale/second instance
+    // made the whole window fail to appear.
+    const label = capturing ? 'loom:capture' : 'loom:boot';
     process.stderr.write(
-      `[loom:capture] MCP transport unavailable (${String(err)}); continuing for capture\n`,
+      `[${label}] MCP agent transport unavailable (${String(err)}); ` +
+        `the viewer will open but agents cannot connect to this instance. ` +
+        `This usually means another Loom instance is already running.\n`,
     );
   }
 

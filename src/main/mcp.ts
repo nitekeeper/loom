@@ -99,9 +99,31 @@ interface Session {
   caller: Caller;
 }
 
+/** How many consecutive ports to try (MCP_PORT..MCP_PORT+N-1) before giving
+ *  up, when the preferred port is already held — e.g. by a second Loom
+ *  instance. The viewer must still open even if every candidate is taken
+ *  (main.ts degrades gracefully); the scan just lets a second instance get a
+ *  working agent transport on the next free port instead of crashing. */
+const MAX_PORT_ATTEMPTS = 16;
+
 export function createMcpServer(engine: LoomEngine): McpServerHandle {
   const sessions = new Map<string, Session>();
   let http: HttpServer | undefined;
+  // The port actually bound (may differ from MCP_PORT if it was in use). The
+  // Host/Origin allow-lists are derived from THIS value so SEC-1 stays correct
+  // on whatever port we end up on.
+  let boundPort = MCP_PORT;
+
+  /** Loopback Host headers accepted on the CURRENT bound port (SEC-1). */
+  const allowedHostsNow = (): string[] => [
+    `127.0.0.1:${boundPort}`,
+    `localhost:${boundPort}`,
+  ];
+  /** Loopback Origins accepted on the CURRENT bound port (SEC-1). */
+  const allowedOriginsNow = (): string[] => [
+    `http://127.0.0.1:${boundPort}`,
+    `http://localhost:${boundPort}`,
+  ];
 
   /** Wrap an engine call: serialize the result as JSON text content, and
    *  map a LoomError to an MCP tool error carrying its code (OQ-4). */
@@ -320,14 +342,14 @@ export function createMcpServer(engine: LoomEngine): McpServerHandle {
   ): boolean {
     const hostHeader = req.headers['host'];
     const host = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
-    if (host === undefined || !ALLOWED_HOSTS.includes(host)) {
+    if (host === undefined || !allowedHostsNow().includes(host)) {
       res.writeHead(403).end('forbidden host');
       return true;
     }
     const originHeader = req.headers['origin'];
     const origin = Array.isArray(originHeader) ? originHeader[0] : originHeader;
     // Only validate Origin when present: non-browser loopback clients omit it.
-    if (origin !== undefined && origin !== '' && !ALLOWED_ORIGINS.includes(origin)) {
+    if (origin !== undefined && origin !== '' && !allowedOriginsNow().includes(origin)) {
       res.writeHead(403).end('forbidden origin');
       return true;
     }
@@ -370,8 +392,8 @@ export function createMcpServer(engine: LoomEngine): McpServerHandle {
         // when enableDnsRebindingProtection is true; binding to 127.0.0.1
         // alone does NOT stop a page already running on this machine.
         enableDnsRebindingProtection: true,
-        allowedHosts: [...ALLOWED_HOSTS],
-        allowedOrigins: [...ALLOWED_ORIGINS],
+        allowedHosts: allowedHostsNow(),
+        allowedOrigins: allowedOriginsNow(),
         onsessioninitialized: (newId: string) => {
           sessions.set(newId, { transport, server, caller });
         },
@@ -390,28 +412,51 @@ export function createMcpServer(engine: LoomEngine): McpServerHandle {
   }
 
   return {
-    port: MCP_PORT,
+    get port(): number {
+      return boundPort;
+    },
 
     start(): Promise<void> {
       return new Promise<void>((resolve, reject) => {
-        const srv = createServer((req, res) => {
-          handle(req, res).catch((err: unknown) => {
-            // SEC-3: an over-cap body surfaces as PayloadTooLarge -> 413.
-            if (err instanceof PayloadTooLarge) {
-              if (!res.headersSent) res.writeHead(413);
-              res.end('payload too large');
+        const makeServer = (): HttpServer =>
+          createServer((req, res) => {
+            handle(req, res).catch((err: unknown) => {
+              // SEC-3: an over-cap body surfaces as PayloadTooLarge -> 413.
+              if (err instanceof PayloadTooLarge) {
+                if (!res.headersSent) res.writeHead(413);
+                res.end('payload too large');
+                return;
+              }
+              const message = err instanceof Error ? err.message : String(err);
+              if (!res.headersSent) res.writeHead(500);
+              res.end(`internal error: ${message}`);
+            });
+          });
+
+        // Try MCP_PORT first, then the next few ports if it is already held
+        // (typically by another live Loom instance). EADDRINUSE retries on the
+        // next port; any other listen error (or exhausting the range) rejects
+        // so the caller can decide whether to degrade or fail.
+        const tryListen = (port: number, attempt: number): void => {
+          const srv = makeServer();
+          const onError = (err: NodeJS.ErrnoException): void => {
+            srv.removeListener('error', onError);
+            srv.close();
+            if (err.code === 'EADDRINUSE' && attempt + 1 < MAX_PORT_ATTEMPTS) {
+              tryListen(port + 1, attempt + 1);
               return;
             }
-            const message = err instanceof Error ? err.message : String(err);
-            if (!res.headersSent) res.writeHead(500);
-            res.end(`internal error: ${message}`);
+            reject(err);
+          };
+          srv.on('error', onError);
+          srv.listen(port, MCP_HOST, () => {
+            srv.removeListener('error', onError);
+            boundPort = port;
+            http = srv;
+            resolve();
           });
-        });
-        srv.on('error', reject);
-        srv.listen(MCP_PORT, MCP_HOST, () => {
-          http = srv;
-          resolve();
-        });
+        };
+        tryListen(MCP_PORT, 0);
       });
     },
 

@@ -95,24 +95,6 @@ const MAX_FILE_NAME_MATCHES = 200;
 const TEXT_KINDS: ReadonlySet<string> = new Set(['md', 'code', 'svg', 'html']);
 
 export function createSearch(sandbox: Sandbox): Search {
-  /** Depth-first collect of ALL FILE nodes from the confined tree, in tree
-   *  order. Directories are recursed; every file node is kept (regardless of
-   *  kind) because file-NAME matching covers all files — including image/binary
-   *  — while CONTENT matching later filters to text kinds. The tree is already
-   *  Law-3 confined (buildTree excludes escapes + noise), so this never touches
-   *  a path outside the root. A single walk feeds BOTH name + content matching. */
-  function collectFiles(node: FileNode, out: FileNode[]): void {
-    if (out.length >= MAX_FILES) return;
-    if (node.type === 'dir') {
-      for (const child of node.children ?? []) {
-        if (out.length >= MAX_FILES) return;
-        collectFiles(child, out);
-      }
-      return;
-    }
-    out.push(node);
-  }
-
   /** Locate the FIRST match of `needle` within a root-relative path (`hayPath`
    *  is the path already case-folded to match `needle`'s casing), preferring a
    *  hit on the BASENAME when present (so the highlight lands on the file name a
@@ -157,9 +139,11 @@ export function createSearch(sandbox: Sandbox): Search {
       };
     }
 
-    const tree = sandbox.buildTree();
-    const files: FileNode[] = [];
-    collectFiles(tree, files);
+    // Walk the filesystem on the fly (confined + skip-filtered), bounded by
+    // MAX_FILES. This does NOT materialize the explorer tree (which is now
+    // shallow/lazy) — search owns its own traversal. A single walk feeds BOTH
+    // name + content matching below.
+    const files: FileNode[] = sandbox.walkFiles(MAX_FILES);
     // We hit the file cap during collection -> the run is partial. The file cap
     // bounds the SHARED file list, so it can hide BOTH unseen file-NAMES and
     // unseen CONTENT matches — attribute it to both discriminators (UX-NAME-02).

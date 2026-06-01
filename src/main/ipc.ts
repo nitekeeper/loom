@@ -174,6 +174,11 @@ class IpcWiringImpl implements IpcWiring {
     ipcMain.handle(IPC.GET_TREE, (): FileNode => sandbox.buildTree());
 
     ipcMain.handle(
+      IPC.READ_DIR,
+      (_evt, relPath: string): FileNode[] => sandbox.listDir(relPath),
+    );
+
+    ipcMain.handle(
       IPC.SEARCH,
       (_evt, query: SearchQuery): SearchResults => search.run(query),
     );
