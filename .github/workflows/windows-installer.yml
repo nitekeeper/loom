@@ -39,6 +39,17 @@ jobs:
         run: npm run build
 
       - name: Build Windows installer + portable (electron-builder)
+        # Code signing is CONDITIONAL on the presence of repo secrets.
+        # electron-builder signs the .exe / installer IFF CSC_LINK is a
+        # non-empty base64 .pfx. When the WIN_CSC_LINK secret is unset, the
+        # ${{ secrets.* }} expressions render as EMPTY strings, so CSC_LINK
+        # is empty -> electron-builder skips signing and produces the same
+        # UNSIGNED installers as today (no error). Add WIN_CSC_LINK +
+        # WIN_CSC_KEY_PASSWORD secrets to turn signing on automatically on
+        # the next build — no workflow change needed. See docs/SIGNING.md.
+        env:
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: npx electron-builder --win nsis portable --publish never
 
       - name: Upload installer artifacts

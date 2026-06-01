@@ -142,6 +142,8 @@ For a **proper installer** — a `Loom-Setup-<version>.exe` with a Start Menu sh
 **Installing on Windows:** run `Loom-Setup-<version>.exe`. It is a **standard per-user installer** (no admin required) — it lets you choose the install directory, creates Start Menu and desktop shortcuts named **Loom**, and registers an uninstaller (Settings → Apps, or Add/Remove Programs). Launched from the Start Menu, Loom shows the **"Choose a folder for Loom to open"** picker (same as the portable build), since a shortcut launch has no folder argument.
 
 > **Unsigned — SmartScreen will warn.** The installer is **not code-signed** (no certificate), so Windows SmartScreen shows a *"Windows protected your PC"* dialog on first run. Click **More info → Run anyway** to proceed. As with the portable build, the installer is **built on CI but UNVERIFIED on Windows** until smoke-tested on a real Windows PC — **smoke-test it before relying on it.**
+>
+> **Enabling code signing.** The pipeline signs automatically once you add a code-signing certificate as repo secrets (`WIN_CSC_LINK` + `WIN_CSC_KEY_PASSWORD`) — no code change needed. See [`docs/SIGNING.md`](docs/SIGNING.md) for how to obtain a certificate, the exact secret names, and how to verify a signed build.
 
 ### macOS installer (.dmg, built by CI)
 
@@ -181,7 +183,7 @@ For macOS, Loom ships a standard **`.dmg` disk image** (drag-to-`/Applications`)
 >
 > **Apple Silicon "damaged" note.** On Apple Silicon, the block often surfaces as a *"damaged"* message rather than an "unidentified developer" one — the app is **not** actually damaged; it is the quarantine flag on an unsigned/un-notarized build. Clearing the quarantine (option 2) resolves it.
 >
-> **Proper distribution.** Shipping a Mac app that opens with no Gatekeeper friction requires an **Apple Developer ID certificate (~$99/yr)** for code-signing plus **notarization** (Apple's automated malware scan). Both can be added later via electron-builder (set a signing `identity`, supply the cert, and add an `afterSign` notarize hook) without changing the app itself. Until then the bypass steps above are required.
+> **Proper distribution.** Shipping a Mac app that opens with no Gatekeeper friction requires an **Apple Developer ID certificate (~$99/yr)** for code-signing plus **notarization** (Apple's automated malware scan). The pipeline is already wired for both: it signs **and** notarizes automatically once you add the Apple secrets (`MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`) — **no code change needed**. See [`docs/SIGNING.md`](docs/SIGNING.md) for how to obtain the certificate, the exact secret names, and how to verify a signed + notarized build. Until those secrets exist the bypass steps above are required.
 
 ---
 

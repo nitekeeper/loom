@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+		Standard hardened-runtime entitlements for an Electron app.
+		Required so that a Developer-ID-signed + notarized build can launch:
+		Chromium's V8 JIT and dynamic library loading need these exceptions.
+		Tracked in git (NOT a secret). Only consumed when the mac build is
+		signed with a real identity; the unsigned/ad-hoc CI build ignores it.
+		See https://www.electronjs.org/docs/latest/tutorial/code-signing
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<key>com.apple.security.inherit</key>
+	<true/>
+</dict>
+</plist>

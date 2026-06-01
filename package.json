@@ -105,9 +105,10 @@
       ],
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.png",
-      "hardenedRuntime": false,
+      "hardenedRuntime": true,
       "gatekeeperAssess": false,
-      "identity": null
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "dmg": {
       "title": "Loom ${version}"

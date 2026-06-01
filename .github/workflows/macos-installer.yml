@@ -11,9 +11,15 @@ name: macOS installer
 # on private repos (and use a smaller free-minutes pool) — operationally
 # more expensive than the Linux/Windows runners. Keep tag pushes deliberate.
 #
-# The build is UNSIGNED + un-notarized by design (identity:null in the
-# package.json `mac` config — no Apple Developer ID cert, no notarization).
-# No secrets are referenced anywhere in this workflow.
+# Signing + notarization are CONDITIONAL on the presence of repo secrets:
+#   * NO secrets set  -> CSC_IDENTITY_AUTO_DISCOVERY resolves to 'false' and
+#     CSC_LINK is empty, so electron-builder does an ad-hoc UNSIGNED build
+#     (today's behavior); APPLE_* env are empty, so notarization is skipped
+#     silently. Result: green, unsigned .dmg/.zip — no error, nothing to flip.
+#   * Secrets set     -> the Developer ID cert (MAC_CSC_LINK/.p12) signs the
+#     app with the hardened runtime, and the APPLE_* creds notarize it.
+# Adding the secrets is the ONLY action needed to turn signing+notarization
+# on for the next build — no workflow or config change. See docs/SIGNING.md.
 #
 # Triggers:
 #   - push a tag `vX.Y.Z`  -> builds AND publishes a GitHub Release
@@ -49,11 +55,32 @@ jobs:
       - name: Build app bundles (esbuild -> dist/)
         run: npm run build
 
-      - name: Build macOS dmg + zip (electron-builder, unsigned)
+      - name: Build macOS dmg + zip (electron-builder)
         # No target/arch args on the CLI: let the package.json `mac.target`
         # config drive it (dmg + zip, each for BOTH arm64 + x64). Passing
         # `--mac dmg zip` would override the config arch list and build only
         # the runner's host arch (arm64), dropping the Intel build.
+        #
+        # CONDITIONAL signing + notarization (standard electron-builder CI
+        # pattern). All values come from ${{ secrets.* }} and render as EMPTY
+        # strings when the secret is unset:
+        #   * CSC_IDENTITY_AUTO_DISCOVERY = (MAC_CSC_LINK != '') -> 'false'
+        #     when no cert secret, so electron-builder does NOT probe the
+        #     keychain and does an ad-hoc UNSIGNED build (today's behavior);
+        #     'true' once MAC_CSC_LINK is set, so it imports + uses the cert.
+        #   * CSC_LINK / CSC_KEY_PASSWORD = the base64 .p12 + its password.
+        #   * APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID drive
+        #     notarization. `mac.notarize` is left UNSET in package.json, so
+        #     electron-builder 26 notarizes ONLY when these creds are present:
+        #     empty (no secret) -> notarization skipped silently, no error;
+        #     present -> the signed app is notarized. No code change to flip.
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CSC_LINK != '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npx electron-builder --mac --publish never
 
       - name: Upload installer artifacts
