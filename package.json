@@ -14,6 +14,7 @@
     "package:win": "node scripts/pack-win.mjs",
     "make:icon": "node scripts/make-icon.mjs",
     "dist:win": "electron-builder --win nsis portable --publish never",
+    "dist:mac": "electron-builder --mac dmg zip --publish never",
     "start": "electron .",
     "loom": "node bin/loom.cjs",
     "test": "node --test test/acceptance.mjs",
@@ -84,6 +85,32 @@
       "shortcutName": "Loom",
       "runAfterFinish": true,
       "artifactName": "Loom-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    },
+    "dmg": {
+      "title": "Loom ${version}"
     }
   }
 }

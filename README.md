@@ -143,6 +143,46 @@ For a **proper installer** — a `Loom-Setup-<version>.exe` with a Start Menu sh
 
 > **Unsigned — SmartScreen will warn.** The installer is **not code-signed** (no certificate), so Windows SmartScreen shows a *"Windows protected your PC"* dialog on first run. Click **More info → Run anyway** to proceed. As with the portable build, the installer is **built on CI but UNVERIFIED on Windows** until smoke-tested on a real Windows PC — **smoke-test it before relying on it.**
 
+### macOS installer (.dmg, built by CI)
+
+For macOS, Loom ships a standard **`.dmg` disk image** (drag-to-`/Applications`) built with [`electron-builder`](https://www.electron.build) on a **real macOS runner**. A macOS app bundle / `.dmg` **cannot be built on Linux or Windows** — it needs Apple's `hdiutil` + `codesign` — so it is produced by **GitHub Actions on `macos-latest`** via the **`macOS installer`** workflow (`.github/workflows/macos-installer.yml`). Two architecture builds are produced so it runs on either Mac: **`arm64`** (Apple Silicon — M1/M2/M3…) and **`x64`** (Intel). A matching `.zip` of the app bundle is emitted alongside each `.dmg`.
+
+> **Note — CI minutes cost.** `macos-latest` runners bill Actions minutes at a **10x multiplier on private repos** (and draw from a smaller free-minutes pool) than Linux/Windows runners. Keep tag pushes deliberate.
+
+**To build it:**
+
+- **Tagged release** — push a version tag and the workflow builds *and* publishes a GitHub Release with the `.dmg`s + `.zip`s attached:
+  ```bash
+  git tag v0.5.0
+  git push origin v0.5.0
+  ```
+- **Manual** — trigger the workflow with no tag (builds the installer as a downloadable artifact, no Release):
+  ```bash
+  gh workflow run "macOS installer"
+  ```
+  …or use the **Actions** tab → **macOS installer** → **Run workflow**.
+
+**To get the installer:**
+
+- On a **tag** build: download `Loom-<version>-arm64.dmg` (Apple Silicon) or `Loom-<version>-x64.dmg` (Intel) from the **GitHub Release**.
+- On **any** build (tag or manual): download them from the workflow run's **`loom-macos-installer`** artifact (Actions → the run → Artifacts).
+
+**Installing on macOS:** open the `.dmg` and drag **Loom** to your **Applications** folder. Launched from Launchpad / Applications (no folder argument), Loom shows the **"Choose a folder for Loom to open"** picker (same as on Windows) — pick the project folder to use as the sandbox root.
+
+> **Unsigned + un-notarized — Gatekeeper will block it.** The `.dmg` is **not code-signed with an Apple Developer ID and not notarized** (it uses an ad-hoc codesign — `identity: null`). On first open, macOS **Gatekeeper** refuses to launch it ("Loom can't be opened because Apple cannot check it for malicious software", or on Apple Silicon a misleading **"Loom is damaged and can't be opened"**). This is expected for an unsigned build — clear it with **any one** of:
+>
+> 1. **Right-click → Open.** In `/Applications` (or on the mounted `.dmg`), **right-click** (or Control-click) **Loom → Open**, then click **Open** in the dialog. This adds a one-time exception.
+> 2. **Strip the quarantine attribute** from a terminal:
+>    ```bash
+>    xattr -dr com.apple.quarantine "/Applications/Loom.app"
+>    ```
+>    This removes the `com.apple.quarantine` flag macOS sets on downloaded apps (the cause of the "damaged" message on Apple Silicon).
+> 3. **System Settings → Privacy & Security.** After a blocked launch attempt, open **System Settings → Privacy & Security**, scroll to the security notice about Loom, and click **Open Anyway**.
+>
+> **Apple Silicon "damaged" note.** On Apple Silicon, the block often surfaces as a *"damaged"* message rather than an "unidentified developer" one — the app is **not** actually damaged; it is the quarantine flag on an unsigned/un-notarized build. Clearing the quarantine (option 2) resolves it.
+>
+> **Proper distribution.** Shipping a Mac app that opens with no Gatekeeper friction requires an **Apple Developer ID certificate (~$99/yr)** for code-signing plus **notarization** (Apple's automated malware scan). Both can be added later via electron-builder (set a signing `identity`, supply the cert, and add an `afterSign` notarize hook) without changing the app itself. Until then the bypass steps above are required.
+
 ---
 
 ## How agents connect
