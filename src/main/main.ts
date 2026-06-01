@@ -7,14 +7,15 @@
  * (config.ts), the sandbox (sandbox.ts), and the BrowserWindow
  * lifecycle + IPC handlers (ipc.ts).
  * ============================================================ */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog } from 'electron';
 import { createDb } from './db.js';
 import { createEventBus } from './eventbus.js';
 import { createEngine } from './engine.js';
 import { createMcpServer } from './mcp.js';
 import { createSandbox } from './sandbox.js';
+import { createSearch } from './search.js';
 import { createWatcher } from './watcher.js';
 import { createConfigStore } from './config.js';
 import { createIpcWiring } from './ipc.js';
@@ -51,6 +52,12 @@ interface CaptureArgs {
   /** Capture-only flag to open the Keyboard Shortcuts panel on boot (so a
    *  headless screenshot can prove the modal). */
   shortcuts: boolean;
+  /** Capture-only content-search query: opens the Explorer SEARCH mode,
+   *  prefills the input, and runs the query on boot. null when absent. */
+  search: string | null;
+  /** Capture-only flag to open the FIRST search result at its line on boot
+   *  (so a headless screenshot can prove the reveal). */
+  searchOpen: boolean;
   replay: boolean;
 }
 
@@ -84,6 +91,8 @@ function parseCapture(argv: string[]): CaptureArgs | null {
     chatHidden: argv.includes('--chat-hidden'),
     foldAll: argv.includes('--fold-all'),
     shortcuts: argv.includes('--shortcuts'),
+    search: flagValue(argv, '--search'),
+    searchOpen: argv.includes('--search-open'),
     replay: argv.includes('--replay'),
   };
 }
@@ -104,6 +113,10 @@ function indexUrl(capture: CaptureArgs | null): string {
   if (capture.chatHidden) params.set('chathidden', '1');
   if (capture.foldAll) params.set('foldall', '1');
   if (capture.shortcuts) params.set('shortcuts', '1');
+  // URLSearchParams.set url-encodes the value, so a query with spaces/special
+  // chars is carried safely (the renderer decodes it via URLSearchParams.get).
+  if (capture.search) params.set('search', capture.search);
+  if (capture.searchOpen) params.set('searchopen', '1');
   const qs = params.toString();
   return qs ? `${base}?${qs}` : base;
 }
@@ -144,11 +157,18 @@ function isWsl(): boolean {
  *  markdown+highlight escaping path (guarded by the adversarial corpus in the
  *  acceptance suite) — is preserved verbatim and is unaffected. We GATE these
  *  OS flags behind WSL detection so a future non-WSL build keeps the OS
- *  sandbox as a second containment layer. GPU is always disabled (WSLg). */
+ *  sandbox as a second containment layer.
+ *
+ *  GPU: WSLg exposes no working GPU, so hardware acceleration must be OFF
+ *  under WSL — but ONLY under WSL. On macOS / Windows / non-WSL Linux the
+ *  GPU is real and hardware acceleration stays ON (smoother compositing,
+ *  correct color, lower CPU). So both the GPU-off switches AND the OS-sandbox
+ *  switches now live behind the same isWsl() gate. */
 function applyWslSwitches(): void {
+  if (!isWsl()) return;
+  // WSLg-only: disable the (absent) GPU so Chromium uses SwiftShader/CPU.
   app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('disable-gpu');
-  if (!isWsl()) return;
   app.commandLine.appendSwitch('no-sandbox');
   app.commandLine.appendSwitch('disable-dev-shm-usage');
   // --no-zygote is REQUIRED for capturePage() in this WSL2 sandbox: the zygote
@@ -177,10 +197,12 @@ interface Services {
  *  a failed MCP bind (e.g. :7077 already held by a live Loom instance) is
  *  tolerated: a headless screenshot does NOT serve the agent transport, so the
  *  capture must still proceed rather than abort. A normal launch keeps the bind
- *  fatal (the agent transport is required there). */
-async function bootServices(capturing = false): Promise<Services> {
-  const rootDir = path.resolve(process.env.LOOM_ROOT ?? process.cwd());
-
+ *  fatal (the agent transport is required there).
+ *
+ *  `rootDir` is the already-resolved + validated sandbox root (Law 3 boundary).
+ *  Resolution happens in resolveRoot() before boot so the (possibly async,
+ *  dialog-based) packaged path is awaited up front. */
+async function bootServices(rootDir: string, capturing = false): Promise<Services> {
   const db = createDb();
   await db.init(rootDir);
 
@@ -199,11 +221,14 @@ async function bootServices(capturing = false): Promise<Services> {
   }
 
   const sandbox = createSandbox(rootDir);
+  // Content search reuses the SAME sandbox for all file access (Law 3) — no
+  // second, unconfined walker. It walks the confined tree + reads via readFile.
+  const search = createSearch(sandbox);
   const watcher = createWatcher(rootDir, bus);
   watcher.start();
 
   const config = createConfigStore(app.getPath('userData'));
-  const ipc = createIpcWiring({ db, sandbox, config, bus });
+  const ipc = createIpcWiring({ db, sandbox, config, bus, search });
   ipc.register();
 
   let ws: Services['ws'] = null;
@@ -215,6 +240,29 @@ async function bootServices(capturing = false): Promise<Services> {
   return { bus, engine, sandbox, watcher, ipc, mcp, ws, rootDir };
 }
 
+/** Platform-aware window-chrome options for the MAIN window.
+ *
+ *  - darwin: titleBarStyle 'hiddenInset' hides the native title bar but keeps
+ *    the traffic-light controls floating INSET over our custom title bar, so
+ *    the app shows a single clean bar (matching the design). The renderer
+ *    title bar reserves left padding for the inset lights + becomes a drag
+ *    region (see TitleBar.tsx / renderer.css, gated on the mac platform).
+ *    trafficLightPosition nudges the lights to sit centered in the 40px bar.
+ *  - win32 / linux (+ any other): keep the DEFAULT native frame — the OS
+ *    frame draws the controls and handles window dragging. (Fully frameless /
+ *    custom controls are intentionally out of scope.)
+ *  The hardened webPreferences are IDENTICAL on every platform. */
+function mainWindowChrome(): Electron.BrowserWindowConstructorOptions {
+  if (process.platform === 'darwin') {
+    return {
+      titleBarStyle: 'hiddenInset',
+      // Center the ~14px traffic lights vertically in the 40px title bar.
+      trafficLightPosition: { x: 14, y: 13 },
+    };
+  }
+  return {}; // win32 / linux / other: default native frame.
+}
+
 /** Create the normal, visible application window. */
 function createMainWindow(services: Services): BrowserWindow {
   const win = new BrowserWindow({
@@ -222,6 +270,7 @@ function createMainWindow(services: Services): BrowserWindow {
     height: 900,
     show: true,
     backgroundColor: '#0b0d12',
+    ...mainWindowChrome(),
     webPreferences: hardenedWebPreferences(),
   });
   void win.loadURL(indexUrl(null));
@@ -324,6 +373,21 @@ async function runCapture(services: Services, capture: CaptureArgs): Promise<voi
       await waitForRendererSelector(win, '.pane.viewer .render-tag', 8000);
     }
 
+    // Search captures: wait for the debounced search to land its results into
+    // the DOM (a CONTENT group header OR the file-NAME "Files" group appears
+    // once a match is found — a filename-only query has no content group). When
+    // also opening the first result, additionally wait for the Viewer to render.
+    if (capture.search) {
+      await waitForRendererSelector(
+        win,
+        '.search-results .search-group, .search-results .search-filegroup',
+        8000,
+      );
+      if (capture.searchOpen) {
+        await waitForRendererSelector(win, '.pane.viewer .render-tag', 8000);
+      }
+    }
+
     // Settle: a normal window emits no offscreen 'paint' event, so wait a
     // fixed interval for the renderer to fetch state + paint into WSLg's
     // backing surface before we grab the frame.
@@ -365,6 +429,104 @@ async function runCapture(services: Services, capture: CaptureArgs): Promise<voi
   }
 }
 
+/** True when `p` exists and is a directory. Never throws. */
+function isDirectory(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** The argv entries that come AFTER the app/script path, i.e. the real
+ *  user-supplied arguments. In a packaged app argv is
+ *  [exePath, ...userArgs] so the user args start at index 1; in dev
+ *  (electron .) argv is [electronBin, appPath, ...userArgs] so they start at
+ *  index 2. Electron exposes this exact split via app.isPackaged. */
+function userArgv(): string[] {
+  return process.argv.slice(app.isPackaged ? 1 : 2);
+}
+
+/** First existing-directory positional argument (ignoring --flags and the
+ *  values consumed by known value-flags like --capture/--select/etc.), or
+ *  null. This powers `Loom.exe C:\path` and drag-a-folder-onto-the-exe.
+ *
+ *  We only treat a token as a candidate root if it does NOT start with '-'.
+ *  To avoid mistaking a value that belongs to a value-flag (e.g. the PNG path
+ *  after --capture) for a folder, we skip the token immediately following any
+ *  known `--flag value` flag. Capture flags are mutually exclusive with the
+ *  normal launch in practice, but this keeps the parse robust regardless. */
+const VALUE_FLAGS = new Set([
+  '--capture',
+  '--select',
+  '--channel',
+  '--inbox',
+  '--theme',
+  '--chat-w',
+  '--chatw',
+  '--explorer-w',
+  '--search',
+]);
+
+function argvFolder(): string | null {
+  const args = userArgv();
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i];
+    if (tok === undefined) continue;
+    if (tok.startsWith('-')) {
+      // Skip the value that belongs to a known value-flag so we don't treat it
+      // as a positional folder.
+      if (VALUE_FLAGS.has(tok)) i++;
+      continue;
+    }
+    if (isDirectory(tok)) return path.resolve(tok);
+  }
+  return null;
+}
+
+/** Resolve the sandbox root (Law 3 boundary) BEFORE bootServices, in priority:
+ *   1. LOOM_ROOT env (the bin/loom.cjs launcher + capture path set this).
+ *   2. A folder passed on argv (`Loom.exe C:\path` / drag-onto-exe).
+ *   3. Packaged + still unresolved: a native folder picker (cancel => quit).
+ *   4. Dev (not packaged): cwd — the existing behavior, unchanged.
+ *  An argv/env root that is not an existing directory is rejected and we fall
+ *  through to the picker (packaged) or cwd (dev). Resolves to null ONLY when a
+ *  packaged user cancels the picker, signaling the caller to quit gracefully. */
+async function resolveRoot(): Promise<string | null> {
+  // 1. LOOM_ROOT — honored byte-for-byte for the launcher + capture paths.
+  const envRoot = process.env.LOOM_ROOT;
+  if (envRoot) {
+    const resolved = path.resolve(envRoot);
+    if (isDirectory(resolved)) return resolved;
+    // An explicitly-set-but-invalid LOOM_ROOT: don't silently open elsewhere.
+    // Fall through to picker (packaged) or cwd (dev) below.
+    process.stderr.write(
+      `[loom:boot] LOOM_ROOT is not a directory: ${resolved}; falling back\n`,
+    );
+  }
+
+  // 2. A folder argument on argv.
+  const fromArgv = argvFolder();
+  if (fromArgv) return fromArgv;
+
+  // 3. Packaged with no usable cwd/env: ask the user (modal, post-ready).
+  if (app.isPackaged) {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory'],
+      title: 'Choose a folder for Loom to open',
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const picked = result.filePaths[0];
+    if (picked && isDirectory(picked)) return path.resolve(picked);
+    // A picked path that vanished/isn't a dir: treat as cancel rather than
+    // booting on a bogus root.
+    return null;
+  }
+
+  // 4. Dev (not packaged): cwd — unchanged from the original behavior.
+  return path.resolve(process.cwd());
+}
+
 /** Entry point invoked at module load by Electron. */
 export function bootstrap(): void {
   applyWslSwitches();
@@ -378,7 +540,17 @@ export function bootstrap(): void {
   app
     .whenReady()
     .then(async () => {
-      const services = await bootServices(capture !== null);
+      // Resolve (and validate) the sandbox root BEFORE any service boots. The
+      // packaged folder-picker is awaited here so db.init/bootServices/window
+      // creation all see a settled root.
+      const rootDir = await resolveRoot();
+      if (rootDir === null) {
+        // Packaged user cancelled the folder picker: quit gracefully.
+        app.quit();
+        return;
+      }
+
+      const services = await bootServices(rootDir, capture !== null);
       if (capture) {
         await runCapture(services, capture);
       } else {

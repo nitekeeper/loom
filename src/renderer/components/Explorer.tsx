@@ -17,7 +17,7 @@
  * the flash honors prefers-reduced-motion via CSS.
  * ============================================================ */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { JSX, KeyboardEvent } from 'react';
+import type { JSX, KeyboardEvent, RefObject } from 'react';
 import type { FileKind, FileNode } from '../../shared/types.js';
 
 export interface ExplorerProps {
@@ -31,6 +31,34 @@ export interface ExplorerProps {
   justModified?: ReadonlySet<string>;
   /** Paths added this session — NEW badge (FR-39a). */
   newlyAdded?: ReadonlySet<string>;
+  /** Open the Explorer's content-search mode (header button + Ctrl/Cmd+Shift+F).
+   *  Receives the triggering button so the opener can be recorded for focus
+   *  restoration on close (A11Y-SEARCH-02). */
+  onOpenSearch?(opener: HTMLElement | null): void;
+  /** Ref to the header search button so search-close can restore focus here
+   *  even when search was opened via the keyboard command (A11Y-SEARCH-02). */
+  searchBtnRef?: RefObject<HTMLButtonElement>;
+}
+
+/** Magnifier glyph for the Explorer-header search toggle. Decorative — the
+ *  accessible name comes from the button's aria-label. */
+function SearchIcon(): JSX.Element {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  );
 }
 
 /** Chip color + glyph per file kind, refined by a few extensions. */
@@ -104,6 +132,8 @@ export function Explorer({
   flashing,
   justModified,
   newlyAdded,
+  onOpenSearch,
+  searchBtnRef,
 }: ExplorerProps): JSX.Element {
   const jm = justModified ?? new Set<string>();
   const na = newlyAdded ?? new Set<string>();
@@ -231,6 +261,18 @@ export function Explorer({
         </span>
         <span style={{ color: 'var(--text)', letterSpacing: '.04em' }}>EXPLORER</span>
         <span className="grow" />
+        {onOpenSearch && (
+          <button
+            ref={searchBtnRef}
+            type="button"
+            className="explorer-search-btn iconbtn"
+            aria-label="Search file contents"
+            title="Search file contents (Ctrl/Cmd+Shift+F)"
+            onClick={(e) => onOpenSearch(e.currentTarget)}
+          >
+            <SearchIcon />
+          </button>
+        )}
         <span
           style={{
             fontFamily: 'var(--font-mono)',

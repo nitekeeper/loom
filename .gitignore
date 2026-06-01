@@ -4,6 +4,12 @@ node_modules/
 # Build output (esbuild -> dist/)
 dist/
 
+# Windows portable build output (scripts/pack-win.mjs)
+release/
+
+# Cached Electron win32 prebuilt (scripts/pack-win.mjs download cache)
+.cache/loom-pack/
+
 # Per-session SQLite store + runtime state (NFR-7, OQ-2)
 .loom/
 **/.loom/

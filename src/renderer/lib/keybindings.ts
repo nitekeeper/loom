@@ -1,7 +1,7 @@
 /* ============================================================
  * Loom — keyboard-shortcut core (pure, fully unit-testable)
  * ------------------------------------------------------------
- * The single source of truth for the 7 customizable commands, their
+ * The single source of truth for the 8 customizable commands, their
  * default bindings, and the pure functions that turn a keyboard event
  * into a canonical combo string, merge user overrides over defaults,
  * detect conflicts, and validate a candidate binding.
@@ -34,7 +34,8 @@ export type CommandId =
   | 'foldAll'
   | 'unfoldAll'
   | 'toggleTheme'
-  | 'togglePause';
+  | 'togglePause'
+  | 'openSearch';
 
 /** A command entry shown in the Shortcuts panel. */
 export interface CommandSpec {
@@ -46,11 +47,12 @@ export interface CommandSpec {
   defaultBinding: string;
 }
 
-/** The 7 customizable commands, in panel display order, with their
+/** The 8 customizable commands, in panel display order, with their
  *  default bindings. The labels are shown verbatim in the panel rows. */
 export const COMMANDS: readonly CommandSpec[] = [
   { id: 'toggleExplorer', label: 'Toggle file explorer', defaultBinding: 'Ctrl+B' },
   { id: 'toggleChat', label: 'Toggle agent chat', defaultBinding: 'Ctrl+J' },
+  { id: 'openSearch', label: 'Search file contents', defaultBinding: 'Ctrl+Shift+F' },
   { id: 'closeFile', label: 'Close file', defaultBinding: 'Escape' },
   { id: 'foldAll', label: 'Fold all regions', defaultBinding: 'Ctrl+K' },
   { id: 'unfoldAll', label: 'Unfold all regions', defaultBinding: 'Ctrl+Shift+K' },
@@ -210,7 +212,7 @@ export function isValidBinding(combo: string): boolean {
 }
 
 /** Merge user overrides onto the defaults, returning the FULL resolved
- *  id -> combo map for all 7 commands. Only override entries for known
+ *  id -> combo map for all 8 commands. Only override entries for known
  *  command ids whose value is a valid binding are applied; anything else
  *  (unknown id, empty/invalid combo) falls back to the default so a
  *  corrupt persisted map can never blank a command. */

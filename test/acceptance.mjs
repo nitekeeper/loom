@@ -32,7 +32,15 @@
  * ============================================================ */
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  symlinkSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1702,8 +1710,9 @@ test('FR-54 resolveBindings: user overrides win over defaults; others keep defau
     DEFAULT_BINDINGS.toggleExplorer,
     'a non-overridden command must keep its default',
   );
-  // All 7 commands present in the resolved map.
-  assert.equal(Object.keys(resolved).length, 7, 'resolved map covers all 7 commands');
+  // All 8 commands present in the resolved map (8th = openSearch, the
+  // project-wide content-search opener).
+  assert.equal(Object.keys(resolved).length, 8, 'resolved map covers all 8 commands');
 });
 
 test('FR-54 resolveBindings: missing/corrupt overrides fall back to defaults', async () => {
@@ -1905,5 +1914,593 @@ test('FR-54 rebind + reset round-trip on the pure data (defaults <-> override)',
     diffOverrides(afterReset),
     {},
     'after reset the sparse override map must be empty (all defaults)',
+  );
+});
+
+/* ============================================================
+ * Project-wide content search (search-core matchFile + search.run)
+ * ------------------------------------------------------------
+ * matchFile is a pure substring matcher; createSearch walks the
+ * Law-3-confined sandbox tree + reads via readFile. These tests pin:
+ *   - multiple hits per line + across lines,
+ *   - case-insensitive default + case-sensitive opt,
+ *   - per-file cap + truncation flag,
+ *   - empty/blank query -> no matches,
+ *   - search.run over a temp dir: finds content, SKIPS binary/oversize,
+ *     stays CONFINED (an escaping symlink yields nothing).
+ * ============================================================ */
+
+test('SEARCH command: the openSearch command exists with its default binding (D)', async () => {
+  const { COMMANDS, DEFAULT_BINDINGS } = await kit();
+  const spec = COMMANDS.find((c) => c.id === 'openSearch');
+  assert.ok(spec, 'an openSearch command is registered');
+  assert.equal(spec.label, 'Search file contents', 'label matches the spec');
+  assert.equal(spec.defaultBinding, 'Ctrl+Shift+F', 'default binding is Ctrl/Cmd+Shift+F');
+  assert.equal(DEFAULT_BINDINGS.openSearch, 'Ctrl+Shift+F', 'resolved default carries the combo');
+  assert.equal(COMMANDS.length, 8, 'there are now 8 customizable commands');
+});
+
+test('SEARCH matchFile: finds multiple hits per line AND across lines', async () => {
+  const { matchFile } = await kit();
+  const text = 'user USER user\nno hit here\nthe user logs in';
+  const m = matchFile(text, 'user'); // case-insensitive default
+  // Three hits on line 1 (user, USER, user), one on line 3.
+  assert.equal(m.length, 4, 'four total matches (3 on line 1, 1 on line 3)');
+  assert.deepEqual(
+    m.map((x) => [x.line, x.col]),
+    [
+      [1, 1],
+      [1, 6],
+      [1, 11],
+      [3, 5],
+    ],
+    'line/col coordinates are 1-based and accurate',
+  );
+  // The match offsets index INTO lineText for highlighting.
+  const first = m[0];
+  assert.equal(first.lineText.slice(first.matchStart, first.matchEnd), 'user');
+});
+
+test('SEARCH matchFile: case-insensitive by default, case-sensitive with opt', async () => {
+  const { matchFile } = await kit();
+  const text = 'User user USER';
+  assert.equal(matchFile(text, 'user').length, 3, 'insensitive default matches all 3 casings');
+  const cs = matchFile(text, 'user', { caseSensitive: true });
+  assert.equal(cs.length, 1, 'case-sensitive matches only the exact-case "user"');
+  assert.equal(cs[0].col, 6, 'the lowercase "user" is at col 6');
+});
+
+test('SEARCH matchFile: per-file cap bounds the result list', async () => {
+  const { matchFile } = await kit();
+  // 100 hits but a cap of 5 should stop at 5.
+  const text = 'x'.repeat(100).split('').map(() => 'ab').join(' '); // many "ab"
+  const m = matchFile(text, 'ab', { maxPerFile: 5 });
+  assert.equal(m.length, 5, 'matchFile stops at maxPerFile');
+});
+
+test('SEARCH matchFile: empty / blank query yields no matches', async () => {
+  const { matchFile } = await kit();
+  assert.deepEqual(matchFile('anything here', ''), [], 'empty query -> none');
+  // A non-string query is rejected defensively.
+  assert.deepEqual(matchFile('anything here', /** @type any */ (null)), [], 'null query -> none');
+});
+
+test('SEARCH matchFile: a long line is display-truncated but col stays accurate', async () => {
+  const { matchFile } = await kit();
+  const prefix = 'y'.repeat(250);
+  const text = `${prefix}needle`;
+  const m = matchFile(text, 'needle', { maxLineLength: 200 });
+  assert.equal(m.length, 1, 'the match past the truncation point is still found');
+  assert.equal(m[0].col, 251, 'col reflects the ORIGINAL (untruncated) position');
+  assert.equal(m[0].lineText.length, 200, 'lineText is truncated to maxLineLength for display');
+});
+
+test('SEARCH run: finds content across the confined tree (multiple files)', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    writeFileSync(path.join(root, 'a.ts'), 'const user = 1;\nfunction getUser(){}\n');
+    mkdirSync(path.join(root, 'sub'));
+    writeFileSync(path.join(root, 'sub', 'b.md'), '# User guide\nuser stuff here\n');
+    const sandbox = createSandbox(root);
+    const search = createSearch(sandbox);
+    const res = search.run({ query: 'user' });
+    assert.equal(res.results.length, 2, 'both text files match');
+    assert.ok(res.total >= 4, 'total counts every match across files');
+    const paths = res.results.map((r) => r.path).sort();
+    assert.deepEqual(paths, ['a.ts', 'sub/b.md'], 'root-relative POSIX paths');
+    assert.equal(res.truncated, false, 'a small tree is not truncated');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH run: SKIPS binary/image files (never reads/scans their bytes)', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    // A .png whose raw bytes literally contain the ASCII for "user" — it must
+    // STILL be skipped (image kind -> readFile returns text=null).
+    writeFileSync(path.join(root, 'img.png'), Buffer.from('PNGuserPNG', 'binary'));
+    // A .bin (binary kind) likewise containing "user".
+    writeFileSync(path.join(root, 'data.bin'), Buffer.from('user-in-binary', 'binary'));
+    // A genuine text hit so the run isn't empty for the wrong reason.
+    writeFileSync(path.join(root, 'c.ts'), 'const user = 2;\n');
+    const search = createSearch(createSandbox(root));
+    const res = search.run({ query: 'user' });
+    const hitPaths = res.results.map((r) => r.path);
+    assert.deepEqual(hitPaths, ['c.ts'], 'only the text file matches; binary/image skipped');
+    assert.ok(!hitPaths.some((p) => p.endsWith('.png') || p.endsWith('.bin')), 'no binary/image scanned');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH run: stays CONFINED — an escaping symlink yields nothing (Law 3)', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  const outside = mkdtempSync(path.join(tmpdir(), 'loom-secret-'));
+  try {
+    // A secret OUTSIDE the root containing the query term.
+    writeFileSync(path.join(outside, 'secret.txt'), 'user password leak\n');
+    // A text file INSIDE the root with a benign hit (the run finds this).
+    writeFileSync(path.join(root, 'inside.ts'), 'const user = 3;\n');
+    // A symlink inside the root that points OUTSIDE it.
+    let symlinked = true;
+    try {
+      symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'escape.txt'));
+    } catch {
+      symlinked = false; // some sandboxes disallow symlink creation
+    }
+    const res = createSearch(createSandbox(root)).run({ query: 'user' });
+    // The escaping symlink's content must NEVER appear in the results.
+    const leaked = res.results.some(
+      (f) => f.path.includes('escape') || f.matches.some((m) => m.lineText.includes('password')),
+    );
+    assert.equal(leaked, false, 'the escaping symlink secret must not leak (Law 3 confinement)');
+    // The legitimate in-root hit is still found (proves the test searched).
+    assert.ok(
+      res.results.some((f) => f.path === 'inside.ts'),
+      symlinked
+        ? 'the in-root file is found while the symlink escape is excluded'
+        : 'the in-root file is found (symlink unsupported here; confinement still holds)',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH run: empty / blank query returns no results without walking', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    writeFileSync(path.join(root, 'a.ts'), 'const user = 1;\n');
+    const search = createSearch(createSandbox(root));
+    // UX-NAME-02: the empty-query result reports its (all-false) truncation
+    // breakdown alongside the legacy single `truncated` flag.
+    const empty = {
+      results: [],
+      fileMatches: [],
+      truncated: false,
+      truncatedNames: false,
+      truncatedContent: false,
+      total: 0,
+    };
+    assert.deepEqual(search.run({ query: '' }), empty);
+    assert.deepEqual(search.run({ query: '   ' }), empty);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ============================================================
+ * Project-wide search — FILE-NAME / PATH matching (ADDITIVE)
+ * ------------------------------------------------------------
+ * The SAME query that scans contents ALSO matches each file's
+ * root-relative PATH — covering EVERY file, including image/binary
+ * (which have NO content match) — and lands in fileMatches with a
+ * highlight span. Confined to the same single Law-3 walk, bounded.
+ * ============================================================ */
+
+test('SEARCH names: a query matching a file NAME returns it in fileMatches (with correct span)', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    // server.ts: the NAME contains "server"; its CONTENT does NOT.
+    writeFileSync(path.join(root, 'server.ts'), 'const x = 1;\nfunction boot(){}\n');
+    const res = createSearch(createSandbox(root)).run({ query: 'server' });
+    assert.equal(res.fileMatches.length, 1, 'the file name match is collected');
+    const fm = res.fileMatches[0];
+    assert.equal(fm.path, 'server.ts', 'the matching root-relative path');
+    // The span indices must isolate the matched substring within the path.
+    assert.equal(
+      fm.path.slice(fm.matchStart, fm.matchEnd),
+      'server',
+      'matchStart/matchEnd isolate the matched run in the path',
+    );
+    assert.equal(fm.matchStart, 0, 'match begins at the start of the basename');
+    assert.equal(fm.matchEnd, 6, 'match end is exclusive (len of "server")');
+    // No CONTENT match for this query (the body has no "server").
+    assert.equal(res.total, 0, 'no content matches for a name-only query');
+    assert.equal(res.results.length, 0, 'no content result files');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH names: matches a BINARY/IMAGE file by NAME even with NO content match', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    // An IMAGE whose CONTENT is never read (image kind). Its NAME holds "logo".
+    writeFileSync(path.join(root, 'logo.png'), Buffer.from('\x89PNG not text', 'binary'));
+    // A .bin (binary kind) whose NAME holds "logo" too.
+    writeFileSync(path.join(root, 'logo-data.bin'), Buffer.from('\x00\x01\x02', 'binary'));
+    // A text file with NO "logo" in name or content (control).
+    writeFileSync(path.join(root, 'main.ts'), 'const a = 1;\n');
+    const res = createSearch(createSandbox(root)).run({ query: 'logo' });
+    const names = res.fileMatches.map((f) => f.path).sort();
+    assert.deepEqual(
+      names,
+      ['logo-data.bin', 'logo.png'],
+      'the image AND binary file names match (no content read needed)',
+    );
+    // Proves filename search covers non-text files: there is NO content result.
+    assert.equal(res.results.length, 0, 'no content matches (binary/image never scanned)');
+    assert.equal(res.total, 0, 'zero content matches');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH names: case-insensitive by default, case-sensitive with the opt', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    writeFileSync(path.join(root, 'Logo.png'), Buffer.from('\x89PNG', 'binary'));
+    const sandbox = createSandbox(root);
+    // Default: case-INSENSITIVE — "logo" matches "Logo.png".
+    const insens = createSearch(sandbox).run({ query: 'logo' });
+    assert.equal(insens.fileMatches.length, 1, 'insensitive default matches Logo.png');
+    assert.equal(insens.fileMatches[0].path, 'Logo.png');
+    // The span still indexes the ORIGINAL-cased path correctly.
+    assert.equal(insens.fileMatches[0].path.slice(
+      insens.fileMatches[0].matchStart, insens.fileMatches[0].matchEnd), 'Logo');
+    // caseSensitive: "logo" does NOT match "Logo.png".
+    const sens = createSearch(sandbox).run({ query: 'logo', caseSensitive: true });
+    assert.equal(sens.fileMatches.length, 0, 'case-sensitive excludes the mismatched case');
+    // But the exact case "Logo" does match under caseSensitive.
+    const sensExact = createSearch(sandbox).run({ query: 'Logo', caseSensitive: true });
+    assert.equal(sensExact.fileMatches.length, 1, 'case-sensitive matches the exact case');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH names: a query matches BOTH a file NAME and file CONTENT (both returned)', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    // server.ts: NAME matches "server" AND its CONTENT contains "server" too.
+    writeFileSync(path.join(root, 'server.ts'), 'startServer();\n// server boot\n');
+    // notes.md: NO "server" in name, but CONTENT has it.
+    writeFileSync(path.join(root, 'notes.md'), '# Notes\nthe server is up\n');
+    const res = createSearch(createSandbox(root)).run({ query: 'server' });
+    // File-NAME match: only server.ts's PATH contains "server".
+    assert.deepEqual(
+      res.fileMatches.map((f) => f.path),
+      ['server.ts'],
+      'the file-name match is server.ts',
+    );
+    // CONTENT matches: BOTH files contain "server" in their bodies.
+    const contentPaths = res.results.map((r) => r.path).sort();
+    assert.deepEqual(contentPaths, ['notes.md', 'server.ts'], 'both files have content hits');
+    assert.ok(res.total >= 2, 'content total counts every body match');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH names: the match span can locate a hit in the DIRECTORY portion of a path', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    mkdirSync(path.join(root, 'server'));
+    // The basename "index.ts" has NO "server"; the DIRECTORY does.
+    writeFileSync(path.join(root, 'server', 'index.ts'), 'const a = 1;\n');
+    const res = createSearch(createSandbox(root)).run({ query: 'server' });
+    const fm = res.fileMatches.find((f) => f.path === 'server/index.ts');
+    assert.ok(fm, 'the file under server/ is a name match via its directory');
+    assert.equal(
+      fm.path.slice(fm.matchStart, fm.matchEnd),
+      'server',
+      'the span isolates the directory-portion match',
+    );
+    assert.equal(fm.matchStart, 0, 'the directory match starts at the path head');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH names: empty / blank query yields no file-name matches', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    writeFileSync(path.join(root, 'logo.png'), Buffer.from('\x89PNG', 'binary'));
+    const search = createSearch(createSandbox(root));
+    assert.deepEqual(search.run({ query: '' }).fileMatches, [], 'empty query -> no name matches');
+    assert.deepEqual(search.run({ query: '  ' }).fileMatches, [], 'blank query -> no name matches');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH names: the file-name match list is bounded (cap + truncated)', async () => {
+  const { createSandbox, createSearch, MAX_FILE_NAME_MATCHES } = await kit();
+  assert.equal(typeof MAX_FILE_NAME_MATCHES, 'number', 'MAX_FILE_NAME_MATCHES is exported');
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    // Create MORE matching file NAMES than the cap so the list truncates.
+    const overCap = MAX_FILE_NAME_MATCHES + 25;
+    for (let i = 0; i < overCap; i++) {
+      // Every name contains "match" (a binary file, so no content scan at all).
+      writeFileSync(path.join(root, `match-${String(i).padStart(4, '0')}.bin`), Buffer.from([0]));
+    }
+    const res = createSearch(createSandbox(root)).run({ query: 'match' });
+    assert.equal(
+      res.fileMatches.length,
+      MAX_FILE_NAME_MATCHES,
+      'the file-name match list stops at the cap',
+    );
+    assert.equal(res.truncated, true, 'hitting the file-name cap reports truncated');
+    // UX-NAME-02: the cap is attributed to the NAME list (so the UI can say
+    // "file names capped"), NOT to content — these binaries are never scanned.
+    assert.equal(res.truncatedNames, true, 'the NAME list is flagged as capped');
+    assert.equal(res.truncatedContent, false, 'content was NOT capped (binaries unscanned)');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH names (UX-NAME-02): a CONTENT byte-budget cap attributes to content, not names', async () => {
+  const { createSandbox, createSearch, MAX_TOTAL_SCAN_BYTES } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-budget-'));
+  try {
+    // Text totalling over the scanned-bytes budget; NONE matching by name OR
+    // content (filenames are f0000.txt..., the query is "needle"). The run must
+    // attribute the cap to CONTENT (the byte budget aborted it), not to names.
+    const oneMb = 'z'.repeat(1024 * 1024);
+    const fileCount = Math.ceil(MAX_TOTAL_SCAN_BYTES / (1024 * 1024)) + 8;
+    for (let i = 0; i < fileCount; i++) {
+      writeFileSync(path.join(root, `f${String(i).padStart(4, '0')}.txt`), oneMb);
+    }
+    const res = createSearch(createSandbox(root)).run({ query: 'needle' });
+    assert.equal(res.truncated, true, 'the byte budget reports truncated');
+    assert.equal(res.truncatedContent, true, 'the CONTENT list is flagged as capped');
+    assert.equal(res.truncatedNames, false, 'the NAME list was NOT capped (no name hits)');
+    assert.equal(res.fileMatches.length, 0, 'no name matches for "needle"');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ */
+/* Reviewer fixes — regression tests                                   */
+/* ------------------------------------------------------------------ */
+
+test('SEARCH matchFile (SEC-2): an EARLY match on an over-length line is found, not dropped', async () => {
+  const { matchFile, MAX_SCAN_LINE_LENGTH } = await kit();
+  assert.equal(typeof MAX_SCAN_LINE_LENGTH, 'number', 'MAX_SCAN_LINE_LENGTH is exported');
+  // A needle at column 1 of a 60000-char minified line (over the scan cap) MUST
+  // still be found — previously the whole line was skipped (false negative).
+  const earlyHit = 'needle' + 'x'.repeat(60_000);
+  const m = matchFile(earlyHit, 'needle');
+  assert.equal(m.length, 1, 'the in-window (col 1) match on the over-length line is found');
+  assert.equal(m[0].col, 1, 'col is the true 1-based original column');
+  assert.equal(m[0].lineText.length, 200, 'lineText is still display-truncated to the cap');
+  // A match PAST the scanned prefix is not reported (bounded scan, acceptable).
+  const lateHit = 'x'.repeat(MAX_SCAN_LINE_LENGTH + 100) + 'needle';
+  assert.equal(matchFile(lateHit, 'needle').length, 0, 'a match past the scan prefix is not reported');
+});
+
+test('SEARCH matchFile (UX-SEARCH-02): leading indentation is stripped for display, col stays accurate', async () => {
+  const { matchFile } = await kit();
+  const line = '        app.get("/users", handler)'; // 8 leading spaces
+  const m = matchFile(line, 'app.get');
+  assert.equal(m.length, 1, 'the indented match is found');
+  assert.equal(m[0].col, 9, 'col reflects the ORIGINAL (untrimmed) column');
+  assert.ok(!/^\s/.test(m[0].lineText), 'lineText has its leading indentation stripped for display');
+  assert.equal(
+    m[0].lineText.slice(m[0].matchStart, m[0].matchEnd),
+    'app.get',
+    'match offsets index the matched run in the TRIMMED display text',
+  );
+});
+
+test('SEARCH run (SEC-1/SEC-3): a zero-match run over a huge corpus stops at the byte budget', async () => {
+  const { createSandbox, createSearch, MAX_TOTAL_SCAN_BYTES } = await kit();
+  assert.equal(typeof MAX_TOTAL_SCAN_BYTES, 'number', 'MAX_TOTAL_SCAN_BYTES is exported');
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-budget-'));
+  try {
+    // Write text totalling well OVER the scanned-bytes budget, none matching the
+    // query — exactly the intermediate-keystroke worst case. The run must abort
+    // (truncated=true) instead of reading the whole tree to completion.
+    const oneMb = 'z'.repeat(1024 * 1024);
+    const fileCount = Math.ceil(MAX_TOTAL_SCAN_BYTES / (1024 * 1024)) + 8;
+    for (let i = 0; i < fileCount; i++) {
+      writeFileSync(path.join(root, `f${String(i).padStart(4, '0')}.txt`), oneMb);
+    }
+    const res = createSearch(createSandbox(root)).run({ query: 'needle' });
+    assert.equal(res.total, 0, 'zero matches (the query is absent)');
+    assert.equal(res.results.length, 0, 'no result files');
+    assert.equal(res.truncated, true, 'the run is reported truncated — the budget aborted it');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('SEARCH run: a small zero-match tree is NOT truncated (budget not hit)', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-search-'));
+  try {
+    writeFileSync(path.join(root, 'a.ts'), 'const user = 1;\n');
+    const res = createSearch(createSandbox(root)).run({ query: 'nomatch-here' });
+    assert.deepEqual(res, {
+      results: [],
+      fileMatches: [],
+      truncated: false,
+      // UX-NAME-02: the result now reports WHICH list was capped; a clean
+      // zero-match run capped NEITHER, so both discriminators are false.
+      truncatedNames: false,
+      truncatedContent: false,
+      total: 0,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('MARKDOWN (A11Y-SEARCH-01): rendered blocks carry 1-based data-srcline for search reveal', async () => {
+  const mod = await kit();
+  const renderMarkdown = requireExport(mod, 'renderMarkdown');
+  const md = [
+    '# Architecture', // line 1
+    '', // 2
+    '## Known issues', // 3
+    '', // 4
+    '- **No connection pooling.** db.ts opens a single shared', // 5
+    '  connection.', // 6
+  ].join('\n');
+  const html = renderMarkdown(md);
+  // The heading on source line 1 and 3 are stamped; the list item on line 5.
+  assert.match(html, /<h1 data-srcline="1">/, 'h1 carries its 1-based source line');
+  assert.match(html, /<h2 data-srcline="3">/, 'h2 carries its 1-based source line');
+  assert.match(html, /<li data-srcline="5">/, 'the pooling list item carries source line 5');
+  // The mapping is metadata only — it must not break content safety (Law 1):
+  // a script in the markdown is still inert/escaped.
+  const evil = renderMarkdown('# <script>alert(1)</script>\n');
+  assert.ok(!/<script>/.test(evil), 'no live <script> survives the srcline mapping');
+});
+
+/* ============================================================
+ * Cross-OS path normalization (Law 3 contract <-> native fs)
+ * ------------------------------------------------------------
+ * nativeToPosixRel / posixRelToNative are the single conversion
+ * chokepoint between the POSIX ('/'-separated) renderer contract
+ * (FileNode.path, FileEvent.path, search paths) and the platform's
+ * NATIVE fs separators. The helpers take an injectable `path` module
+ * so we can pin BOTH the POSIX behavior AND the WINDOWS expectation
+ * on this Linux host (no Windows available) — by passing path.posix
+ * and path.win32 respectively. These encode the Windows correctness
+ * that cannot be runtime-verified here.
+ * ============================================================ */
+
+test('PATH posix: native abs -> POSIX rel is a clean root-relative slash path', async () => {
+  const { nativeToPosixRel } = await kit();
+  // On a POSIX path module the separator is already '/' (identity transform).
+  assert.equal(
+    nativeToPosixRel('/srv/root', '/srv/root/sub/b.md', path.posix),
+    'sub/b.md',
+  );
+  assert.equal(nativeToPosixRel('/srv/root', '/srv/root', path.posix), '');
+  assert.equal(nativeToPosixRel('/srv/root', '/srv/root/a.ts', path.posix), 'a.ts');
+});
+
+test('PATH win32: native BACKSLASH abs -> POSIX rel converts \\ to / (Windows contract)', async () => {
+  const { nativeToPosixRel } = await kit();
+  // The KEY Windows assertion: path.win32.relative returns 'sub\\b.md'; the
+  // helper MUST emit the POSIX 'sub/b.md' for the renderer contract.
+  assert.equal(
+    nativeToPosixRel('C:\\srv\\root', 'C:\\srv\\root\\sub\\b.md', path.win32),
+    'sub/b.md',
+    'backslash native separators must become forward slashes in the contract',
+  );
+  assert.equal(
+    nativeToPosixRel('C:\\srv\\root', 'C:\\srv\\root\\deep\\nested\\x.ts', path.win32),
+    'deep/nested/x.ts',
+  );
+  assert.equal(nativeToPosixRel('C:\\srv\\root', 'C:\\srv\\root', path.win32), '');
+});
+
+test('PATH posix: POSIX rel -> native abs round-trips on a POSIX host', async () => {
+  const { posixRelToNative, nativeToPosixRel } = await kit();
+  const root = '/srv/root';
+  const abs = posixRelToNative(root, 'sub/b.md', path.posix);
+  assert.equal(abs, '/srv/root/sub/b.md');
+  // Round-trip: native -> posix -> native is stable.
+  assert.equal(nativeToPosixRel(root, abs, path.posix), 'sub/b.md');
+});
+
+test('PATH win32: a POSIX contract rel resolves to a native BACKSLASH abs (Windows fs access)', async () => {
+  const { posixRelToNative, nativeToPosixRel } = await kit();
+  const root = 'C:\\srv\\root';
+  // The renderer hands back a POSIX rel ('sub/b.md'); win32 path.join accepts
+  // '/' as a separator and emits the native backslash absolute path for fs.
+  const abs = posixRelToNative(root, 'sub/b.md', path.win32);
+  assert.equal(abs, 'C:\\srv\\root\\sub\\b.md', 'forward-slash rel joins to a native backslash path');
+  // And the inverse converts it back to the POSIX contract form.
+  assert.equal(nativeToPosixRel(root, abs, path.win32), 'sub/b.md');
+});
+
+test('PATH win32: a `..` escape in the rel still collapses (caller re-proves containment)', async () => {
+  const { posixRelToNative } = await kit();
+  // posixRelToNative performs NO security check; it just normalizes shape.
+  // path.join collapses '..', so an escape attempt produces a path OUTSIDE
+  // the root that resolveInRoot's containment check would then reject.
+  const escaped = posixRelToNative('C:\\srv\\root', '..\\..\\Windows\\system32', path.win32);
+  assert.ok(
+    !escaped.startsWith('C:\\srv\\root\\'),
+    'a `..` escape resolves outside the root (rejected later by resolveInRoot)',
+  );
+});
+
+test('PATH: live node:path default keeps the existing POSIX behavior on this host', async () => {
+  const { nativeToPosixRel } = await kit();
+  // No injected module -> uses live node:path (POSIX on Linux/WSL). Confirms
+  // the production default is unchanged on the verifiable platform.
+  assert.equal(nativeToPosixRel('/srv/root', '/srv/root/sub/b.md'), 'sub/b.md');
+});
+
+test('PATH win32: the SHIPPING resolveInRoot conversion (path.resolve, POSIX rel) is correct on Windows', () => {
+  // X2 coverage gap closure: production resolveInRoot (sandbox.ts) converts the
+  // POSIX contract rel -> native abs via path.resolve(root, relPath), NOT via
+  // the posixRelToNative (path.join) helper the other PATH tests exercise.
+  // path.resolve and path.join differ for absolute-override inputs, so the
+  // shipping direction needs its OWN win32 assertion. We pin path.win32.resolve
+  // directly (the exact call resolveInRoot makes) so the production POSIX->native
+  // conversion has a named Windows guard, correct-by-construction on this host.
+  const root = 'C:\\srv\\root';
+
+  // 1) A normal POSIX contract rel resolves into the native backslash abs.
+  assert.equal(
+    path.win32.resolve(root, 'sub/b.md'),
+    'C:\\srv\\root\\sub\\b.md',
+    'win32 path.resolve accepts the POSIX `/` rel and emits the native backslash abs',
+  );
+  assert.equal(
+    path.win32.resolve(root, 'deep/nested/x.ts'),
+    'C:\\srv\\root\\deep\\nested\\x.ts',
+  );
+
+  // 2) A `..` traversal that escapes the root resolves OUTSIDE it. This is the
+  //    exact shape resolveInRoot then rejects via isInsideRoot (path.relative
+  //    returns a '..'-leading rel). We assert the escape lands outside so the
+  //    downstream containment check has something to catch.
+  const escaped = path.win32.resolve(root, '../../Windows/system32');
+  assert.equal(escaped, 'C:\\Windows\\system32');
+  assert.ok(
+    !escaped.toLowerCase().startsWith('c:\\srv\\root\\') && escaped.toLowerCase() !== 'c:\\srv\\root',
+    'a `..` escape resolves outside the root (rejected by resolveInRoot.isInsideRoot)',
+  );
+
+  // 3) An ABSOLUTE POSIX rel (drive-letter override attempt) overrides the base
+  //    in path.resolve exactly as an attacker would try — again caught downstream
+  //    by isInsideRoot, never trusted by shape.
+  const driveEscape = path.win32.resolve(root, 'C:/Windows/system32');
+  assert.equal(driveEscape, 'C:\\Windows\\system32');
+  assert.ok(
+    !driveEscape.toLowerCase().startsWith('c:\\srv\\root\\'),
+    'an absolute-drive rel overrides the base (rejected by resolveInRoot.isInsideRoot)',
   );
 });

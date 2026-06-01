@@ -31,6 +31,7 @@ import {
 import * as path from 'node:path';
 import type { FileContent, FileMeta, FileNode } from '../shared/types.js';
 import { dispatchFor, extensionOf, kindOf } from '../shared/dispatch.js';
+import { nativeToPosixRel } from './pathutil.js';
 
 export interface Sandbox {
   /** The absolute, canonical root. */
@@ -137,7 +138,14 @@ export function createSandbox(rootArg: string): Sandbox {
 
   /** True iff `abs` is the root itself or strictly contained within it.
    *  Uses path.relative so the check is robust on both POSIX and Win32
-   *  separators and is not fooled by a sibling prefix (e.g. /root-evil). */
+   *  separators and is not fooled by a sibling prefix (e.g. /root-evil).
+   *  WINDOWS: the live `path` is path.win32, whose `path.relative` is
+   *  CASE-INSENSITIVE — so a request for 'C:\\SRV\\root\\x' against canonical
+   *  root 'C:\\srv\\root' correctly stays contained (the real, case-insensitive
+   *  FS resolves them to the same entry, and realpathSync.native canonicalizes
+   *  case). Containment is therefore correct on win32; the emitted contract
+   *  path preserves the as-requested case verbatim (a cosmetic dedup concern
+   *  for the renderer's keying, never a Law-3 escape). */
   function isInsideRoot(abs: string): boolean {
     if (abs === root) return true;
     const rel = path.relative(root, abs);
@@ -161,6 +169,13 @@ export function createSandbox(rootArg: string): Sandbox {
     // absolute relPath as overriding the base, which is exactly how an
     // attacker would try to escape — so we must re-verify containment
     // of the RESULT, never trust the input shape.
+    // WINDOWS: relPath is the POSIX ('/'-separated) contract path from the
+    // renderer. Node's win32 path.resolve accepts '/' as a separator, so a
+    // contract path like 'sub/b.md' resolves into the native 'C:\\root\\sub\\
+    // b.md'. No manual separator swap is needed (and we must NOT hardcode '/'
+    // in the native join). isInsideRoot below uses path.relative, robust to
+    // drive-letter + backslash forms, and realpath collapses the canonical
+    // (backslash) physical path — so containment holds with native separators.
     const candidate = path.resolve(root, relPath);
 
     // Lexical containment: collapses '.'/'..' segments logically.
@@ -204,16 +219,26 @@ export function createSandbox(rootArg: string): Sandbox {
     return statSync(abs);
   }
 
-  /** Convert an absolute, contained path to its root-relative POSIX form. */
+  /** Convert an absolute, contained path to its root-relative POSIX form for
+   *  the renderer contract. WINDOWS: nativeToPosixRel converts the native '\\'
+   *  separators that path.relative produces into '/' so FileNode.path /
+   *  FileContent.path are POSIX on every OS (the renderer contract). The
+   *  inverse (POSIX rel -> native abs) happens in resolveInRoot via
+   *  path.resolve(root, relPath), whose win32 parser accepts '/' separators. */
   function toRelPosix(abs: string): string {
-    const rel = path.relative(root, abs);
-    return rel.split(path.sep).join('/');
+    return nativeToPosixRel(root, abs, path);
   }
 
   function buildNode(abs: string, name: string, depth: number): FileNode | null {
     let st: Stats;
     try {
-      // lstat first so we can detect symlinks BEFORE following them.
+      // stat (FOLLOWS symlinks). Symlink ESCAPES are already dropped by the
+      // realpathExistingPrefix + isInsideRoot guard in the CALLER (buildTree /
+      // the recursive loop below) BEFORE we ever recurse here, and again
+      // physically in resolveInRoot for reads (Law 3). This stat does NOT guard
+      // containment — it only CLASSIFIES file vs dir for a path already proven
+      // contained. (Same on Windows: NTFS symlinks/junctions are likewise
+      // pre-filtered by the caller's realpath check, not by this stat.)
       st = statSync(abs, { throwIfNoEntry: true });
     } catch {
       return null; // vanished mid-walk; skip silently

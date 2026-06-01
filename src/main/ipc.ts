@@ -30,11 +30,14 @@ import {
   type MessageView,
   type ReceiptView,
   type SessionCounters,
+  type SearchQuery,
+  type SearchResults,
 } from '../shared/types.js';
 import type { ConfigStore } from './config.js';
 import type { LoomDb } from './db.js';
 import type { EventBus } from './eventbus.js';
 import type { Sandbox } from './sandbox.js';
+import type { Search } from './search.js';
 import { wsEnabled } from './ws.js';
 // Pure (DOM/Node-free) keybinding core — merges persisted user overrides
 // over the defaults so the boot snapshot carries the FULL resolved map.
@@ -57,6 +60,8 @@ export interface IpcDeps {
   sandbox: Sandbox;
   config: ConfigStore;
   bus: EventBus;
+  /** Project-wide content search (confined to the sandbox + bounded). */
+  search: Search;
 }
 
 class IpcWiringImpl implements IpcWiring {
@@ -160,13 +165,18 @@ class IpcWiringImpl implements IpcWiring {
   // --- request/response handlers -------------------------------
 
   register(): void {
-    const { sandbox, config } = this.deps;
+    const { sandbox, config, search } = this.deps;
 
     ipcMain.handle(IPC.GET_INITIAL_STATE, (): InitialState => this.buildInitialState());
 
     ipcMain.handle(IPC.READ_FILE, (_evt, relPath: string) => sandbox.readFile(relPath));
 
     ipcMain.handle(IPC.GET_TREE, (): FileNode => sandbox.buildTree());
+
+    ipcMain.handle(
+      IPC.SEARCH,
+      (_evt, query: SearchQuery): SearchResults => search.run(query),
+    );
 
     ipcMain.handle(IPC.SET_THEME, (_evt, theme: Theme): void => {
       config.setTheme(theme);

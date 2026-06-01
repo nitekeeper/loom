@@ -23,6 +23,29 @@ export { createEventBus } from './main/eventbus.js';
 export type { EventBus, EventHandler } from './main/eventbus.js';
 export { kindOf, dispatchFor, extensionOf } from './shared/dispatch.js';
 
+// Project-wide content search (Law 3 confined + bounded). The pure matcher
+// (matchFile) re-exported for unit tests, plus createSandbox + createSearch so
+// the suite can prove the confined walk over a real temp dir (finds content,
+// skips binary/oversize, stays inside the root / rejects an escaping symlink).
+// Electron-free: sandbox.ts + search.ts depend only on node:fs/node:path + the
+// shared dispatch table.
+export { matchFile, MAX_SCAN_LINE_LENGTH } from './main/search-core.js';
+export type { LineMatch, MatchOptions } from './main/search-core.js';
+export {
+  createSearch,
+  MAX_TOTAL_SCAN_BYTES,
+  MAX_FILE_NAME_MATCHES,
+} from './main/search.js';
+export type { Search } from './main/search.js';
+export { createSandbox } from './main/sandbox.js';
+export type { Sandbox } from './main/sandbox.js';
+
+// Cross-OS path normalization (Law 3 contract <-> native fs). Pure fns,
+// parameterized by the path module so the acceptance suite can pin BOTH
+// POSIX and the WINDOWS expectation (via path.win32) on a Linux host.
+export { nativeToPosixRel, posixRelToNative } from './main/pathutil.js';
+export type { PathModule } from './main/pathutil.js';
+
 // The optional external ws observer feed (Electron-free: ws + bus only).
 // Re-exported so the acceptance suite can prove the ws JSON serialization
 // parity (AC-13) and the transport/feed separation (AC-15, LOOM-AC15-02).

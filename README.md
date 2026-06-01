@@ -40,7 +40,7 @@ Every part of Loom is built to obey these (requirements §2.1):
 
 - **Node.js 20+** (`engines.node >= 20.0.0`).
 - **No native build toolchain required.** Storage is [`sql.js`](https://sql.js.org) — SQLite compiled to WebAssembly — so there is no `better-sqlite3`/`node-gyp` compile step and no native modules. All dependencies are pure JS/WASM.
-- **Electron 33.4.11** (pinned). On WSL2 + WSLg, GPU acceleration is disabled automatically.
+- **Electron 33.4.11** (pinned; cross-platform — a clean `npm install` fetches the per-OS binary). On WSL2 + WSLg only, GPU acceleration and the OS-level renderer sandbox are disabled automatically; on macOS / Windows / non-WSL Linux they stay ON.
 
 ---
 
@@ -62,6 +62,60 @@ The folder argument is the sandbox root. It defaults to the current directory, s
 npm run loom -- .      # equivalent to `loom .`
 node bin/loom.cjs      # same — defaults to the current folder
 ```
+
+---
+
+## Cross-platform (macOS / Windows / Linux)
+
+Loom runs on **macOS, Windows, and Linux** with **no native build step**. Storage is [`sql.js`](https://sql.js.org) (SQLite compiled to WebAssembly), so there is no `node-gyp`/`better-sqlite3` compile and no native modules — the dependency tree is pure JS/WASM. The install / build / launch commands are **identical on every OS**:
+
+```bash
+npm install                  # no native compile (sql.js is WASM)
+npm run build                # esbuild → dist/
+npm run loom -- <folder>     # launch on a sandbox root
+# …or simply:
+npm start                    # electron .  (defaults to the current folder)
+```
+
+Electron itself is cross-platform: a clean `npm install` fetches the correct per-OS Electron binary automatically.
+
+Platform-specific behavior is handled at runtime, all additively:
+
+- **GPU + OS sandbox.** Hardware acceleration and Chromium's OS-level renderer sandbox stay **ON** on macOS, Windows, and non-WSL Linux. They are disabled **only** under WSL2 + WSLg (which has no working GPU and breaks the renderer's seccomp/namespace sandbox); detection is automatic.
+- **Title bar.** On macOS the main window uses Electron's `titleBarStyle: 'hiddenInset'`, so the native traffic-light controls float inset over Loom's own single, clean title bar (the bar is a window drag region; the identity content is padded clear of the lights). On Windows and Linux the standard **native window frame** draws the controls and handles dragging. There are **no faux/painted window controls** on any platform — the real OS controls are used everywhere.
+- **File watching.** The chokidar watcher uses each OS's native backend automatically (FSEvents on macOS, `inotify` on Linux, `ReadDirectoryChangesW` on Windows).
+- **Paths.** Every path in the renderer contract (the file tree, file events, search results) is **POSIX (`/`-separated) on every OS**, while filesystem access uses the platform's native separators — so the UI behaves identically on Windows (backslash) and POSIX hosts, and the sandbox containment (Law 3) holds on all three.
+
+**Verification status.** This project is currently **runtime-verified on Linux/WSL** (the build/CI host). The macOS and Windows paths are **code-level cross-platform** (separator normalization, GPU/sandbox gating, and the macOS title-bar integration are correct-by-construction and unit-tested where pure) and should be **smoke-tested on those OSes** before shipping there.
+
+### Run on Windows (portable build)
+
+You can produce a **self-contained Windows portable build** — a folder you copy to a Windows PC and run, with **no install and no Node/Electron required on the target machine**. It is **cross-built from Linux** (it downloads the official `win32-x64` Electron prebuilt; no Wine needed):
+
+```bash
+npm run package:win          # → release/Loom-win32-x64.zip
+```
+
+This bundles the built `dist/`, a **production** `node_modules` (so the runtime `require()`s for `ajv` / `ajv-formats` via the MCP SDK resolve), and the Windows Electron runtime, then renames `electron.exe` → `Loom.exe`.
+
+On the **Windows** PC:
+
+1. **Unzip** `Loom-win32-x64.zip` anywhere (e.g. `C:\Tools\Loom\`).
+2. **Run `Loom.exe`.** Because a double-clicked app has no useful working directory, Loom opens a native **"Choose a folder for Loom to open"** picker on first launch — pick the project folder you want as the sandbox root. Cancelling the picker quits gracefully.
+
+You can also skip the picker by giving the folder up front:
+
+```bat
+Loom.exe C:\path\to\project
+```
+
+…or simply **drag a folder onto `Loom.exe`** — the dropped folder becomes the sandbox root.
+
+The chosen folder is the Law 3 sandbox boundary: Loom confines all file access to it, exactly as the `loom <folder>` launcher does on Linux/macOS.
+
+> **Unverified on Windows.** This portable build is **cross-built on Linux and has NOT been executed on Windows** (the build host has no Windows and no Wine). It is correct-by-construction and structurally verified (every required file is present, no Linux native `.node` binaries ship). **Smoke-test it on a real Windows PC before relying on it.**
+>
+> **Default icon / no exe branding.** The executable keeps the **default Electron icon** and generic version metadata — custom icon + exe metadata require `rcedit` (which needs Wine) and are intentionally skipped in the Wine-free build.
 
 ---
 

@@ -133,6 +133,7 @@ function CodeView({
   startFolded,
   registerFoldAll,
   foldCommand,
+  targetLine,
 }: {
   code: string;
   path: string;
@@ -145,6 +146,11 @@ function CodeView({
    *  + intent. CodeView applies it via an effect (fold-all / unfold-all),
    *  no-op when the file has no foldable ranges. null = no command yet. */
   foldCommand: { nonce: number; intent: 'fold' | 'unfold' } | null;
+  /** A "reveal line" signal from a search-result open: an incrementing nonce +
+   *  the target file path + 1-based line. CodeView unfolds any collapsed region
+   *  containing the line, scrolls it into view, and briefly flashes it. The
+   *  path gate ignores a signal meant for a different (now-closed) file. */
+  targetLine: { path: string; line: number; nonce: number } | null;
 }): JSX.Element {
   // Per-line escaped display HTML — unchanged highlight path (Law 1).
   const lines = useMemo(() => highlightCode(code), [code]);
@@ -266,8 +272,76 @@ function CodeView({
     }
   }, [foldCommand, tops]);
 
+  // ---- Reveal a target line (search-result open) ----------------------------
+  // The 0-based index of the line to flash, or null. Set when a reveal signal
+  // for THIS file arrives; cleared on file change. Drives the .code-line-active
+  // class so the row briefly highlights (the flash decays via CSS animation).
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [activeLine, setActiveLine] = useState<number | null>(null);
+  // Seed the seen-nonce so a reveal already pending FOR THIS FILE still fires on
+  // mount: a search-open sets store.selectFile(path) + targetLine in one tick,
+  // so by the time this CodeView mounts the nonce is already present. We must
+  // NOT pre-consume it when targetLine targets THIS path (the common
+  // newly-opened-file case) — only when it is a stale signal for another file.
+  const lastRevealNonce = useRef<number | null>(
+    targetLine && targetLine.path === path ? null : (targetLine?.nonce ?? null),
+  );
+
+  // Reset the active line whenever the open file changes. Seed the seen-nonce to
+  // the CURRENT nonce ONLY when targetLine points at a DIFFERENT file (a stale
+  // signal from the previously-open file); when it targets the new file, leave
+  // it unconsumed so the reveal effect below fires for the fresh open.
+  useEffect(() => {
+    setActiveLine(null);
+    lastRevealNonce.current =
+      targetLine && targetLine.path === path ? null : (targetLine?.nonce ?? null);
+    // Only re-run on a file change (path) — NOT on every targetLine tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
+
+  // Apply a reveal signal: only when it targets THIS file and is a fresh nonce.
+  // Unfold any collapsed region containing the line, then mark it active +
+  // scroll it into view after paint.
+  useEffect(() => {
+    if (targetLine === null) return;
+    if (targetLine.nonce === lastRevealNonce.current) return;
+    if (targetLine.path !== path) return;
+    lastRevealNonce.current = targetLine.nonce;
+    const lineIdx = targetLine.line - 1; // to 0-based
+    if (lineIdx < 0 || lineIdx >= lines.length) return;
+
+    // Unfold every collapsed header whose range contains the target line so the
+    // row is actually visible (a line inside a collapsed fold is hidden).
+    setFolded((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const header of prev) {
+        const r = rangeByHeader.get(header);
+        if (r && lineIdx >= r.start && lineIdx <= r.end) {
+          next.delete(header);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setActiveLine(lineIdx);
+  }, [targetLine, path, lines.length, rangeByHeader]);
+
+  // After the active line renders (post-unfold), scroll it into view + announce.
+  useEffect(() => {
+    if (activeLine === null) return;
+    const raf = requestAnimationFrame(() => {
+      const el = containerRef.current?.querySelector<HTMLElement>(
+        `[data-line="${activeLine}"]`,
+      );
+      el?.scrollIntoView({ block: 'center', behavior: 'auto' });
+    });
+    setStatus(`Revealed line ${activeLine + 1}`);
+    return () => cancelAnimationFrame(raf);
+  }, [activeLine]);
+
   return (
-    <div className="code">
+    <div className="code" ref={containerRef}>
       {/* A11Y-FOLD-03 / SC 4.1.3: a single visually-hidden polite live region.
           Terse fold-change messages ("Collapsed N lines" / "Folded all N
           regions") are written here so AT conveys the magnitude of the change
@@ -318,8 +392,14 @@ function CodeView({
             <span className="gutter-num" aria-hidden="true">
               {i + 1}
             </span>
-            {/* The escaped, highlighted source row (Law 1: display only). */}
-            <span className="ln-wrap">
+            {/* The escaped, highlighted source row (Law 1: display only). The
+                row carries data-line (0-based index) so a search reveal can
+                scroll to it, and .code-line-active briefly flashes the revealed
+                line (the highlight decays via CSS). */}
+            <span
+              className={'ln-wrap' + (i === activeLine ? ' code-line-active' : '')}
+              data-line={i}
+            >
               {/* eslint-disable-next-line react/no-danger -- escaped by lib/highlight */}
               <span className="ln" dangerouslySetInnerHTML={{ __html: l }} />
               {collapsed && (
@@ -339,6 +419,104 @@ function CodeView({
           </Fragment>
         );
       })}
+    </div>
+  );
+}
+
+/** Safe-rendered markdown body with search-result reveal (A11Y-SEARCH-01 /
+ *  UX-SEARCH-01). The rendered HTML (escaped + link-neutralized by
+ *  lib/markdown) carries `data-srcline` source-line attributes on its block
+ *  elements; on a fresh reveal signal for THIS file we scroll the block whose
+ *  source range CONTAINS the target line into view, briefly flash it, and
+ *  announce "Revealed line N" to a polite live region — so the open-at-line
+ *  promise holds for the most common searchable file type (.md), conveyed both
+ *  visually and to assistive tech. The path gate ignores a signal meant for a
+ *  now-closed file (mirrors CodeView). */
+function MarkdownView({
+  text,
+  path,
+  targetLine,
+}: {
+  text: string;
+  path: string;
+  targetLine: { path: string; line: number; nonce: number } | null;
+}): JSX.Element {
+  const html = useMemo(() => renderMarkdown(text), [text]);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [status, setStatus] = useState('');
+  // Seed the seen-nonce so a reveal already pending FOR THIS FILE still fires on
+  // mount (a search-open sets selectFile(path) + targetLine in one tick, so the
+  // nonce is present by the time this mounts). Only pre-consume a STALE signal
+  // aimed at a different file. Mirrors CodeView's lastRevealNonce gate.
+  const lastRevealNonce = useRef<number | null>(
+    targetLine && targetLine.path === path ? null : (targetLine?.nonce ?? null),
+  );
+
+  // Reset on file change: re-arm for a reveal that targets the new file, else
+  // pre-consume a stale signal for the previous file.
+  useEffect(() => {
+    setStatus('');
+    lastRevealNonce.current =
+      targetLine && targetLine.path === path ? null : (targetLine?.nonce ?? null);
+    // Only on a file change — not on every targetLine tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
+
+  // Apply a reveal signal: only when it targets THIS file and is a fresh nonce.
+  // Find the block whose source range CONTAINS the target line — the LAST block
+  // whose data-srcline <= target (block start lines are monotonic in document
+  // order) — scroll it into view, flash it, and announce. Best-effort: if no
+  // mapped block precedes the line, fall back to the first block / top.
+  useEffect(() => {
+    if (targetLine === null) return;
+    if (targetLine.nonce === lastRevealNonce.current) return;
+    if (targetLine.path !== path) return;
+    lastRevealNonce.current = targetLine.nonce;
+    const container = containerRef.current;
+    if (!container) return;
+
+    const raf = requestAnimationFrame(() => {
+      const blocks = container.querySelectorAll<HTMLElement>('[data-srcline]');
+      let target: HTMLElement | null = null;
+      for (const el of blocks) {
+        const srcLine = Number.parseInt(el.dataset.srcline ?? '', 10);
+        if (Number.isFinite(srcLine) && srcLine <= targetLine.line) {
+          target = el; // keep the last (deepest-starting) block <= the line
+        } else if (Number.isFinite(srcLine) && srcLine > targetLine.line) {
+          break; // past the target — the previous kept block contains it
+        }
+      }
+      // Fall back to the first mapped block (or the container) if nothing
+      // precedes the line, so the user is never left silently at the top.
+      const reveal = target ?? blocks[0] ?? null;
+      (reveal ?? container).scrollIntoView({ block: 'center', behavior: 'auto' });
+      if (reveal) {
+        // Restart the flash animation even if the same node is re-revealed.
+        reveal.classList.remove('md-line-active');
+        // Force reflow so removing + re-adding re-triggers the keyframes.
+        void reveal.offsetWidth;
+        reveal.classList.add('md-line-active');
+      }
+    });
+    // Announce regardless so AT perceives the line position even when the
+    // precise block could not be located (honest feedback, not silence).
+    setStatus(`Revealed line ${targetLine.line}`);
+    return () => cancelAnimationFrame(raf);
+  }, [targetLine, path]);
+
+  return (
+    <div className="md-scroll" ref={containerRef}>
+      {/* SC 4.1.3: a polite live region announces the revealed line so a
+          screen-reader user perceives where the search match landed, matching
+          the SOURCE (CodeView) reveal announcement. */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {status}
+      </span>
+      <div
+        className="md"
+        // eslint-disable-next-line react/no-danger -- escaped + neutralized by lib/markdown
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
     </div>
   );
 }
@@ -370,7 +548,7 @@ function Breadcrumb({ path }: { path: string }): JSX.Element {
   );
 }
 
-export function Viewer({ content, onClose, foldCommand }: ViewerProps): JSX.Element {
+export function Viewer({ content, onClose, foldCommand, targetLine }: ViewerProps): JSX.Element {
   // Empty state — reinforce the principle (FR-42).
   if (content === null) {
     return (
@@ -401,7 +579,14 @@ export function Viewer({ content, onClose, foldCommand }: ViewerProps): JSX.Elem
 
   // Populated state lives in a child component so its folding hooks are called
   // unconditionally (the null-guard early return above precludes hooks here).
-  return <ViewerContent content={content} onClose={onClose} foldCommand={foldCommand} />;
+  return (
+    <ViewerContent
+      content={content}
+      onClose={onClose}
+      foldCommand={foldCommand}
+      targetLine={targetLine}
+    />
+  );
 }
 
 /** Populated Viewer (a file is open). Owns the SOURCE-only fold-all
@@ -410,10 +595,12 @@ function ViewerContent({
   content,
   onClose,
   foldCommand,
+  targetLine,
 }: {
   content: FileContent;
   onClose(): void;
   foldCommand: { nonce: number; intent: 'fold' | 'unfold' } | null;
+  targetLine: { path: string; line: number; nonce: number } | null;
 }): JSX.Element {
   const { dispatch, meta, text, path } = content;
   const { kind, renderState, safetyBanner } = dispatch;
@@ -457,13 +644,7 @@ function ViewerContent({
 
   let body: JSX.Element;
   if (renderState === 'RENDERED') {
-    body = (
-      <div
-        className="md"
-        // eslint-disable-next-line react/no-danger -- escaped + neutralized by lib/markdown
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(text ?? '') }}
-      />
-    );
+    body = <MarkdownView text={text ?? ''} path={path} targetLine={targetLine} />;
   } else if (renderState === 'SOURCE') {
     body = (
       <CodeView
@@ -472,6 +653,7 @@ function ViewerContent({
         startFolded={startFolded}
         registerFoldAll={registerFoldAll}
         foldCommand={foldCommand}
+        targetLine={targetLine}
       />
     );
   } else if (renderState === 'PREVIEW') {
@@ -574,4 +756,8 @@ export interface ViewerProps {
    *  an incrementing nonce + intent. CodeView applies it once per nonce;
    *  no-op when the open file is not foldable code. */
   foldCommand: { nonce: number; intent: 'fold' | 'unfold' } | null;
+  /** A "reveal line" signal from a search-result open (incrementing nonce +
+   *  target path + 1-based line). CodeView unfolds any region containing the
+   *  line, scrolls it into view, and briefly flashes it. null = no reveal. */
+  targetLine: { path: string; line: number; nonce: number } | null;
 }

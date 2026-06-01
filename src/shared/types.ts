@@ -284,6 +284,81 @@ export interface FileContent {
 }
 
 /* ------------------------------------------------------------------ */
+/* 5b. Project-wide content search (ADDITIVE) — VS-Code-style search   */
+/*     over file CONTENTS, confined to the sandbox root (Law 3) and    */
+/*     bounded (Law 1 / DoS). Mirrors READ_FILE/GET_TREE request shapes.*/
+/* ------------------------------------------------------------------ */
+
+/** A search request from the renderer. Empty/blank `query` yields no results. */
+export interface SearchQuery {
+  /** The substring to find in file contents. */
+  query: string;
+  /** Case-sensitive match. Default (undefined/false) = case-insensitive. */
+  caseSensitive?: boolean;
+}
+
+/** One match within a file: 1-based line/col + the (truncated) line text and
+ *  the match offsets INTO that line text for highlighting (Law 1: the renderer
+ *  escapes lineText and wraps [matchStart, matchEnd) — never raw innerHTML). */
+export interface SearchMatch {
+  /** 1-based line number (aligns with the Viewer's rendered rows). */
+  line: number;
+  /** 1-based column of the match start in the original line. */
+  col: number;
+  /** The line's display text (truncated for safety). MUST be escaped before
+   *  rendering — it is raw, attacker-influenced file content. */
+  lineText: string;
+  /** Match start offset INTO lineText (0-based). */
+  matchStart: number;
+  /** Match end offset INTO lineText (exclusive, 0-based). */
+  matchEnd: number;
+}
+
+/** All matches found within a single file. */
+export interface FileSearchResult {
+  /** Root-relative POSIX path (same shape as FileNode.path). */
+  path: string;
+  /** Per-line matches, in file order. */
+  matches: SearchMatch[];
+}
+
+/** A file whose NAME / root-relative PATH matched the query (ADDITIVE). This
+ *  covers EVERY file — including image/binary — because matching the path
+ *  needs no content read. matchStart/matchEnd index the FIRST match within the
+ *  `path` string for highlighting (Law 1: the renderer escapes `path` and wraps
+ *  [matchStart, matchEnd) in <mark> — never raw innerHTML). */
+export interface FileNameMatch {
+  /** Root-relative POSIX path (same shape as FileNode.path). */
+  path: string;
+  /** Match start offset INTO path (0-based char index). */
+  matchStart: number;
+  /** Match end offset INTO path (exclusive, 0-based char index). */
+  matchEnd: number;
+}
+
+/** The full result set for a search run. */
+export interface SearchResults {
+  /** Files with at least one CONTENT match, in tree order. */
+  results: FileSearchResult[];
+  /** Files whose NAME / path matched the query, in tree order (ADDITIVE).
+   *  Includes image/binary files (name matching reads no content). */
+  fileMatches: FileNameMatch[];
+  /** True when ANY scan/match bound was hit (results are partial). Kept as the
+   *  single legacy flag; the two discriminators below say WHICH list is partial
+   *  so the UI can phrase an actionable "refine to see more" caveat (UX-NAME-02). */
+  truncated: boolean;
+  /** True when the FILE-NAME list was capped (MAX_FILE_NAME_MATCHES) — there may
+   *  be more file-name matches than shown (ADDITIVE; optional for back-compat). */
+  truncatedNames?: boolean;
+  /** True when the CONTENT results were capped (match-count or scanned-bytes
+   *  budget) — there may be more content matches than shown (ADDITIVE; optional
+   *  for back-compat). */
+  truncatedContent?: boolean;
+  /** Total number of CONTENT matches across all files (may exceed displayed). */
+  total: number;
+}
+
+/* ------------------------------------------------------------------ */
 /* 6. InitialState snapshot — sent to renderer on boot via IPC         */
 /*    (FR-14: main is the single source of truth; renderer derives.)   */
 /* ------------------------------------------------------------------ */
@@ -353,7 +428,7 @@ export interface InitialState {
   wsEnabled: boolean;
   /** RESOLVED keyboard shortcut bindings (defaults merged with the
    *  persisted user overrides) — a full commandId -> canonical combo map
-   *  for all 7 customizable commands. The renderer dispatcher + Shortcuts
+   *  for all 8 customizable commands. The renderer dispatcher + Shortcuts
    *  panel read this; the panel writes overrides back via SET_KEYBINDINGS.
    *  Additive to the boot snapshot (mirrors `theme`). */
   keybindings: Record<string, string>;
@@ -396,6 +471,9 @@ export const IPC = {
   READ_FILE: 'loom:file:read',
   /** invoke(): FileNode — re-read the sandbox tree. */
   GET_TREE: 'loom:tree:get',
+  /** invoke(q: SearchQuery): SearchResults — project-wide content search,
+   *  confined to the sandbox root + bounded (Law 1/3). */
+  SEARCH: 'loom:search',
   /** invoke(theme: Theme): void — persist the chosen theme. */
   SET_THEME: 'loom:theme:set',
   /** invoke(map: Record<string,string>): void — persist user keyboard
@@ -417,9 +495,18 @@ export type IpcChannel = (typeof IPC)[keyof typeof IPC];
  *  Renderer code MUST only touch privileged main-process capability
  *  through this object (FR-13, NFR-3). */
 export interface LoomBridge {
+  /** The host OS, read from `process.platform` in the preload (Node context;
+   *  the renderer has no `process`). One of the Node platform strings:
+   *  'darwin' | 'win32' | 'linux' | 'aix' | 'freebsd' | 'openbsd' | 'sunos' |
+   *  'android' | 'cygwin' | 'netbsd' | 'haiku'. The renderer reads this to
+   *  adapt platform-specific chrome (e.g. the macOS hiddenInset title bar).
+   *  ADDITIVE — exposing read-only host platform widens no privilege. */
+  platform: string;
   getInitialState(): Promise<InitialState>;
   readFile(path: string): Promise<FileContent>;
   getTree(): Promise<FileNode>;
+  /** Project-wide content search over the sandbox root (confined + bounded). */
+  search(q: SearchQuery): Promise<SearchResults>;
   setTheme(theme: Theme): Promise<void>;
   /** Persist the user keyboard-shortcut OVERRIDES (sparse id -> combo map,
    *  only entries differing from defaults). Mirrors setTheme. */

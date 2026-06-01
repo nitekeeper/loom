@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
+    "package:win": "node scripts/pack-win.mjs",
     "start": "electron .",
     "loom": "node bin/loom.cjs",
     "test": "node --test test/acceptance.mjs",

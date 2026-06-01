@@ -127,6 +127,26 @@ const rawHtmlRule: MdRenderRule = (tokens, idx) => {
 md.renderer.rules.html_block = rawHtmlRule;
 md.renderer.rules.html_inline = rawHtmlRule;
 
+/* ---- source-line mapping (A11Y-SEARCH-01 / UX-SEARCH-01) ----
+   A core rule that stamps each block-level OPENING token with a
+   `data-srcline` attribute carrying its 1-based source line. markdown-it
+   already records `token.map = [startLine, endLine]` (0-based, half-open) on
+   block tokens; we expose the start line so the Viewer can scroll/flash the
+   block nearest a searched line when a .md file is opened from a search match.
+   This is metadata only — the value is a fixed integer string we control (no
+   user bytes), so it cannot affect Law-1 escaping of the rendered content. */
+md.core.ruler.push('loom_srcline', (state) => {
+  for (const token of state.tokens) {
+    // Block opening tokens (paragraph_open, heading_open, list_item_open, …)
+    // and self-contained blocks (fence/code_block/hr) carry a source map.
+    if (token.map && token.nesting >= 0 && token.type !== 'inline') {
+      // token.map[0] is the 0-based start line; expose it 1-based to match the
+      // 1-based line numbers the search matcher + Viewer gutter use.
+      token.attrSet('data-srcline', String(token.map[0] + 1));
+    }
+  }
+});
+
 /* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */

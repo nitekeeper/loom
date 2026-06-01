@@ -30,6 +30,7 @@ import type { CommandId } from '../lib/keybindings.js';
 import { TitleBar } from './TitleBar.js';
 import { StatusBar } from './StatusBar.js';
 import { Explorer } from './Explorer.js';
+import { SearchView } from './SearchView.js';
 import { Viewer } from './Viewer.js';
 import { Chat } from './Chat.js';
 import { ShortcutsPanel } from './ShortcutsPanel.js';
@@ -587,6 +588,37 @@ function readShortcutsHint(): boolean {
   return raw !== '0' && raw !== 'false';
 }
 
+/** Read the capture-only `?search=<query>` hint: a query string that opens
+ *  search mode, prefills the input, and runs the search on boot for a headless
+ *  proof screenshot. Returns the decoded query, or null when absent/empty. */
+function readSearchHint(): string | null {
+  if (typeof location === 'undefined') return null;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(location.search);
+  } catch {
+    return null;
+  }
+  const raw = params.get('search');
+  if (raw === null || raw.length === 0) return null;
+  return raw;
+}
+
+/** Read the capture-only `?searchopen` hint (presence ⇒ open the FIRST result
+ *  at its line on boot). `?searchopen` (no value) or `=1`/`=true` ⇒ open. */
+function readSearchOpenHint(): boolean {
+  if (typeof location === 'undefined') return false;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(location.search);
+  } catch {
+    return false;
+  }
+  if (!params.has('searchopen')) return false;
+  const raw = params.get('searchopen');
+  return raw !== '0' && raw !== 'false';
+}
+
 export function App(): JSX.Element {
   // One store instance for the lifetime of the app.
   const store = useMemo(() => createStore(), []);
@@ -653,6 +685,117 @@ export function App(): JSX.Element {
   const fireFoldCommand = useCallback((intent: 'fold' | 'unfold'): void => {
     foldNonceRef.current += 1;
     setFoldCommand({ nonce: foldNonceRef.current, intent });
+  }, []);
+
+  /* ============================================================
+   * Project-wide content search (Explorer SEARCH mode)
+   * ------------------------------------------------------------
+   * `searchMode` swaps the Explorer's file tree for the SearchView.
+   * The `openSearch` command + the Explorer-header search button open
+   * it; the SearchView's close affordance + Escape close it. A capture
+   * `?search=<q>` hint opens it pre-filled (and `?searchopen` opens the
+   * first result at its line for a headless proof).
+   * ============================================================ */
+  // Capture hints are read ONCE on mount (lazy init) — parallel to the other
+  // capture hints. The query also forces searchMode open on boot.
+  const initialSearchQuery = useMemo(() => readSearchHint(), []);
+  const initialSearchOpen = useMemo(() => readSearchOpenHint(), []);
+  const [searchMode, setSearchMode] = useState<boolean>(
+    () => initialSearchQuery !== null,
+  );
+  // A "reveal line" signal lifted to the Viewer/CodeView: an incrementing nonce
+  // so each reveal fires exactly once even when re-opening the SAME line; the
+  // path lets the Viewer ignore a stale signal once a different file is open.
+  const [targetLine, setTargetLine] = useState<{
+    path: string;
+    line: number;
+    nonce: number;
+  } | null>(null);
+  const targetLineNonceRef = useRef(0);
+  // The path of a WHOLE-FILE open originating from a file-NAME search row
+  // (openSearchFile), as distinct from a line-level content open (openSearchMatch).
+  // Drives the file row's "you are here" marker (A11Y-FN-01) WITHOUT lighting up
+  // a file row merely because a content match in the SAME file is the active
+  // match (UX-NAME-04). Cleared whenever a content match opens, so the two
+  // markers are mutually exclusive and always reflect the LAST user action.
+  const [activeSearchFile, setActiveSearchFile] = useState<string | null>(null);
+  // The control that opened search — focus returns here on close (SC 2.4.3 /
+  // A11Y-SEARCH-02), mirroring the shortcutsOpenerRef pattern. Falls back to the
+  // Explorer header search button (which re-mounts when search closes) when
+  // search was opened via the Ctrl/Cmd+Shift+F command with no DOM opener.
+  const searchOpenerRef = useRef<HTMLElement | null>(null);
+  const explorerSearchBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Open a search match in the Viewer at its line: select the file, then raise
+  // the reveal-line signal. The Viewer scrolls the line into view + flashes it
+  // (and CodeView unfolds any collapsed region containing it).
+  const openSearchMatch = useCallback(
+    (path: string, line: number): void => {
+      store.selectFile(path);
+      const name = path.split('/').filter(Boolean).pop() ?? path;
+      setStatusMessage(`Opened ${name} at line ${line}`);
+      targetLineNonceRef.current += 1;
+      setTargetLine({ path, line, nonce: targetLineNonceRef.current });
+      // A line-level open is NOT a whole-file open — clear the file-row marker so
+      // the active cue lands on the content row, not the file-NAME row (UX-NAME-04).
+      setActiveSearchFile(null);
+    },
+    [store],
+  );
+
+  // Open a WHOLE file from a file-NAME search match: select it with NO target
+  // line (there is no specific line to reveal). The Viewer renders the file
+  // from the top; any prior reveal flash is irrelevant to a whole-file open.
+  const openSearchFile = useCallback(
+    (path: string): void => {
+      store.selectFile(path);
+      const name = path.split('/').filter(Boolean).pop() ?? path;
+      setStatusMessage(`Opened ${name}`);
+      // A11Y-FN-01: mark this file row as the live "current item". Drop any prior
+      // content-row marker so the cue lands on the file-NAME row that opened it.
+      setActiveSearchFile(path);
+      targetLineNonceRef.current += 1;
+      setTargetLine(null);
+    },
+    [store],
+  );
+
+  // Open + focus the Explorer search view. Ensures the Explorer pane is shown
+  // (un-collapse it if needed) so the search input is actually visible. Records
+  // the opener so focus returns to it on close (A11Y-SEARCH-02); the Explorer
+  // header button passes itself, the keyboard command passes null (close then
+  // falls back to the re-mounted Explorer search button).
+  const openSearch = useCallback((opener?: HTMLElement | null): void => {
+    searchOpenerRef.current = opener ?? null;
+    setExplorerHidden((hidden) => {
+      if (hidden) {
+        try {
+          window.localStorage.setItem(EXPLORER_HIDDEN_KEY, '0');
+        } catch {
+          /* localStorage may be unavailable; state still applies in-session. */
+        }
+      }
+      return false;
+    });
+    setSearchMode(true);
+    setStatusMessage('Search opened');
+  }, []);
+
+  // Close search and restore focus to a sensible location (A11Y-SEARCH-02 /
+  // SC 2.4.3): the recorded opener if still in the DOM, else the Explorer header
+  // search button which re-mounts when the tree returns. Deferred to rAF so the
+  // target (the re-rendered Explorer button) exists before we focus it — mirrors
+  // closeShortcuts. Never leaves focus stranded on document.body.
+  const closeSearch = useCallback((): void => {
+    setSearchMode(false);
+    setStatusMessage('Search closed');
+    requestAnimationFrame(() => {
+      const opener = searchOpenerRef.current;
+      const target =
+        opener && opener.isConnected ? opener : explorerSearchBtnRef.current;
+      target?.focus();
+      searchOpenerRef.current = null;
+    });
   }, []);
 
   // Open the panel, remembering the opener so focus returns to it on close.
@@ -978,6 +1121,9 @@ export function App(): JSX.Element {
         case 'togglePause':
           void store.togglePause();
           break;
+        case 'openSearch':
+          openSearch();
+          break;
         default:
           break;
       }
@@ -995,6 +1141,7 @@ export function App(): JSX.Element {
     fireFoldCommand,
     openShortcuts,
     runCloseFileCommand,
+    openSearch,
   ]);
 
   if (vm === null) {
@@ -1052,11 +1199,39 @@ export function App(): JSX.Element {
           } as CSSProperties
         }
       >
-        {!explorerHidden && (
+        {!explorerHidden && searchMode && (
+          <SearchView
+            initialQuery={initialSearchQuery ?? undefined}
+            autoOpenFirst={initialSearchOpen}
+            onOpenMatch={openSearchMatch}
+            onOpenFile={openSearchFile}
+            onCloseSearch={closeSearch}
+            // UX-SEARCH-06: mark the currently-open match row. Only while its
+            // file is still the selected file (closing the file clears it), so
+            // the marker reflects the live Viewer selection, not a stale open.
+            activeMatch={
+              targetLine && vm.selected === targetLine.path
+                ? { path: targetLine.path, line: targetLine.line }
+                : null
+            }
+            // A11Y-FN-01 / UX-NAME-04: mark the open WHOLE-FILE row (a file-NAME
+            // open) ONLY while that file is still the live Viewer selection.
+            // Distinct from activeMatch so a content-match open never lights up
+            // the file-NAME row, and vice versa.
+            activeFilePath={
+              activeSearchFile && vm.selected === activeSearchFile
+                ? activeSearchFile
+                : null
+            }
+          />
+        )}
+        {!explorerHidden && !searchMode && (
           <Explorer
             rootName={vm.rootName}
             tree={vm.tree}
             selected={vm.selected}
+            onOpenSearch={openSearch}
+            searchBtnRef={explorerSearchBtnRef}
             // Re-activating the ALREADY-open file toggles it closed (FR-42);
             // any other path selects it. Explorer just calls onSelect(path) on
             // click/Enter/Space, so the toggle lives here. Focus stays on the
@@ -1086,6 +1261,7 @@ export function App(): JSX.Element {
           content={content}
           onClose={closeFileFromButton}
           foldCommand={foldCommand}
+          targetLine={targetLine}
         />
         {!explorerHidden && (
           <Splitter

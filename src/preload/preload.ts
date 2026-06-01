@@ -25,6 +25,8 @@ import type {
   LiveState,
   LoomBridge,
   LoomEvent,
+  SearchQuery,
+  SearchResults,
   SessionCounters,
   Theme,
 } from '../shared/types.js';
@@ -40,6 +42,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.GET_INITIAL_STATE,
   IPC.READ_FILE,
   IPC.GET_TREE,
+  IPC.SEARCH,
   IPC.SET_THEME,
   IPC.SET_KEYBINDINGS,
   IPC.SET_LIVE_STATE,
@@ -83,6 +86,11 @@ function subscribe<T>(channel: string, handler: (payload: T) => void): () => voi
 /** Construct the bridge object exposed on window.loom. */
 export function createBridge(): LoomBridge {
   return {
+    // Host OS, captured from process.platform in this Node-context preload and
+    // deep-cloned across the contextBridge so the renderer can adapt chrome
+    // (e.g. the macOS hiddenInset title bar) WITHOUT any access to `process`.
+    // Read-only string; exposing it widens no privilege (ADDITIVE — FR-35).
+    platform: process.platform,
     getInitialState(): Promise<InitialState> {
       return ipcRenderer.invoke(assertInvoke(IPC.GET_INITIAL_STATE));
     },
@@ -93,6 +101,11 @@ export function createBridge(): LoomBridge {
     },
     getTree(): Promise<FileNode> {
       return ipcRenderer.invoke(assertInvoke(IPC.GET_TREE));
+    },
+    search(q: SearchQuery): Promise<SearchResults> {
+      // The query is forwarded as-is; the main-process sandbox is the authority
+      // on containment (Law 3). The renderer cannot widen scope.
+      return ipcRenderer.invoke(assertInvoke(IPC.SEARCH), q);
     },
     setTheme(theme: Theme): Promise<void> {
       return ipcRenderer.invoke(assertInvoke(IPC.SET_THEME), theme);
