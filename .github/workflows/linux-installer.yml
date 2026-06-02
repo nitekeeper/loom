@@ -1,0 +1,67 @@
+name: Linux installer
+
+# Build the Debian package (.deb) on a Linux runner.
+# electron-builder builds the .deb natively on ubuntu-latest using
+# fakeroot/dpkg (both preinstalled on GitHub's Ubuntu image), so no extra
+# system packages are needed. The `linux` block in electron-builder.config.cjs
+# sets executableName: 'loom' (lowercase launcher + /usr/bin symlink) so a
+# system install exposes `loom <dir>`.
+#
+# Linux has NO code-signing concept, so — unlike the Windows/macOS workflows —
+# there is no conditional signing step: every build is simply unsigned.
+#
+# Triggers:
+#   - push a tag `vX.Y.Z`  -> builds AND publishes a GitHub Release
+#   - manual `workflow_dispatch` -> builds, artifact only (no Release)
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+# Needed so a tag build can create/update a GitHub Release.
+permissions:
+  contents: write
+
+jobs:
+  build-linux-installer:
+    name: Build Linux deb installer
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      - name: Build app bundles (esbuild -> dist/)
+        run: npm run build
+
+      - name: Build Linux deb (electron-builder)
+        # --config: the build config lives in electron-builder.config.cjs (NOT
+        # in package.json's removed `build` key). electron-builder only
+        # auto-detects `electron-builder.{cjs,js,yml,...}`, NOT the
+        # `*.config.cjs` name, so it is passed explicitly here. The `--linux
+        # deb` target matches the config's linux.target.
+        run: npx electron-builder --config electron-builder.config.cjs --linux deb --publish never
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: loom-linux-installer
+          path: release/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.deb
