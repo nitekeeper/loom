@@ -202,23 +202,29 @@ export function Explorer({
   // lazily fetch the dir's children (idempotent there). `want` forces a state.
   const toggleDir = useCallback(
     (path: string, want?: boolean): void => {
-      let didOpen = false;
-      setOpen((prev) => {
-        const isOpen = prev.has(path);
-        const shouldOpen = want === undefined ? !isOpen : want;
-        if (shouldOpen === isOpen) {
-          didOpen = shouldOpen;
-          return prev;
-        }
-        const next = new Set(prev);
-        if (shouldOpen) next.add(path);
-        else next.delete(path);
-        didOpen = shouldOpen;
-        return next;
-      });
-      if (didOpen) onExpandDir?.(path);
+      // Decide from the CURRENT `open` state, read directly here — NOT from a
+      // variable assigned inside the setOpen updater. React runs that updater
+      // synchronously only when no state update is pending; the onClick handler
+      // calls setActivePath first (a pending update) and rapid clicks pile on
+      // more, so the updater gets deferred. The old code read `didOpen` from
+      // inside it and thus often saw `false`, leaving onExpandDir uncalled — the
+      // folder silently failed to open. Computing the decision from `open`
+      // (a useCallback dep, so always current) makes expand fire every time.
+      const isOpen = open.has(path);
+      const shouldOpen = want === undefined ? !isOpen : want;
+      if (shouldOpen !== isOpen) {
+        setOpen((prev) => {
+          const next = new Set(prev);
+          if (shouldOpen) next.add(path);
+          else next.delete(path);
+          return next;
+        });
+      }
+      // Fetch children on a real open. loadDir is idempotent (no-op if already
+      // loaded / in flight), so a redundant call is harmless.
+      if (shouldOpen && !isOpen) onExpandDir?.(path);
     },
-    [onExpandDir],
+    [open, onExpandDir],
   );
 
   // Keep the active row valid as the visible set changes (e.g. a collapse

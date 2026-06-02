@@ -34,16 +34,24 @@
  * to load it from cwd -> "<dir> not a file" -> exit 1 (the bug this fixes).
  *
  * NOTE on `mac.identity`:
- *   identity: null      -> electron-builder does NO signing at all (the
- *                          proven unsigned build; NOT ad-hoc). Use when unsigned.
+ *   identity: null      -> electron-builder does NO signing itself. We then
+ *                          AD-HOC sign in the afterPack hook below (see there):
+ *                          a no-cert build still gets a valid CodeDirectory so
+ *                          a downloaded copy opens via "unidentified developer"
+ *                          /Open Anyway instead of failing as "damaged" on
+ *                          Apple Silicon. No Apple account required.
  *   identity: undefined -> electron-builder auto-discovers a Developer ID
- *                          identity from the imported cert. Use when signing.
+ *                          identity from the imported cert. Use when signing
+ *                          (afterPack skips ad-hoc — the real signature stands).
  *
  * NOTE on `mac.notarize`: deliberately left UNSET (undefined). electron-builder
  * 26 notarizes ONLY when the APPLE_* env vars are present AND the app carries a
  * Developer ID signature. Leaving it unset means notarization turns itself on
  * exactly when the credentials exist — no code change per release.
  * ============================================================ */
+
+const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 // CSC_LINK is exported by the CI workflow ONLY when a cert secret is non-empty.
 // Its mere presence is our "should we sign?" signal.
@@ -56,6 +64,27 @@ module.exports = {
   copyright: 'Copyright © 2026 nitekeeper',
   directories: {
     output: 'release',
+  },
+  // Ad-hoc sign the UNSIGNED macOS build. electron-builder has no native ad-hoc
+  // identity, and `mac.identity: null` leaves the .app with NO signature at all
+  // — which on Apple Silicon makes a downloaded (quarantined) copy fail as
+  // "Loom is damaged and can't be opened". An ad-hoc signature (`codesign -s -`)
+  // gives every binary a valid CodeDirectory, so Gatekeeper instead shows the
+  // ordinary "unidentified developer" prompt (one-time Open Anyway in System
+  // Settings → Privacy & Security) — no Apple Developer account needed. When a
+  // real Developer ID cert is present (`signed`), electron-builder signs the app
+  // properly and this hook stands aside so that signature is preserved.
+  afterPack: async (context) => {
+    if (signed) return;
+    if (context.electronPlatformName !== 'darwin') return;
+    if (process.platform !== 'darwin') return; // codesign only exists on macOS
+    const appName = context.packager.appInfo.productFilename;
+    const appPath = path.join(context.appOutDir, `${appName}.app`);
+    // --deep so the nested Electron frameworks/helpers are signed too; -s -
+    // is the ad-hoc identity. Inherit stdio so the codesign line shows in logs.
+    execFileSync('codesign', ['--force', '--deep', '--sign', '-', appPath], {
+      stdio: 'inherit',
+    });
   },
   files: ['dist/**', 'package.json'],
   asar: true,
@@ -87,11 +116,12 @@ module.exports = {
     gatekeeperAssess: false,
 
     // ---- Signing fields, computed from env (see header) ----------------
-    // Unsigned (no CSC_LINK): identity:null = proven unsigned build, NO
-    // hardened runtime, NO entitlements — identical effect to the green
-    // build today. Signed (CSC_LINK present): identity:undefined =
-    // auto-discover Developer ID, hardened runtime + entitlements ON
-    // (both required for notarization).
+    // Unsigned (no CSC_LINK): identity:null — electron-builder signs nothing;
+    // the afterPack hook then AD-HOC signs the .app (no hardened runtime, no
+    // entitlements) so a downloaded copy opens via "unidentified developer"
+    // rather than failing as "damaged". Signed (CSC_LINK present):
+    // identity:undefined = auto-discover Developer ID, hardened runtime +
+    // entitlements ON (both required for notarization); afterPack stands aside.
     identity: signed ? undefined : null,
     hardenedRuntime: signed,
     entitlements: signed ? 'build/entitlements.mac.plist' : undefined,

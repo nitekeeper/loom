@@ -2638,3 +2638,58 @@ test('WATCHER: node_modules / .git / dotfiles are NOT published (noise filter)',
     await teardownWatcher(watcher, dir);
   }
 });
+
+/* ================================================================== */
+/* LISTDIR — the lazy-expand primitive (FR-2/FR-3) + its perf fast     */
+/* path. classifyEntries skips the per-entry realpath for NON-symlinks  */
+/* (a plain entry in a contained dir can't escape) and skips statSync   */
+/* for plain dirs (shallow nodes). This test pins that the output +     */
+/* ordering are unchanged AND that an escaping SYMLINK is still dropped  */
+/* (Law 3 containment must survive the optimization).                   */
+/* ================================================================== */
+test('LISTDIR: dirs-first children, shallow dirs + sized files, escaping symlink EXCLUDED (Law 3)', async () => {
+  const { createSandbox } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-listdir-'));
+  const outside = mkdtempSync(path.join(tmpdir(), 'loom-secret-'));
+  try {
+    mkdirSync(path.join(root, 'sub'));
+    mkdirSync(path.join(root, 'sub', 'inner'));
+    writeFileSync(path.join(root, 'sub', 'a.ts'), 'const a = 1;\n');
+    writeFileSync(path.join(root, 'sub', 'z.md'), '# z\n');
+    writeFileSync(path.join(outside, 'secret.txt'), 'password leak\n');
+    // A symlink INSIDE the listed dir that points OUTSIDE the root.
+    try {
+      symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'sub', 'escape.txt'));
+    } catch {
+      /* some sandboxes disallow symlink creation — exclusion still asserted */
+    }
+
+    const kids = createSandbox(root).listDir('sub');
+    const names = kids.map((n) => n.name);
+
+    // Containment: the escaping symlink must NEVER be listed, even though plain
+    // entries now skip the realpath check (symlinks still take the checked path).
+    assert.ok(!names.includes('escape.txt'), 'escaping symlink must be excluded (Law 3)');
+
+    // Ordering unchanged: dirs first, then files, each case-insensitive alpha.
+    assert.deepEqual(
+      names,
+      ['inner', 'a.ts', 'z.md'],
+      'dirs-first then alpha ordering must survive the fast path',
+    );
+
+    // A directory child is SHALLOW (loaded:false, no children) — the lazy node.
+    const inner = kids.find((n) => n.name === 'inner');
+    assert.equal(inner.type, 'dir');
+    assert.equal(inner.loaded, false);
+
+    // A file child still carries the metadata the UI needs (proves the stat ran).
+    const a = kids.find((n) => n.name === 'a.ts');
+    assert.equal(a.type, 'file');
+    assert.equal(typeof a.size, 'number');
+    assert.equal(typeof a.mtimeMs, 'number');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});

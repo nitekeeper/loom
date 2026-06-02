@@ -247,36 +247,78 @@ export function createSandbox(rootArg: string): Sandbox {
    *  dropped (not representable). */
   function classifyEntries(
     absDir: string,
-  ): Array<{ name: string; abs: string; st: Stats }> {
+  ): Array<{ name: string; abs: string; isDir: boolean; st: Stats | null }> {
     let entries: Dirent[];
     try {
       entries = readdirSync(absDir, { withFileTypes: true });
     } catch {
       return [];
     }
-    const out: Array<{ name: string; abs: string; st: Stats }> = [];
+    // PERF (Law 3 preserved): the expensive part is per-entry work — a
+    // realpathSync.native (which canonicalizes the WHOLE path, resolving a
+    // symlink at every level: O(path-depth) syscalls each) plus a statSync.
+    // On a large dir, or a network / cloud-synced volume where each syscall has
+    // high latency, that dominates listDir() and stalls the lazy expand. Two
+    // facts let us skip almost all of it without weakening containment:
+    //   1. A NON-symlink entry physically resides in `absDir`, which the caller
+    //      already proved contained — only a SYMLINK can point outside root, so
+    //      the realpath escape-check is needed for symlinks ONLY.
+    //   2. A plain DIRECTORY becomes a shallow node (no size/mtime), so it needs
+    //      no statSync at all — the Dirent's own type is enough.
+    // The Dirent type comes from readdirSync({withFileTypes}) for free. When the
+    // filesystem doesn't report a d_type (some network FS leave it UNKNOWN, so
+    // every Dirent.isX() is false), we fall back to the original realpath+stat
+    // path — correct everywhere, just without the speedup on those volumes.
+    const out: Array<{
+      name: string;
+      abs: string;
+      isDir: boolean;
+      st: Stats | null;
+    }> = [];
     for (const entry of entries) {
       const name = entry.name;
       if (shouldSkip(name)) continue;
       const childAbs = path.join(absDir, name);
-      // Containment guard: an entry that resolves (via symlink) out of the
-      // root is dropped entirely (Law 3).
-      const childPhysical = realpathExistingPrefix(childAbs);
-      if (childPhysical !== null && !isInsideRoot(childPhysical)) continue;
-      let st: Stats;
-      try {
-        // FOLLOWS symlinks — only CLASSIFIES a path already proven contained.
-        st = statSync(childAbs, { throwIfNoEntry: true });
-      } catch {
-        continue; // vanished mid-walk; skip silently
+
+      let isDir: boolean;
+      let st: Stats | null = null;
+
+      if (entry.isDirectory()) {
+        // Plain directory: contained by (1), shallow node by (2) — no syscall.
+        isDir = true;
+      } else if (entry.isFile()) {
+        // Plain file: contained by (1); stat ONLY for the node's size + mtime.
+        try {
+          st = statSync(childAbs, { throwIfNoEntry: true });
+        } catch {
+          continue; // vanished mid-walk; skip silently
+        }
+        isDir = false;
+      } else {
+        // Symlink, special file (socket/fifo/device), or an UNKNOWN-d_type
+        // entry: take the original safe path — realpath-contain (Law 3), then
+        // stat to follow + classify. Anything not a dir/file is dropped.
+        const childPhysical = realpathExistingPrefix(childAbs);
+        if (childPhysical !== null && !isInsideRoot(childPhysical)) continue;
+        try {
+          st = statSync(childAbs, { throwIfNoEntry: true });
+        } catch {
+          continue;
+        }
+        if (st.isDirectory()) {
+          isDir = true;
+          st = null; // dir node carries no size/mtime
+        } else if (st.isFile()) {
+          isDir = false;
+        } else {
+          continue; // socket/fifo/device/dangling — not representable
+        }
       }
-      if (!st.isDirectory() && !st.isFile()) continue;
-      out.push({ name, abs: childAbs, st });
+
+      out.push({ name, abs: childAbs, isDir, st });
     }
     out.sort((a, b) => {
-      const ad = a.st.isDirectory();
-      const bd = b.st.isDirectory();
-      if (ad !== bd) return ad ? -1 : 1;
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
       const an = a.name.toLowerCase();
       const bn = b.name.toLowerCase();
       if (an < bn) return -1;
@@ -319,11 +361,12 @@ export function createSandbox(rootArg: string): Sandbox {
   /** The immediate children of `absDir`, one level deep — directories shallow
    *  (unloaded), files fully described. */
   function listChildren(absDir: string): FileNode[] {
-    return classifyEntries(absDir).map((e) =>
-      e.st.isDirectory()
-        ? dirNodeShallow(e.name, toRelPosix(e.abs))
-        : fileNode(e.name, toRelPosix(e.abs), e.st),
-    );
+    return classifyEntries(absDir).map((e) => {
+      // e.st is non-null exactly when e.isDir is false (a file) — narrow on both
+      // so fileNode receives a real Stats without a non-null assertion.
+      if (e.isDir || e.st === null) return dirNodeShallow(e.name, toRelPosix(e.abs));
+      return fileNode(e.name, toRelPosix(e.abs), e.st);
+    });
   }
 
   /** The root node plus ONLY its first level of children (FR-2). Deeper levels
@@ -368,9 +411,9 @@ export function createSandbox(rootArg: string): Sandbox {
       if (depth > MAX_TREE_DEPTH) return;
       for (const e of classifyEntries(absDir)) {
         if (out.length >= maxFiles) return;
-        if (e.st.isDirectory()) {
+        if (e.isDir) {
           visit(e.abs, depth + 1);
-        } else {
+        } else if (e.st !== null) {
           out.push(fileNode(e.name, toRelPosix(e.abs), e.st));
         }
       }
