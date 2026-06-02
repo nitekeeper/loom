@@ -2504,3 +2504,137 @@ test('PATH win32: the SHIPPING resolveInRoot conversion (path.resolve, POSIX rel
     'an absolute-drive rel overrides the base (rejected by resolveInRoot.isInsideRoot)',
   );
 });
+
+/* ================================================================== */
+/* WATCHER — live FileEvents over a real temp dir (FR-14, FR-39).      */
+/* The v0.5.4 engine swap (native recursive fs.watch on darwin/win32,  */
+/* chokidar fallback on linux) must preserve the FileEvent contract:   */
+/* add/change/unlink + addDir/unlinkDir, root-relative POSIX paths,    */
+/* and the ignore filter (.git / node_modules / dotfiles / .loom).     */
+/* These tests drive the REAL createWatcher against a temp dir, so they */
+/* run whichever engine the test host selects.                          */
+/* ================================================================== */
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Poll captured file events for one matching `pred` until `timeoutMs`. */
+async function waitForFile(events, pred, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const hit = events.find(pred);
+    if (hit) return hit;
+    if (Date.now() >= deadline) return null;
+    await delay(25);
+  }
+}
+
+/** Spin up the real watcher over a fresh temp dir; capture file events. */
+async function freshWatcher() {
+  const mod = await kit();
+  const createWatcher = requireExport(mod, 'createWatcher');
+  const createEventBus = requireExport(mod, 'createEventBus');
+  const dir = mkdtempSync(path.join(tmpdir(), 'loom-watch-'));
+  const bus = createEventBus();
+  const events = [];
+  bus.subscribe((e) => {
+    if (e.kind === 'file') events.push(e);
+  });
+  const watcher = createWatcher(dir, bus);
+  watcher.start();
+  // Warmup: the chokidar fallback (linux) must finish its initial scan before
+  // it reliably reports live mutations; the native engine is live immediately.
+  await delay(300);
+  return { dir, events, watcher };
+}
+
+async function teardownWatcher(watcher, dir) {
+  await watcher.stop();
+  rmSync(dir, { recursive: true, force: true });
+}
+
+test('WATCHER: a new file -> add, a write -> change, a delete -> unlink (FR-39)', async () => {
+  const { dir, events, watcher } = await freshWatcher();
+  try {
+    const abs = path.join(dir, 'note.txt');
+    writeFileSync(abs, 'hello');
+    const add = await waitForFile(
+      events,
+      (e) => e.action === 'add' && e.path === 'note.txt',
+    );
+    assert.ok(add, 'expected an `add` event for note.txt');
+    assert.equal(add.path, 'note.txt', 'add path must be root-relative POSIX');
+
+    await delay(80); // distinct from any creation-trailing change
+    writeFileSync(abs, 'hello world');
+    const change = await waitForFile(
+      events,
+      (e) => e.action === 'change' && e.path === 'note.txt',
+    );
+    assert.ok(change, 'expected a `change` event after the rewrite');
+
+    rmSync(abs);
+    const unlink = await waitForFile(
+      events,
+      (e) => e.action === 'unlink' && e.path === 'note.txt',
+    );
+    assert.ok(unlink, 'expected an `unlink` event after delete');
+  } finally {
+    await teardownWatcher(watcher, dir);
+  }
+});
+
+test('WATCHER: a new/removed directory -> addDir / unlinkDir', async () => {
+  const { dir, events, watcher } = await freshWatcher();
+  try {
+    const sub = path.join(dir, 'pkg');
+    mkdirSync(sub);
+    const addDir = await waitForFile(
+      events,
+      (e) => e.action === 'addDir' && e.path === 'pkg',
+    );
+    assert.ok(addDir, 'expected an `addDir` event for pkg/');
+
+    rmSync(sub, { recursive: true, force: true });
+    const unlinkDir = await waitForFile(
+      events,
+      (e) => e.action === 'unlinkDir' && e.path === 'pkg',
+    );
+    assert.ok(
+      unlinkDir,
+      'expected an `unlinkDir` event for pkg/ (delete classified via the dir set)',
+    );
+  } finally {
+    await teardownWatcher(watcher, dir);
+  }
+});
+
+test('WATCHER: node_modules / .git / dotfiles are NOT published (noise filter)', async () => {
+  const { dir, events, watcher } = await freshWatcher();
+  try {
+    mkdirSync(path.join(dir, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(path.join(dir, 'node_modules', 'dep', 'index.js'), 'x');
+    mkdirSync(path.join(dir, '.git'), { recursive: true });
+    writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: x');
+    writeFileSync(path.join(dir, '.env'), 'SECRET=1'); // dotfile
+    // A legit file written LAST acts as a sentinel: once it arrives, any noise
+    // events that were going to fire already have.
+    writeFileSync(path.join(dir, 'real.txt'), 'ok');
+    const real = await waitForFile(events, (e) => e.path === 'real.txt');
+    assert.ok(real, 'the non-ignored sentinel real.txt must be reported');
+    await delay(150); // let any stragglers land
+
+    const noisy = events.find(
+      (e) =>
+        e.path === '.env' ||
+        e.path.startsWith('node_modules') ||
+        e.path.startsWith('.git'),
+    );
+    assert.equal(
+      noisy,
+      undefined,
+      `ignored paths must never publish (saw ${noisy && noisy.path})`,
+    );
+  } finally {
+    await teardownWatcher(watcher, dir);
+  }
+});
