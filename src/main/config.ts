@@ -12,9 +12,13 @@
  * ============================================================ */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { LoomConfig, Theme } from '../shared/types.js';
+import { MAX_BODY_LENGTH, type LoomConfig, type Theme } from '../shared/types.js';
 
-export const DEFAULT_CONFIG: LoomConfig = { theme: 'dark', keybindings: {} };
+export const DEFAULT_CONFIG: LoomConfig = {
+  theme: 'dark',
+  keybindings: {},
+  maxMessageLength: MAX_BODY_LENGTH,
+};
 
 export const CONFIG_FILENAME = 'loom-config.json';
 
@@ -39,16 +43,31 @@ function coerceKeybindings(value: unknown): Record<string, string> {
   return out;
 }
 
+/** Coerce an unknown value into a valid maxMessageLength (a POSITIVE INTEGER),
+ *  falling back to the MAX_BODY_LENGTH default on anything else (missing,
+ *  non-number, NaN/Infinity, zero/negative, or non-integer). Mirrors the
+ *  tolerant theme/keybinding coercion: a damaged config never throws. */
+function coerceMaxMessageLength(value: unknown): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  return MAX_BODY_LENGTH;
+}
+
 /** Validate + normalize an unknown parsed object into a LoomConfig. */
 function coerceConfig(parsed: unknown): LoomConfig {
   let theme: Theme = DEFAULT_CONFIG.theme;
   let keybindings: Record<string, string> = {};
+  let maxMessageLength = MAX_BODY_LENGTH;
   if (parsed && typeof parsed === 'object') {
     const t = (parsed as { theme?: unknown }).theme;
     if (t === 'dark' || t === 'light') theme = t;
     keybindings = coerceKeybindings((parsed as { keybindings?: unknown }).keybindings);
+    maxMessageLength = coerceMaxMessageLength(
+      (parsed as { maxMessageLength?: unknown }).maxMessageLength,
+    );
   }
-  return { theme, keybindings };
+  return { theme, keybindings, maxMessageLength };
 }
 
 class FileConfigStore implements ConfigStore {

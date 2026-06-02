@@ -4,7 +4,13 @@
  * Owns the in-memory SQLite database (sql.js). Loads sql-wasm.wasm
  * and schema.sql from __dirname (dist/), enables foreign keys, and
  * flushes the serialized DB to <root>/.loom/loom.db on each mutation
- * for in-session durability (NFR-7). Fresh DB per launch (OQ-2).
+ * for durability (NFR-7).
+ *
+ * PERSISTENCE (R2, OPTION A — supersedes the original "fresh DB per
+ * launch" OQ-2 default): chat PERSISTS across launches. init() LOADS an
+ * existing <root>/.loom/loom.db when present (falling back to a fresh
+ * schema only when absent or the file is corrupt). Content is removed
+ * only by the explicit human-invoked purge_all tool — never on close.
  *
  * This module is the ONLY place that talks to sql.js. engine.ts
  * operates over the typed query helpers exported here so the
@@ -14,7 +20,7 @@
  * burst of mutations becomes a single serialize()+write instead of one
  * disk write per mutation. flushNow() forces a synchronous write.
  * ============================================================ */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import initSqlJs from 'sql.js';
 import type { Database, SqlValue, Statement } from 'sql.js';
@@ -40,6 +46,20 @@ export interface LoomDb {
   init(rootDir: string): Promise<void>;
   /** Serialize + write to <root>/.loom/loom.db. */
   flush(): void;
+  /** Force a SYNCHRONOUS serialize()+write right now (no debounce). Used on
+   *  graceful close so the persisted loom.db reflects the latest state before
+   *  close() (R2). No-op after close(). */
+  flushNow(): void;
+  /** Delete ALL chat data in FK-safe order (receipts -> messages ->
+   *  memberships -> channels -> agents) and flush the now-empty db. Used by the
+   *  human-invoked purge_all tool (R4). */
+  purgeAll(): void;
+  /** Cancel any pending debounced flush and free the sql.js database, stopping
+   *  all further disk writes. After close() neither flush() nor flushNow() can
+   *  ever touch loom.db again. R2: close() does NOT delete the file — the
+   *  serialized loom.db persists across launches; a final flushNow() before
+   *  close() keeps it current. Idempotent. */
+  close(): void;
   /** Ad-hoc raw read (sql.js-native shape). Used for schema introspection
    *  (AC-16) and read-only diagnostics; never mutates + never flushes.
    *  Returns [] for an empty result set. */
@@ -95,24 +115,74 @@ class SqlJsLoomDb implements LoomDb {
   private db: Database | null = null;
   private dbFile = '';
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Once closed, no flush may ever write loom.db again (shutdown teardown). */
+  private closed = false;
 
   async init(rootDir: string): Promise<void> {
     // sql.js wasm + schema sit beside this bundle (dist/) — see build.mjs.
     const SQL = await initSqlJs({
       locateFile: (f: string) => path.join(__dirname, f),
     });
-    // Fresh DB per launch (OQ-2): construct an empty database, then DDL.
-    this.db = new SQL.Database();
-    const schema = readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-    // PRAGMA foreign_keys must be set per-connection at runtime (sql.js).
-    this.db.run('PRAGMA foreign_keys = ON;');
-    this.db.run(schema);
 
     const loomDir = path.join(rootDir, '.loom');
     mkdirSync(loomDir, { recursive: true });
     this.dbFile = path.join(loomDir, 'loom.db');
-    // Write an initial (empty-schema) snapshot so the file exists.
-    this.flushNow();
+
+    // R2 (OPTION A): chat PERSISTS across launches. If a loom.db already exists
+    // for this folder, LOAD it (sql.js opens the serialized bytes) so prior
+    // agents/channels/messages/receipts survive a relaunch. Only when the file
+    // is absent — or loading fails (corrupt/incompatible bytes) — do we build a
+    // fresh schema. We must NOT re-run schema.sql over a LOADED db: its CREATE
+    // TABLEs (even IF NOT EXISTS) would be redundant and a non-guarded DDL would
+    // clash; the loaded image already carries the schema. foreign_keys is a
+    // per-connection PRAGMA in sql.js, so set it on BOTH paths.
+    //
+    // SINGLE-WRITER-PER-FOLDER ASSUMPTION (known limitation, not yet enforced):
+    // each instance loads the WHOLE serialized image into memory and, on flush,
+    // writes the WHOLE image back (full-image, last-writer-wins). So if TWO
+    // windows open the SAME folder, the later flush durably CLOBBERS the other
+    // window's writes. This is mitigated — not solved — by mcp.json ownership:
+    // discovered agents are routed to a single owning instance, so in practice
+    // only one window mutates chat for a folder. There is intentionally NO
+    // folder lock here yet (a separate decision); treat one writer per folder as
+    // the contract until a lock lands.
+    let loaded = false;
+    if (existsSync(this.dbFile)) {
+      try {
+        const bytes = readFileSync(this.dbFile);
+        this.db = new SQL.Database(bytes);
+        // Touch a known table so a corrupt/incompatible image fails HERE
+        // (rather than on the first real query) and we fall back to fresh.
+        this.db.run('PRAGMA foreign_keys = ON;');
+        this.db.exec('SELECT 1 FROM agents LIMIT 1;');
+        loaded = true;
+      } catch (err) {
+        // Corrupt/incompatible existing db: discard it and start fresh so a
+        // bad file can never wedge boot. Surface a warning for diagnostics.
+        process.stderr.write(
+          `[loom:db] existing loom.db could not be loaded (${String(err)}); ` +
+            `starting a fresh database.\n`,
+        );
+        try {
+          this.db?.close();
+        } catch {
+          /* ignore */
+        }
+        this.db = null;
+        loaded = false;
+      }
+    }
+
+    if (!loaded) {
+      // Fresh database: construct empty, then run the Appendix-A DDL.
+      this.db = new SQL.Database();
+      const schema = readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+      // PRAGMA foreign_keys must be set per-connection at runtime (sql.js).
+      this.db.run('PRAGMA foreign_keys = ON;');
+      this.db.run(schema);
+      // Write an initial (empty-schema) snapshot so the file exists on disk.
+      this.flushNow();
+    }
   }
 
   private get conn(): Database {
@@ -363,6 +433,8 @@ class SqlJsLoomDb implements LoomDb {
 
   /** Schedule a coalesced disk write (R-1). Multiple calls collapse into one. */
   flush(): void {
+    // After close() no write may resurrect loom.db (shutdown teardown).
+    if (this.closed) return;
     if (this.flushTimer !== null) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
@@ -374,15 +446,53 @@ class SqlJsLoomDb implements LoomDb {
     }
   }
 
-  /** Force a synchronous serialize()+write right now. */
-  private flushNow(): void {
-    if (!this.db || !this.dbFile) return;
+  /** Force a synchronous serialize()+write right now. Public (R2) so graceful
+   *  close can persist the latest state before close(). No-op after close(). */
+  flushNow(): void {
+    if (this.closed || !this.db || !this.dbFile) return;
     if (this.flushTimer !== null) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
     const bytes = this.db.export();
     writeFileSync(this.dbFile, bytes);
+  }
+
+  /** Delete ALL chat data in FK-safe order, then flush the now-empty db (R4,
+   *  purge_all). Children before parents so foreign-key constraints hold:
+   *  receipts -> messages -> memberships -> channels -> agents.
+   *
+   *  flushNow() (not the debounced flush): a deliberate, irreversible purge
+   *  must be durable SYNCHRONOUSLY, so a crash within the ~75ms debounce window
+   *  can't reload the un-purged data on the next launch. */
+  purgeAll(): void {
+    const conn = this.conn;
+    conn.run('DELETE FROM receipts;');
+    conn.run('DELETE FROM messages;');
+    conn.run('DELETE FROM memberships;');
+    conn.run('DELETE FROM channels;');
+    conn.run('DELETE FROM agents;');
+    this.flushNow();
+  }
+
+  /** Cancel any pending debounced flush and free the database (R2 teardown).
+   *  After this, flush()/flushNow() are inert. Does NOT delete loom.db — the
+   *  serialized file persists across launches (a final flushNow() before
+   *  close() keeps it current). Idempotent. */
+  close(): void {
+    this.closed = true;
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch {
+        /* sql.js free() may throw if already freed; ignore on teardown. */
+      }
+      this.db = null;
+    }
   }
 }
 

@@ -8,7 +8,7 @@
  *   createDb       — sql.js store (locates sql-wasm.wasm + schema.sql
  *                    via __dirname, so testkit.cjs MUST sit in dist/
  *                    beside those assets).
- *   createEngine   — the 9 tools as pure fns over (db, bus).
+ *   createEngine   — the 10 tools as pure fns over (db, bus).
  *   createEventBus — in-process pub/sub for LoomEvent.
  *   kindOf,
  *   dispatchFor    — the canonical file-dispatch table (ext -> kind ->
