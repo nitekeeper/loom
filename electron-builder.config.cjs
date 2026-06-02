@@ -131,4 +131,22 @@ module.exports = {
   dmg: {
     title: 'Loom ${version}',
   },
+  // ---- Linux ---------------------------------------------------------------
+  // Produces a Debian package installable via `sudo apt install ./Loom_*.deb`.
+  // electron-builder builds the .deb natively (uses fakeroot/dpkg, both present
+  // on the target). `executableName: 'loom'` makes the launcher binary and the
+  // /usr/bin symlink lowercase `loom`, so a system install exposes `loom <dir>`
+  // — the packaged main process resolves that folder from argv (or shows a
+  // folder picker when launched bare), matching bin/loom.cjs's LOOM_ROOT path.
+  // No signing concept on Linux, so this block is env-independent.
+  linux: {
+    target: [{ target: 'deb', arch: ['x64'] }],
+    icon: 'build/icon.png',
+    executableName: 'loom',
+    category: 'Development',
+    maintainer: 'nitekeeper <130331363+nitekeeper@users.noreply.github.com>',
+    synopsis:
+      'Desktop viewer with a built-in chat layer that AI agents use to communicate, watched live by a human.',
+    artifactName: 'Loom_${version}_${arch}.${ext}',
+  },
 };
