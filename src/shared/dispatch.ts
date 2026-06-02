@@ -24,9 +24,20 @@ import type { FileDispatch, FileKind, RenderState } from './types.js';
 export const CODE_EXTS: ReadonlySet<string> = new Set([
   'js', 'mjs', 'cjs', 'jsx', 'ts', 'mts', 'cts', 'tsx',
   'json', 'jsonc', 'css', 'scss', 'less', 'py', 'txt',
-  'yaml', 'yml', 'toml', 'ini', 'env', 'sh', 'bash',
+  'yaml', 'yml', 'toml', 'ini', 'env', 'sh', 'bash', 'zsh', 'fish',
   'sql', 'md', // md handled before this set, listed for completeness
   'xml', 'csv', 'log', 'rs', 'go', 'java', 'c', 'h', 'cpp', 'rb',
+  // PHP (incl. blade templates: foo.blade.php -> 'php' via extensionOf).
+  'php', 'phtml',
+  // C-family + JVM + other common backend/source languages.
+  'cc', 'cxx', 'hpp', 'hxx', 'm', 'mm', 'cs', 'kt', 'kts', 'swift',
+  'scala', 'groovy', 'gradle', 'clj', 'cljs', 'ex', 'exs', 'erl',
+  'lua', 'pl', 'pm', 'r', 'dart', 'proto', 'tf',
+  // Web component + query/templating formats.
+  'vue', 'svelte', 'graphql', 'gql', 'astro', 'hbs', 'ejs', 'twig',
+  // Misc config/markup commonly read as text.
+  'properties', 'conf', 'cfg', 'dockerfile', 'editorconfig', 'gitignore',
+  'gitattributes', 'lock', 'neon', 'ps1',
 ]);
 
 /** Extensions treated as images -> PREVIEW placeholder (never decoded). */

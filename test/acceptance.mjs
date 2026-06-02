@@ -2693,3 +2693,71 @@ test('LISTDIR: dirs-first children, shallow dirs + sized files, escaping symlink
     rmSync(outside, { recursive: true, force: true });
   }
 });
+
+/* ================================================================== */
+/* EXPLORER visibility + file-type handling (v0.5.6)                    */
+/*  - the tree shows EVERYTHING (dotfiles, .git, node_modules, .loom);  */
+/*    only the SEARCH walk skips the heavy VCS/dep/internal dirs.       */
+/*  - readFile shows source for any file that LOOKS textual, regardless */
+/*    of extension (content sniff), while true binaries stay metadata.  */
+/* ================================================================== */
+test('TREE shows all (dotfiles + .git + node_modules); SEARCH still skips heavy dirs', async () => {
+  const { createSandbox, createSearch } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-showall-'));
+  try {
+    mkdirSync(path.join(root, '.git'));
+    mkdirSync(path.join(root, 'node_modules'));
+    mkdirSync(path.join(root, '.github'));
+    writeFileSync(path.join(root, '.env'), 'APP_KEY=1\n');
+    writeFileSync(path.join(root, '.git', 'config'), 'findme_token\n');
+    writeFileSync(path.join(root, 'app.php'), '<?php // findme_token\n');
+    const sb = createSandbox(root);
+
+    const names = sb.buildTree().children.map((c) => c.name).sort();
+    for (const n of ['.env', '.git', '.github', 'app.php', 'node_modules']) {
+      assert.ok(names.includes(n), `tree must show "${n}" (show-all, nothing hidden)`);
+    }
+
+    const hits = createSearch(sb).run({ query: 'findme_token' }).results.map((r) => r.path);
+    assert.ok(hits.includes('app.php'), 'search finds the in-repo file');
+    assert.ok(
+      !hits.some((p) => p.startsWith('.git')),
+      'search must still skip .git (heavy-dir skip), even though the tree shows it',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('READFILE sniff: extensionless text -> source; NUL-byte binary -> metadata-only (Law 2)', async () => {
+  const { createSandbox } = await kit();
+  const root = mkdtempSync(path.join(tmpdir(), 'loom-sniff-'));
+  try {
+    writeFileSync(path.join(root, 'Dockerfile'), 'FROM php:8.2\nRUN composer install\n');
+    writeFileSync(path.join(root, 'artisan'), '#!/usr/bin/env php\n<?php\n');
+    writeFileSync(path.join(root, '.env'), 'APP_KEY=secret\n');
+    writeFileSync(path.join(root, 'blob.bin'), Buffer.from([0x48, 0x69, 0x00, 0x01, 0x02]));
+    const sb = createSandbox(root);
+
+    for (const name of ['Dockerfile', 'artisan', '.env']) {
+      const r = sb.readFile(name);
+      assert.notEqual(r.text, null, `${name} (extensionless text) must show its contents`);
+      assert.equal(r.dispatch.kind, 'code', `${name} sniffed-text -> kind 'code'`);
+      assert.equal(r.dispatch.renderState, 'SOURCE');
+      assert.equal(r.dispatch.safetyBanner, false, 'sniffed source carries no safety banner');
+    }
+
+    const bin = sb.readFile('blob.bin');
+    assert.equal(bin.text, null, 'a file with a NUL byte must stay metadata-only (Law 2)');
+    assert.equal(bin.dispatch.kind, 'binary');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('DISPATCH: .php (and other added exts) classify as code', async () => {
+  const { kindOf } = await kit();
+  for (const f of ['Service.php', 'view.blade.php', 'phpstan.neon', 'deploy.ps1', 'schema.graphql', 'Component.vue']) {
+    assert.equal(kindOf(f), 'code', `${f} must classify as code`);
+  }
+});

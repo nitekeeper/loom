@@ -59,8 +59,9 @@ export interface Sandbox {
  *  Larger text files are reported via metadata only (text=null). */
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 
-/** Directory / entry names never surfaced in the tree (FR-3 hygiene).
- *  '.loom' is Loom's own DB dir under the root; the rest are noise/secrets. */
+/** Heavy VCS / dependency / internal dirs the SEARCH walk skips (so content
+ *  search doesn't crawl git's binary object store or dep trees). The explorer
+ *  TREE does NOT skip these — it shows everything (see classifyEntries). */
 const SKIP_NAMES: ReadonlySet<string> = new Set([
   '.loom',
   'node_modules',
@@ -123,6 +124,30 @@ function humanModified(mtimeMs: number): string {
 function isTextKind(name: string): boolean {
   const kind = kindOf(name);
   return kind === 'md' || kind === 'code' || kind === 'svg' || kind === 'html';
+}
+
+/** Bytes inspected by the text sniff. A NUL byte anywhere in this prefix marks
+ *  the file binary (the heuristic git uses for blobs). */
+const SNIFF_BYTES = 64 * 1024;
+
+/** Read a file as UTF-8 text IFF it LOOKS textual — i.e. no NUL byte in its
+ *  first SNIFF_BYTES. Returns the decoded string, or null for a binary file or
+ *  any read error. This is how the viewer shows source whose EXTENSION isn't in
+ *  the dispatch table (Dockerfile, Makefile, artisan, LICENSE, .env, …) without
+ *  ever rendering true binaries as garbage. Law 1 safe (byte inspection, no
+ *  parse/eval); the caller bounds size to MAX_TEXT_BYTES before calling. */
+function readIfText(abs: string): string | null {
+  let buf: Buffer;
+  try {
+    buf = readFileSync(abs);
+  } catch {
+    return null;
+  }
+  const sniffLen = Math.min(buf.length, SNIFF_BYTES);
+  for (let i = 0; i < sniffLen; i += 1) {
+    if (buf[i] === 0) return null; // NUL byte -> binary
+  }
+  return buf.toString('utf8');
 }
 
 /* ------------------------------------------------------------------ */
@@ -247,6 +272,7 @@ export function createSandbox(rootArg: string): Sandbox {
    *  dropped (not representable). */
   function classifyEntries(
     absDir: string,
+    skipNoiseDirs = false,
   ): Array<{ name: string; abs: string; isDir: boolean; st: Stats | null }> {
     let entries: Dirent[];
     try {
@@ -277,7 +303,12 @@ export function createSandbox(rootArg: string): Sandbox {
     }> = [];
     for (const entry of entries) {
       const name = entry.name;
-      if (shouldSkip(name)) continue;
+      // The TREE shows everything (FR-3: nothing hidden — dotfiles, .git,
+      // node_modules, .loom all appear; deep dirs stay cheap via lazy loading).
+      // Only the SEARCH walk (skipNoiseDirs=true) skips the heavy VCS/dep/
+      // internal dirs, so content search doesn't crawl git's binary object
+      // store or dependency trees.
+      if (skipNoiseDirs && SKIP_NAMES.has(name)) continue;
       const childAbs = path.join(absDir, name);
 
       let isDir: boolean;
@@ -409,7 +440,8 @@ export function createSandbox(rootArg: string): Sandbox {
     const visit = (absDir: string, depth: number): void => {
       if (out.length >= maxFiles) return;
       if (depth > MAX_TREE_DEPTH) return;
-      for (const e of classifyEntries(absDir)) {
+      // Search skips the heavy VCS/dep/internal dirs (skipNoiseDirs=true).
+      for (const e of classifyEntries(absDir, true)) {
         if (out.length >= maxFiles) return;
         if (e.isDir) {
           visit(e.abs, depth + 1);
@@ -431,7 +463,7 @@ export function createSandbox(rootArg: string): Sandbox {
 
     const relPosix = toRelPosix(abs);
     const name = path.basename(abs);
-    const dispatch = dispatchFor(name);
+    let dispatch = dispatchFor(name);
 
     const meta: FileMeta = {
       name,
@@ -440,15 +472,31 @@ export function createSandbox(rootArg: string): Sandbox {
       modified: humanModified(st.mtimeMs),
     };
 
+    // Law 2: never read images/binaries (metadata-only); a file over the size
+    // cap is also metadata-only to bound memory. Within those bounds:
+    //   - a known text-render kind (md/svg/html/code by extension) is read as
+    //     UTF-8 and rendered per its dispatch (markdown, safety-bannered HTML/
+    //     SVG, or highlighted source);
+    //   - an UNKNOWN extension (kind 'binary') is SNIFFED: the extension table
+    //     can't enumerate every text file (Dockerfile, Makefile, artisan,
+    //     LICENSE, dotfiles, …), so if the bytes look textual we show it as
+    //     plain source. True binaries (NUL byte) stay metadata-only.
     let text: string | null = null;
-    // Law 2: only renderable text kinds are read; images/binaries are
-    // NEVER read or encoded — metadata/placeholder only. A text file
-    // over the size cap is also treated as metadata-only to bound memory.
-    if (isTextKind(name) && st.size <= MAX_TEXT_BYTES) {
-      try {
-        text = readFileSync(abs, 'utf8');
-      } catch {
-        text = null;
+    if (st.size <= MAX_TEXT_BYTES && dispatch.kind !== 'image') {
+      if (isTextKind(name)) {
+        try {
+          text = readFileSync(abs, 'utf8');
+        } catch {
+          text = null;
+        }
+      } else if (dispatch.kind === 'binary') {
+        const sniffed = readIfText(abs);
+        if (sniffed !== null) {
+          text = sniffed;
+          // Recovered text from an unrecognized extension -> present as plain
+          // highlighted source (no markdown render, no HTML/SVG safety banner).
+          dispatch = { kind: 'code', renderState: 'SOURCE', safetyBanner: false };
+        }
       }
     }
 
@@ -470,11 +518,3 @@ export function createSandbox(rootArg: string): Sandbox {
 /* Module-level pure helpers                                           */
 /* ------------------------------------------------------------------ */
 
-/** True if a directory entry must be excluded from the tree:
- *  Loom's own state dir, VCS/dep noise, and dotfiles/dotdirs. */
-function shouldSkip(name: string): boolean {
-  if (SKIP_NAMES.has(name)) return true;
-  // Skip all dotfiles/dotdirs (secrets, caches) but never '.'/'..'.
-  if (name.startsWith('.')) return true;
-  return false;
-}
