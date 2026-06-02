@@ -1,7 +1,7 @@
 /* ============================================================
- * Loom — tool engine (PURE business logic for the 9 MCP tools)
+ * Loom — tool engine (PURE business logic for the 10 MCP tools)
  * ------------------------------------------------------------
- * The heart of the chat system. Implements all 9 tools as pure
+ * The heart of the chat system. Implements all 10 tools as pure
  * functions over a LoomDb + EventBus. Importable WITHOUT Electron
  * so the acceptance suite (test/acceptance.mjs) can exercise every
  * tool directly. mcp.ts is a thin wrapper over this module.
@@ -22,6 +22,8 @@
  *
  * Timestamps: epoch milliseconds from the standard JS wall clock.
  * ============================================================ */
+import { readdirSync, rmSync, type Dirent } from 'node:fs';
+import path from 'node:path';
 import {
   HERE_TOKEN,
   LoomError,
@@ -45,6 +47,7 @@ import {
   type ReadMessagesResult,
   type RegisterParams,
   type RegisterResult,
+  type PurgeAllResult,
   type SendMessageParams,
   type SendMessageResult,
   type UnreadMessage,
@@ -55,8 +58,33 @@ import type { EventBus } from './eventbus.js';
 /** Maximum length of a body preview returned by check_inbox (FR-25). */
 const PREVIEW_MAX = 80;
 
+/** Runtime engine options (R1/R4). All optional so the Electron-free test
+ *  harness can construct the engine with just (db, bus) and get the defaults. */
+export interface EngineOptions {
+  /** Per-message body cap (SEC-6), resolved from config; defaults to
+   *  MAX_BODY_LENGTH when unset. Enforced authoritatively in send_message. */
+  maxBodyLength?: number;
+  /** Sandbox root, used by purge_all to delete `.loom/temp` report files.
+   *  When absent (e.g. a pure-engine unit test), purge_all skips the fs
+   *  removal and reports reports:0 — the table deletes still run. */
+  rootDir?: string;
+}
+
 /** Build the engine bound to a db + event bus. */
-export function createEngine(db: LoomDb, bus: EventBus): LoomEngine {
+export function createEngine(
+  db: LoomDb,
+  bus: EventBus,
+  opts: EngineOptions = {},
+): LoomEngine {
+  // Resolve the runtime body cap once: a positive integer from config, else
+  // the compile-time default. send_message enforces THIS value (R1).
+  const maxBodyLength =
+    typeof opts.maxBodyLength === 'number' &&
+    Number.isInteger(opts.maxBodyLength) &&
+    opts.maxBodyLength > 0
+      ? opts.maxBodyLength
+      : MAX_BODY_LENGTH;
+  const rootDir = opts.rootDir;
   /** Epoch-millisecond wall-clock time (the standard JS clock). */
   function now(): number {
     return Date.now();
@@ -266,10 +294,10 @@ export function createEngine(db: LoomDb, bus: EventBus): LoomEngine {
       // Bound the body authoritatively at the engine boundary (SEC-6, FR-14)
       // so an oversized fenced code block cannot freeze the renderer's
       // per-line highlighter. The MCP schema mirrors this for an early reject.
-      if (params.body.length > MAX_BODY_LENGTH) {
+      if (params.body.length > maxBodyLength) {
         throw new LoomError(
           'BODY_TOO_LONG',
-          `message body exceeds ${MAX_BODY_LENGTH} characters`,
+          `message body exceeds ${maxBodyLength} characters`,
         );
       }
       const channel = requireChannel(params.channel);
@@ -406,5 +434,67 @@ export function createEngine(db: LoomDb, bus: EventBus): LoomEngine {
 
       return { marked };
     },
+
+    purge_all(caller: Caller): PurgeAllResult {
+      // Light guard (Law 4): only a registered session may invoke the human
+      // delete affordance — an anonymous transport gets NOT_REGISTERED.
+      requireRegistered(caller);
+
+      // Count BEFORE deleting so the summary reflects what was removed.
+      const messages = db.listMessages().length;
+      const channels = db.listChannels().length;
+      const agents = db.listAgents().length;
+
+      // Empty every table FK-safe (children first) + flush the now-empty db.
+      db.purgeAll();
+
+      // Remove the transient agent-report files under <rootDir>/.loom/temp.
+      // Best-effort + recursive; absent dir (ENOENT) is ignored. Skipped when
+      // the engine has no rootDir (pure unit test): reports stays 0.
+      let reports = 0;
+      if (rootDir !== undefined) {
+        const tempDir = path.join(rootDir, '.loom', 'temp');
+        try {
+          // Count files removed (best-effort; a read failure leaves reports=0).
+          reports = countTempReports(tempDir);
+        } catch {
+          reports = 0;
+        }
+        try {
+          rmSync(tempDir, { recursive: true, force: true });
+        } catch {
+          /* best-effort: ignore (e.g. permissions); the table purge stands. */
+        }
+      }
+
+      // The caller's agents row is now gone, so its bound identity is stale:
+      // null it so a stale follow-up call fails cleanly with NOT_REGISTERED
+      // rather than acting under a vanished name. Callers MUST re-register.
+      caller.name = null;
+
+      return { ok: true, deleted: { messages, channels, agents, reports } };
+    },
   };
+}
+
+/** Count regular files anywhere under `dir` (recursive), for the purge_all
+ *  report tally. Returns 0 when the dir is absent/unreadable. Lazily imports
+ *  the fs primitives it needs so the hot tool paths don't. */
+function countTempReports(dir: string): number {
+  let count = 0;
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return 0; // absent/unreadable -> nothing counted.
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      count += countTempReports(full);
+    } else if (entry.isFile()) {
+      count += 1;
+    }
+  }
+  return count;
 }

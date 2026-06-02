@@ -1161,6 +1161,206 @@ test('SEC-6 send_message: a body of exactly MAX_BODY_LENGTH is accepted (boundar
 });
 
 /* ================================================================== */
+/* R1 — CONFIGURABLE body cap: createEngine({ maxBodyLength }) is       */
+/* enforced at runtime (not the compile-time MAX_BODY_LENGTH default).  */
+/* A two-agent channel built on an engine with an explicit cap of N:    */
+/* a body of length N passes; N+1 throws BODY_TOO_LONG.                 */
+/* ================================================================== */
+
+/** Two-agent channel on an engine constructed with an explicit options bag
+ *  (e.g. { maxBodyLength }). Mirrors twoAgentChannel but injects opts. */
+async function twoAgentChannelWith(opts, chanName = 'general') {
+  const mod = await kit();
+  const createDb = requireExport(mod, 'createDb');
+  const createEngine = requireExport(mod, 'createEngine');
+  const createEventBus = requireExport(mod, 'createEventBus');
+  const dir = mkdtempSync(path.join(tmpdir(), 'loom-ac-'));
+  const db = createDb();
+  await db.init(dir);
+  const bus = createEventBus();
+  const engine = createEngine(db, bus, opts);
+  engine.register(caller(null), { name: 'alice' });
+  engine.register(caller(null), { name: 'bob' });
+  engine.create_channel(caller('alice'), { name: chanName });
+  engine.join_channel(caller('bob'), { channel: chanName });
+  return { mod, db, bus, engine, dir, chan: chanName };
+}
+
+test('R1 configurable cap: a body at the configured limit passes (cap=10)', async () => {
+  const { engine, db, chan } = await twoAgentChannelWith({ maxBodyLength: 10 });
+  const atLimit = 'z'.repeat(10);
+  const sent = engine.send_message(caller('alice'), { channel: chan, to: 'bob', body: atLimit });
+  const msg = db.listMessages().find((m) => m.id === sent.message_id);
+  assert.ok(msg, 'a body at the configured cap must persist');
+  assert.equal(msg.body.length, 10);
+});
+
+test('R1 configurable cap: limit+1 throws BODY_TOO_LONG (cap=10)', async () => {
+  const { engine, chan } = await twoAgentChannelWith({ maxBodyLength: 10 });
+  const overLimit = 'z'.repeat(11);
+  const err = expectThrows(
+    () => engine.send_message(caller('alice'), { channel: chan, to: 'bob', body: overLimit }),
+    'a body over the CONFIGURED cap must throw',
+  );
+  assertCode(err, 'BODY_TOO_LONG');
+});
+
+test('R1 configurable cap: absent option falls back to MAX_BODY_LENGTH default', async () => {
+  const mod = await kit();
+  const MAX = mod.MAX_BODY_LENGTH;
+  // No opts -> default cap. A body at MAX passes; MAX+1 throws.
+  const { engine, chan } = await twoAgentChannelWith(undefined);
+  const okSend = engine.send_message(caller('alice'), {
+    channel: chan,
+    to: 'bob',
+    body: 'y'.repeat(MAX),
+  });
+  assert.ok(okSend.message_id, 'a body at the default cap must pass');
+  const err = expectThrows(
+    () => engine.send_message(caller('alice'), { channel: chan, to: 'bob', body: 'y'.repeat(MAX + 1) }),
+    'a body over the default cap must throw',
+  );
+  assertCode(err, 'BODY_TOO_LONG');
+});
+
+/* ================================================================== */
+/* R2 — PERSISTENCE (OPTION A): chat survives a relaunch. Data written  */
+/* to a db at <dir>/.loom/loom.db, then a SECOND createDb().init(dir)    */
+/* over the SAME dir must LOAD the persisted rows (not start fresh).     */
+/* ================================================================== */
+test('R2 persistence: a fresh db re-init from the same folder retains chat data', async () => {
+  const mod = await kit();
+  const createDb = requireExport(mod, 'createDb');
+  const createEngine = requireExport(mod, 'createEngine');
+  const createEventBus = requireExport(mod, 'createEventBus');
+  const dir = mkdtempSync(path.join(tmpdir(), 'loom-ac-persist-'));
+
+  // Session 1: populate, then flush + close so loom.db is durable on disk.
+  {
+    const db = createDb();
+    await db.init(dir);
+    const engine = createEngine(db, createEventBus());
+    engine.register(caller(null), { name: 'alice' });
+    engine.register(caller(null), { name: 'bob' });
+    engine.create_channel(caller('alice'), { name: 'general' });
+    engine.join_channel(caller('bob'), { channel: 'general' });
+    engine.send_message(caller('alice'), { channel: 'general', to: 'bob', body: 'persist me' });
+    db.flushNow(); // durable snapshot, mirrors graceful-close persistence (R2).
+    db.close();
+  }
+
+  // The serialized db file must remain on disk (close() must NOT delete it).
+  assert.ok(
+    existsSync(path.join(dir, '.loom', 'loom.db')),
+    'loom.db must persist on disk after close() (R2/R3 — no delete on close)',
+  );
+
+  // Session 2: a NEW db over the SAME folder must LOAD the prior rows.
+  {
+    const db2 = createDb();
+    await db2.init(dir);
+    const agents = db2.listAgents().map((a) => a.name).sort();
+    assert.deepEqual(agents, ['alice', 'bob'], 'agents must survive the relaunch');
+    const channels = db2.listChannels().map((c) => c.name);
+    assert.deepEqual(channels, ['general'], 'channels must survive the relaunch');
+    const messages = db2.listMessages();
+    assert.equal(messages.length, 1, 'the message must survive the relaunch');
+    assert.equal(messages[0].body, 'persist me');
+    db2.close();
+  }
+});
+
+test('R2 persistence: a CORRUPT loom.db falls back to a fresh empty DB (no throw)', async () => {
+  const mod = await kit();
+  const createDb = requireExport(mod, 'createDb');
+  const dir = mkdtempSync(path.join(tmpdir(), 'loom-ac-corrupt-'));
+
+  // Pre-seed a garbage loom.db so init() takes the LOAD path, fails the probe,
+  // and falls back to fresh (corrupt -> fresh branch).
+  mkdirSync(path.join(dir, '.loom'), { recursive: true });
+  writeFileSync(path.join(dir, '.loom', 'loom.db'), 'not a sqlite database — garbage bytes');
+
+  const db = createDb();
+  // Must NOT throw on a corrupt image.
+  await db.init(dir);
+  // Must come up as a fresh, empty, usable DB.
+  assert.deepEqual(db.listAgents(), [], 'corrupt image must fall back to an empty agents table');
+  assert.deepEqual(db.listChannels(), [], 'corrupt image must fall back to an empty channels table');
+  assert.deepEqual(db.listMessages(), [], 'corrupt image must fall back to an empty messages table');
+  db.close();
+});
+
+/* ================================================================== */
+/* R4 — purge_all: populate chat + a .loom/temp report file, purge,     */
+/* assert all tables empty, temp file gone, and the returned counts.    */
+/* ================================================================== */
+test('R4 purge_all: empties all tables, removes temp reports, returns counts', async () => {
+  const mod = await kit();
+  const createDb = requireExport(mod, 'createDb');
+  const createEngine = requireExport(mod, 'createEngine');
+  const createEventBus = requireExport(mod, 'createEventBus');
+  const dir = mkdtempSync(path.join(tmpdir(), 'loom-ac-purge-'));
+
+  const db = createDb();
+  await db.init(dir);
+  // rootDir injected so purge_all can remove .loom/temp report files (R4).
+  const engine = createEngine(db, createEventBus(), { rootDir: dir });
+
+  // Populate: 2 agents, 1 channel (alice auto-joins), bob joins, 2 messages.
+  engine.register(caller(null), { name: 'alice' });
+  engine.register(caller(null), { name: 'bob' });
+  engine.create_channel(caller('alice'), { name: 'general' });
+  engine.join_channel(caller('bob'), { channel: 'general' });
+  engine.send_message(caller('alice'), { channel: 'general', to: 'bob', body: 'one' });
+  engine.send_message(caller('alice'), { channel: 'general', to: '@here', body: 'two' });
+
+  // Drop transient agent report files under .loom/temp (purge must remove).
+  const tempDir = path.join(dir, '.loom', 'temp');
+  mkdirSync(tempDir, { recursive: true });
+  writeFileSync(path.join(tempDir, 'report-1.md'), '# r1');
+  writeFileSync(path.join(tempDir, 'report-2.md'), '# r2');
+
+  // Purge as a registered caller.
+  const purger = caller('alice');
+  const res = engine.purge_all(purger);
+
+  // Result counts reflect pre-deletion state.
+  assert.equal(res.ok, true);
+  assert.equal(res.deleted.messages, 2, 'two messages were present');
+  assert.equal(res.deleted.channels, 1, 'one channel was present');
+  assert.equal(res.deleted.agents, 2, 'two agents were present');
+  assert.equal(res.deleted.reports, 2, 'two temp report files were present');
+
+  // All tables empty.
+  assert.deepEqual(db.listAgents(), [], 'agents emptied');
+  assert.deepEqual(db.listChannels(), [], 'channels emptied');
+  assert.deepEqual(db.listMessages(), [], 'messages emptied');
+
+  // .loom/temp removed.
+  assert.ok(!existsSync(tempDir), '.loom/temp must be removed by purge_all');
+
+  // The caller's bound identity is nulled (stale) — a follow-up tool call
+  // without re-registering fails cleanly with NOT_REGISTERED.
+  assert.equal(purger.name, null, 'purge_all must null the stale caller identity');
+  const staleErr = expectThrows(
+    () => engine.send_message(purger, { channel: 'general', to: 'bob', body: 'after' }),
+    'a stale caller must fail after purge',
+  );
+  assertCode(staleErr, 'NOT_REGISTERED');
+
+  db.close();
+});
+
+test('R4 purge_all: an unregistered caller is rejected (NOT_REGISTERED)', async () => {
+  const { engine } = await freshEngine();
+  const err = expectThrows(
+    () => engine.purge_all(caller(null)),
+    'purge_all must require a registered caller',
+  );
+  assertCode(err, 'NOT_REGISTERED');
+});
+
+/* ================================================================== */
 /* LOOM-AC16-04 — behavioral CHECK-enum: an out-of-enum raw INSERT is   */
 /* REJECTED by the constraint (not merely declared in the DDL string).  */
 /* Mirrors the channels.name UNIQUE behavioral test.                    */

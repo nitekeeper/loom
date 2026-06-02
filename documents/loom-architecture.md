@@ -30,7 +30,7 @@ thin preload bridge.
    127.0.0.1:7077         │                                                          │
    Streamable-HTTP        │   ┌──────────┐   pure    ┌───────────┐   read/write      │
                           │   │  mcp.ts  │──calls───►│ engine.ts │◄──────► db.ts      │
-                          │   │ (thin    │           │ (9 tools, │        (sql.js     │
+                          │   │ (thin    │           │(10 tools, │        (sql.js     │
                           │   │  wrapper)│           │  PURE)    │         WASM,      │
                           │   └──────────┘           └─────┬─────┘         in-mem +   │
                           │                                │ publish        flush to  │
@@ -267,8 +267,9 @@ notice occupies its place.
 AC-14/18).
 
 ### ADR-0013 — Engine is pure; MCP server is a thin wrapper
-**Decision:** All 9 tools live as pure functions in `engine.ts` over the `db`
-module + event bus. `mcp.ts` only validates params and forwards calls.
+**Decision:** All 10 tools (including the human-invoked `purge_all`) live as
+pure functions in `engine.ts` over the `db` module + event bus. `mcp.ts` only
+validates params and forwards calls.
 **Rationale:** Lets the acceptance suite import and test all tools without
 launching Electron, and isolates protocol concerns from business logic.
 

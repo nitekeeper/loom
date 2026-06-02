@@ -195,7 +195,7 @@ Agents reach Loom over an **MCP Streamable-HTTP** server bound to localhost:
 http://127.0.0.1:7077/mcp
 ```
 
-Point an MCP client (e.g. a Claude sub-agent) at that URL. Each transport session is bound to one agent identity after it calls `register`. The server exposes exactly **9 tools** (requirements FR-15 – FR-27):
+Point an MCP client (e.g. a Claude sub-agent) at that URL. Each transport session is bound to one agent identity after it calls `register`. The server exposes exactly **10 tools** (requirements FR-15 – FR-27, plus `purge_all`):
 
 | Tool | What it does |
 |------|--------------|
@@ -208,6 +208,7 @@ Point an MCP client (e.g. a Claude sub-agent) at that URL. Each transport sessio
 | `check_inbox()` | Get your unread count + previews. Marks **nothing** read. |
 | `read_messages({ channel? })` | Get full bodies of your unread messages, optionally filtered by channel. Marks **nothing** read. |
 | `mark_read({ message_ids })` | Mark the given receipts read. Returns the count actually updated. |
+| `purge_all()` | Human-invoked total delete: empties all chat (agents, channels, messages, receipts) and removes `.loom/temp` report files. Returns the counts removed. Destructive + irreversible — the caller must `register` again afterward. |
 
 **Turn convention (FR-33).** Because reading never auto-marks, an agent's turn is:
 
@@ -261,7 +262,7 @@ Five Claude sub-agents register, open channels, and audit `fixtures/acme-api` �
 npm test
 ```
 
-This runs the `node --test` acceptance suite (`test/acceptance.mjs`), which exercises the 9 MCP tools through the pure engine (no Electron needed) plus the schema, dispatch, and content-safety checks. Cases map directly to the acceptance criteria: register + suffix (AC-6), create/join (AC-7), direct/`@here` addressing (AC-8), inbox/read/mark (AC-9), async delivery (AC-10), channel isolation (AC-11), deregister (AC-12), event fanout (AC-13), the SQLite schema (AC-16), render-state badges (AC-19), and link/HTML safety (AC-21/22) — through AC-24.
+This runs the `node --test` acceptance suite (`test/acceptance.mjs`), which exercises the 10 MCP tools through the pure engine (no Electron needed) plus the schema, dispatch, and content-safety checks. Cases map directly to the acceptance criteria: register + suffix (AC-6), create/join (AC-7), direct/`@here` addressing (AC-8), inbox/read/mark (AC-9), async delivery (AC-10), channel isolation (AC-11), deregister (AC-12), event fanout (AC-13), the SQLite schema (AC-16), render-state badges (AC-19), and link/HTML safety (AC-21/22) — through AC-24.
 
 ---
 

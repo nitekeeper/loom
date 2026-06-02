@@ -39,7 +39,7 @@ GPU flags — they are SEPARATE from the renderer hardening below, which is kept
 
 ---
 
-## (a) MCP tools — the 9 frozen tool shapes
+## (a) MCP tools — the 10 frozen tool shapes
 
 `to` token `"@here"` (agent-facing) maps to stored `addressing='here'` (M-6).
 Every tool call is made on behalf of a `Caller` (the session's registered name);
@@ -204,8 +204,18 @@ Verified to load in sql.js with all constraints enforced (AC-16): 5 tables,
 composite PKs on `memberships(channel_id, agent_name)` and
 `receipts(message_id, recipient)`, FKs as specified, and the partial index
 `idx_receipts_unread ON receipts(recipient) WHERE read_at IS NULL`. INT
-timestamps = epoch ms. Fresh DB per launch (OQ-2); flush to
-`<root>/.loom/loom.db` on each mutation (NFR-7).
+timestamps = epoch ms. Flush to `<root>/.loom/loom.db` on each mutation (NFR-7).
+
+**Persistence (R2, OPTION A — supersedes the original "fresh DB per launch"
+OQ-2 default):** chat PERSISTS across launches. `db.init()` loads an existing
+`<root>/.loom/loom.db` when present (fresh schema only when absent or the file
+is corrupt). Content is removed ONLY by the explicit `purge_all` tool — never on
+close. **Single-writer-per-folder assumption (known limitation, not enforced):**
+each instance loads + flushes the WHOLE serialized image (last-writer-wins), so
+two windows on the SAME folder can durably clobber each other on flush. Mitigated
+(not solved) by `mcp.json` ownership routing agents to one owning instance; no
+folder lock yet (a separate decision). Treat one writer per folder as the
+contract until a lock lands.
 
 ---
 
@@ -226,7 +236,7 @@ Roles: `backend-engineer`, `agent-systems-architect`, `realtime-engineer`,
 | `src/main/main.ts` | backend-engineer | Electron entry; WSL flags; boot order; hardened BrowserWindow; `--capture` mode hook. |
 | `src/main/schema.sql` | backend-engineer | Appendix-A DDL (verbatim-faithful). Implemented. |
 | `src/main/db.ts` | backend-engineer | sql.js store; load wasm + schema; typed CRUD; flush-to-disk. |
-| `src/main/engine.ts` | agent-systems-architect | The 9 tools as PURE fns over db + bus. Testable without Electron. |
+| `src/main/engine.ts` | agent-systems-architect | The 10 tools as PURE fns over db + bus. Testable without Electron. |
 | `src/main/mcp.ts` | agent-systems-architect | MCP Streamable-HTTP server on :7077; thin wrapper over engine. |
 | `src/main/eventbus.ts` | realtime-engineer | In-process pub/sub for `LoomEvent`. |
 | `src/main/ws.ts` | realtime-engineer | Optional external ws feed on :7078 (`LOOM_WS=1`). |
@@ -271,7 +281,7 @@ Roles: `backend-engineer`, `agent-systems-architect`, `realtime-engineer`,
 | `build.mjs` | backend-engineer | esbuild build → dist/ (3 bundles + html/schema/wasm copy). Implemented. |
 | `package.json` | backend-engineer | Pins (electron 33.4.11); scripts build/start/loom/test/typecheck. Implemented. |
 | `tsconfig.json` | backend-engineer | strict, ES2021, bundler resolution, jsx react-jsx, noEmit. Implemented. |
-| `test/acceptance.mjs` | sdet | node --test suite exercising the 9 tools + schema + dispatch + safety. |
+| `test/acceptance.mjs` | sdet | node --test suite exercising the 10 tools + schema + dispatch + safety. |
 | `CONTRACTS.md` | software-architect | This document. Implemented. |
 | `documents/loom-architecture.md` | software-architect | Architecture + ADRs. Implemented. |
 

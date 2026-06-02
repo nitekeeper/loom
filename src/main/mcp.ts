@@ -1,7 +1,7 @@
 /* ============================================================
  * Loom — MCP server (thin wrapper over engine.ts)
  * ------------------------------------------------------------
- * Exposes the 9 tools over the @modelcontextprotocol/sdk
+ * Exposes the 10 tools over the @modelcontextprotocol/sdk
  * Streamable-HTTP transport, bound to 127.0.0.1:7077 (NFR-9,
  * OQ-4: localhost binding is the documented mitigation; no auth
  * beyond register()). Each transport SESSION binds a Caller (the
@@ -110,7 +110,26 @@ interface Session {
  *  working agent transport on the next free port instead of crashing. */
 const MAX_PORT_ATTEMPTS = 16;
 
-export function createMcpServer(engine: LoomEngine): McpServerHandle {
+/** Runtime MCP-server options (R1). */
+export interface McpServerOptions {
+  /** Per-message body cap (SEC-6), resolved from config; defaults to
+   *  MAX_BODY_LENGTH. Mirrored into the send_message zod schema + description
+   *  so a client sees the SAME live limit the engine enforces. */
+  maxBodyLength?: number;
+}
+
+export function createMcpServer(
+  engine: LoomEngine,
+  opts: McpServerOptions = {},
+): McpServerHandle {
+  // Resolve the body cap mirrored into the schema (R1): a positive integer
+  // from config, else the default. The engine enforces the same value.
+  const maxBodyLength =
+    typeof opts.maxBodyLength === 'number' &&
+    Number.isInteger(opts.maxBodyLength) &&
+    opts.maxBodyLength > 0
+      ? opts.maxBodyLength
+      : MAX_BODY_LENGTH;
   const sessions = new Map<string, Session>();
   let http: HttpServer | undefined;
   // The port actually bound (may differ from MCP_PORT if it was in use). The
@@ -171,7 +190,7 @@ export function createMcpServer(engine: LoomEngine): McpServerHandle {
     }
   }
 
-  /** Build a fresh McpServer with all 9 tools registered, bound to the
+  /** Build a fresh McpServer with all 10 tools registered, bound to the
    *  given per-session Caller. The handlers close over `caller`, and
    *  register() mutates `caller.name` so the binding follows the session. */
   function buildServer(caller: Caller): McpServer {
@@ -242,8 +261,8 @@ export function createMcpServer(engine: LoomEngine): McpServerHandle {
           to: z.string().describe(`Recipient member name, or "${HERE_TOKEN}" to broadcast.`),
           body: z
             .string()
-            .max(MAX_BODY_LENGTH)
-            .describe(`Message body (max ${MAX_BODY_LENGTH} chars).`),
+            .max(maxBodyLength)
+            .describe(`Message body (max ${maxBodyLength} chars).`),
         },
       },
       ({ channel, to, body }) =>
@@ -283,6 +302,20 @@ export function createMcpServer(engine: LoomEngine): McpServerHandle {
         },
       },
       ({ message_ids }) => run(() => engine.mark_read(caller, { message_ids })),
+    );
+
+    // 10. purge_all() -> { ok, deleted } — human-invoked TOTAL delete (R4).
+    //     Empties every table + removes .loom/temp report files. The calling
+    //     session's identity is STALE afterward (its agents row is gone), so the
+    //     caller MUST register() again before any further tool call.
+    server.registerTool(
+      'purge_all',
+      {
+        description:
+          'Delete ALL chat content for this folder (agents, channels, messages, receipts) and remove .loom/temp report files. Returns counts removed. Destructive + irreversible; the caller must register() again afterward.',
+        inputSchema: {},
+      },
+      () => run(() => engine.purge_all(caller)),
     );
 
     return server;

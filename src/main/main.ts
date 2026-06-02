@@ -7,9 +7,14 @@
  * (config.ts), the sandbox (sandbox.ts), and the BrowserWindow
  * lifecycle + IPC handlers (ipc.ts).
  * ============================================================ */
-import { readFileSync, writeFileSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { app, BrowserWindow, dialog } from 'electron';
+// Same build-time-inlined app version the MCP server advertises (esbuild
+// inlines package.json), so the discovery file can never drift from a literal.
+import { version as LOOM_VERSION } from '../../package.json';
+import { MAX_BODY_LENGTH } from '../shared/types.js';
+import { MCP_HOST, MCP_PATH } from './mcp.js';
 import { createDb } from './db.js';
 import { createEventBus } from './eventbus.js';
 import { createEngine } from './engine.js';
@@ -183,6 +188,7 @@ function applyWslSwitches(): void {
 
 /** The composed main-process services. */
 interface Services {
+  db: ReturnType<typeof createDb>;
   bus: ReturnType<typeof createEventBus>;
   engine: ReturnType<typeof createEngine>;
   sandbox: ReturnType<typeof createSandbox>;
@@ -191,6 +197,134 @@ interface Services {
   mcp: ReturnType<typeof createMcpServer>;
   ws: ReturnType<typeof createWsFeed> | null;
   rootDir: string;
+  /** True when THIS process wrote+owns `<rootDir>/.loom/mcp.json` and is
+   *  therefore responsible for removing it on graceful shutdown (MEDIUM-1).
+   *  False when we declined to a live peer (HIGH-1), the write failed, or the
+   *  capture path skipped it (HIGH-2). */
+  ownsMcpAdvert: boolean;
+}
+
+/** Absolute path to a window's MCP endpoint-advertisement file. Lives beside
+ *  loom.db in the project's `.loom/` dir (db.init already mkdirSync'd it). */
+function mcpAdvertPath(rootDir: string): string {
+  return path.join(rootDir, '.loom', 'mcp.json');
+}
+
+/** True when a process with `pid` is alive. `process.kill(pid, 0)` sends no
+ *  signal — it only probes existence: it throws ESRCH when the pid is dead and
+ *  EPERM when it's alive but owned by another user (still "alive" for us). Any
+ *  other error (or a non-finite pid) is treated as "not alive" so a malformed
+ *  advert never blocks us from taking ownership. */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Read the existing advert at `<rootDir>/.loom/mcp.json`, or null when it's
+ *  absent/unreadable/malformed. Only the fields we need to arbitrate ownership
+ *  (HIGH-1) are validated. */
+function readMcpAdvert(rootDir: string): { pid: number; port: number } | null {
+  try {
+    const parsed = JSON.parse(readFileSync(mcpAdvertPath(rootDir), 'utf8')) as unknown;
+    if (parsed === null || typeof parsed !== 'object') return null;
+    const { pid, port } = parsed as { pid?: unknown; port?: unknown };
+    if (typeof pid !== 'number' || typeof port !== 'number') return null;
+    return { pid, port };
+  } catch {
+    return null;
+  }
+}
+
+/** Discovery use case: write `<rootDir>/.loom/mcp.json` so an agent running
+ *  inside THIS project folder can discover exactly which Loom instance (which
+ *  bound port) serves it. Returns true ONLY when THIS process wrote+owns the
+ *  file (so the caller knows whether to register a removal hook — MEDIUM-1).
+ *
+ *  HIGH-1 (two windows, SAME project folder): the filename is fixed, so a
+ *  second window would clobber the first's advert and either window's quit
+ *  would delete the shared file out from under a still-live peer. "First live
+ *  writer wins": if an advert already exists, its pid is still alive, and it
+ *  advertises a DIFFERENT port, we DECLINE — don't write, return false, and the
+ *  caller registers no removal hook. A stale advert (dead/absent pid) is
+ *  overwritten and we become the owner. Only called once a real port is bound
+ *  (the no-bind path skips it). `maxBodyLength` is the live per-message cap
+ *  (R1) advertised for the reader. Best-effort: a write failure must never
+ *  prevent the viewer from opening. */
+function writeMcpAdvert(
+  rootDir: string,
+  boundPort: number,
+  maxBodyLength: number,
+): boolean {
+  const existing = readMcpAdvert(rootDir);
+  if (
+    existing !== null &&
+    existing.port !== boundPort &&
+    existing.pid !== process.pid &&
+    isPidAlive(existing.pid)
+  ) {
+    // A live peer already serves this folder on another port — decline so we
+    // don't clobber its advert or later delete it on our own quit.
+    return false;
+  }
+  // NOTE (TOCTOU, accepted): the read above and the write below are not atomic.
+  // Two windows on the SAME folder booting within the same few ms could both
+  // observe "no live peer" and both write (last-writer-wins). Impact is bounded
+  // to a momentarily wrong advert — never corruption or cross-deletion, since
+  // each window only removes the file when it owns it (ownsMcpAdvert). A
+  // filesystem compare-and-swap isn't worth the complexity for a discovery file
+  // the reader liveness-probes anyway.
+  try {
+    const advert = {
+      url: `http://${MCP_HOST}:${boundPort}${MCP_PATH}`,
+      port: boundPort,
+      pid: process.pid,
+      version: LOOM_VERSION,
+      rootDir,
+      startedAt: Date.now(),
+      // R1: the live per-message body cap a reader should respect.
+      maxBodyLength,
+    };
+    writeFileSync(mcpAdvertPath(rootDir), `${JSON.stringify(advert, null, 2)}\n`);
+    return true;
+  } catch (err) {
+    process.stderr.write(
+      `[loom:boot] could not write MCP discovery file (${String(err)}); ` +
+        `agents may not be able to auto-discover this instance.\n`,
+    );
+    return false;
+  }
+}
+
+/** Best-effort removal of the discovery file on graceful shutdown so a stopped
+ *  window stops advertising a dead port. A force-kill won't run this — that's
+ *  expected; the reader liveness-probes, so a stale file is tolerated. ENOENT
+ *  (never written / already gone) is ignored. */
+function removeMcpAdvert(rootDir: string): void {
+  try {
+    rmSync(mcpAdvertPath(rootDir), { force: true });
+  } catch {
+    /* best-effort: ignore (e.g. permissions); the reader liveness-probes. */
+  }
+}
+
+/** Persist + release the chat DB on graceful close (R2/R3). Chat now PERSISTS
+ *  across launches (R2, OPTION A), so on teardown we do NOT delete loom.db or
+ *  .loom/temp — content is removed ONLY by the explicit purge_all tool. We do a
+ *  final synchronous flushNow() so the persisted loom.db reflects the latest
+ *  state, then close() (which cancels the debounce + frees the db, leaving the
+ *  file in place). Both steps are best-effort so teardown never blocks quit. */
+function persistAndCloseDb(db: Services['db']): void {
+  try {
+    db.flushNow(); // durable: latest state on disk before we stop writing.
+    db.close(); // cancels the pending debounce; does NOT delete the file.
+  } catch {
+    /* best-effort: a teardown failure must not block quit. */
+  }
 }
 
 /** Boot every main-process service in the required order. A failed MCP bind
@@ -206,12 +340,31 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   const db = createDb();
   await db.init(rootDir);
 
-  const bus = createEventBus();
-  const engine = createEngine(db, bus);
+  // Resolve the configurable per-message body cap (R1) BEFORE the engine/MCP
+  // server are built, so both enforce the SAME runtime value (config override
+  // or the MAX_BODY_LENGTH default). The store also drives theme/keybindings
+  // for the IPC wiring below — one store, read once here.
+  const config = createConfigStore(app.getPath('userData'));
+  const maxBodyLength = config.read().maxMessageLength ?? MAX_BODY_LENGTH;
 
-  const mcp = createMcpServer(engine);
+  const bus = createEventBus();
+  // Engine enforces the cap (SEC-6) and needs rootDir to delete .loom/temp
+  // report files on purge_all (R4).
+  const engine = createEngine(db, bus, { maxBodyLength, rootDir });
+
+  // MCP schema mirrors the SAME cap for an early client-side reject (R1).
+  const mcp = createMcpServer(engine, { maxBodyLength });
+  let ownsMcpAdvert = false;
   try {
     await mcp.start();
+    // start() resolves ONLY once a real port is bound (mcp.ts resolves in the
+    // listen callback after setting boundPort) — so mcp.port is the ACTUAL
+    // bound port here, never the hardcoded 7077 when 7077 was taken. Advertise
+    // it for agent discovery. Skipped on the catch path: no bind, no address.
+    // HIGH-2: a headless capture has no long-lived endpoint to advertise (it
+    // exits via app.exit(), which never fires will-quit, so it could never
+    // clean up) — so don't write the advert when capturing at all.
+    if (!capturing) ownsMcpAdvert = writeMcpAdvert(rootDir, mcp.port, maxBodyLength);
   } catch (err) {
     // The agent transport scans MCP_PORT..+N for a free port; if EVERY
     // candidate is held (or the bind otherwise fails), DO NOT abort the
@@ -236,7 +389,6 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   const watcher = createWatcher(rootDir, bus);
   watcher.start();
 
-  const config = createConfigStore(app.getPath('userData'));
   const ipc = createIpcWiring({ db, sandbox, config, bus, search });
   ipc.register();
 
@@ -246,7 +398,7 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
     await ws.start();
   }
 
-  return { bus, engine, sandbox, watcher, ipc, mcp, ws, rootDir };
+  return { db, bus, engine, sandbox, watcher, ipc, mcp, ws, rootDir, ownsMcpAdvert };
 }
 
 /** Platform-aware window-chrome options for the MAIN window.
@@ -560,6 +712,27 @@ export function bootstrap(): void {
       }
 
       const services = await bootServices(rootDir, capture !== null);
+
+      // On graceful teardown the OWNING instance stops advertising its MCP
+      // port. We gate on ownsMcpAdvert (the folder-ownership signal): a second
+      // same-folder window that DECLINED ownership (HIGH-1) — or any window that
+      // never bound MCP — does NOT touch the advert, so it can't delete a peer's
+      // pointer. `will-quit` (not `before-quit`) is the definitive,
+      // non-cancelable teardown signal.
+      //
+      // NOTE (R3): mcp.json is a LIVENESS POINTER, not content — so only the
+      // owner removes it. Chat content (loom.db, .loom/temp) is NOT deleted on
+      // close; it PERSISTS across launches (R2) and is removed only by the
+      // explicit purge_all tool.
+      if (services.ownsMcpAdvert) {
+        app.on('will-quit', () => removeMcpAdvert(rootDir));
+      }
+
+      // The DB is persisted + released on EVERY graceful quit regardless of MCP
+      // ownership (a non-owner window still wrote to its own in-memory db this
+      // session and must flush it durably). This NEVER deletes loom.db (R2/R3).
+      app.on('will-quit', () => persistAndCloseDb(services.db));
+
       if (capture) {
         await runCapture(services, capture);
       } else {

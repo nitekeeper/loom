@@ -67,7 +67,7 @@ export interface ReceiptRow {
 }
 
 /* ------------------------------------------------------------------ */
-/* 2. MCP tool param + return shapes — the 9 tools (FR-15..FR-27)      */
+/* 2. MCP tool param + return shapes — the 10 tools (FR-15..FR-27, R4) */
 /*    These are the exact JSON shapes returned by the engine and the   */
 /*    MCP server. Keep names identical to CONTRACTS.md.                */
 /* ------------------------------------------------------------------ */
@@ -133,6 +133,22 @@ export interface UnreadMessage {
 export interface MarkReadParams { message_ids: number[]; }
 export interface MarkReadResult { marked: number; }
 
+/** purge_all() -> human-invoked, total delete of ALL chat content for the
+ *  folder (agents/channels/messages/receipts + .loom/temp report files).
+ *  `deleted` holds the row counts present BEFORE the purge; `reports` is the
+ *  number of transient report files removed from .loom/temp. After a purge the
+ *  calling session's identity is stale (its agents row is gone) — callers MUST
+ *  register() again before any further tool call. */
+export interface PurgeAllResult {
+  ok: true;
+  deleted: {
+    messages: number;
+    channels: number;
+    agents: number;
+    reports: number;
+  };
+}
+
 /** The identity of the calling agent. Every engine tool call is made
  *  on behalf of a caller; the MCP server binds caller = the registered
  *  name for that transport session. */
@@ -141,7 +157,7 @@ export interface Caller {
   name: string | null;
 }
 
-/** Union of all 9 tool names — the frozen tool surface. */
+/** Union of all 10 tool names — the frozen tool surface. */
 export type ToolName =
   | 'register'
   | 'create_channel'
@@ -151,7 +167,8 @@ export type ToolName =
   | 'send_message'
   | 'check_inbox'
   | 'read_messages'
-  | 'mark_read';
+  | 'mark_read'
+  | 'purge_all';
 
 export const TOOL_NAMES: readonly ToolName[] = [
   'register',
@@ -163,6 +180,7 @@ export const TOOL_NAMES: readonly ToolName[] = [
   'check_inbox',
   'read_messages',
   'mark_read',
+  'purge_all',
 ] as const;
 
 /* ------------------------------------------------------------------ */
@@ -460,6 +478,12 @@ export interface LoomConfig {
    *  the resolved InitialState.keybindings. Additive (a missing field on
    *  an older config is tolerated as {}). */
   keybindings?: Record<string, string>;
+  /** OPTIONAL per-message body cap, in characters (SEC-6), overriding the
+   *  MAX_BODY_LENGTH default (500). Validated as a positive integer; an
+   *  absent/invalid value falls back to MAX_BODY_LENGTH. Enforced at RUNTIME
+   *  (engine + MCP schema) and advertised in mcp.json so a reader knows the
+   *  live limit. Additive (a missing field on an older config is tolerated). */
+  maxMessageLength?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -538,7 +562,7 @@ declare global {
 }
 
 /* ------------------------------------------------------------------ */
-/* 9. Engine surface — the 9 pure tool fns (src/main/engine.ts)        */
+/* 9. Engine surface — the 10 pure tool fns (src/main/engine.ts)       */
 /*    Importable WITHOUT Electron so the acceptance suite can test it. */
 /* ------------------------------------------------------------------ */
 
@@ -552,6 +576,10 @@ export interface LoomEngine {
   check_inbox(caller: Caller): CheckInboxResult;
   read_messages(caller: Caller, params: ReadMessagesParams): ReadMessagesResult;
   mark_read(caller: Caller, params: MarkReadParams): MarkReadResult;
+  /** Human-invoked total delete of all chat content for the folder. Requires a
+   *  registered caller. Empties every table (FK-safe) + removes .loom/temp
+   *  report files; the caller's identity is stale afterward (must re-register). */
+  purge_all(caller: Caller): PurgeAllResult;
 }
 
 /** Domain error thrown by the engine for contract violations
@@ -585,9 +613,14 @@ export type LoomErrorCode =
 /** Max agent-name length (OQ-1). */
 export const MAX_NAME_LENGTH = 64;
 
-/** Max message-body length, in characters (SEC-6). Bounds the per-line
+/** DEFAULT max message-body length, in characters (SEC-6). Bounds the per-line
  *  highlighter that renders chat bodies in the renderer's main thread so a
  *  single multi-megabyte fenced block cannot freeze the observer UI. The
  *  cap is enforced authoritatively at the engine boundary (FR-14) and is
- *  mirrored by the MCP send_message input schema for an early reject. */
-export const MAX_BODY_LENGTH = 16_384;
+ *  mirrored by the MCP send_message input schema for an early reject.
+ *
+ *  CONFIGURABLE (R1): this is only the DEFAULT/fallback. The effective cap is
+ *  resolved at runtime from LoomConfig.maxMessageLength (when a positive
+ *  integer is set) and injected into the engine + MCP server; an absent or
+ *  invalid config value falls back to this constant. */
+export const MAX_BODY_LENGTH = 500;
