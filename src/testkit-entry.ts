@@ -78,7 +78,7 @@ export type { FoldRange } from './renderer/lib/fold.js';
 // Pure tail-window helper that bounds the Chat thread + inbox DOM so a 10–20
 // agent firehose can't freeze the observer pane. Re-exported so the suite can
 // pin the windowing math (cap, hidden count, tail/order preservation) DOM-free.
-export { tailWindow, DEFAULT_RENDER_WINDOW } from './renderer/lib/window.js';
+export { tailWindow, DEFAULT_RENDER_WINDOW, MAX_STORE_MESSAGES } from './renderer/lib/window.js';
 export type { TailWindow } from './renderer/lib/window.js';
 
 // Pure close-file Escape coordination (A11Y-CLOSE-05). Re-exported so the

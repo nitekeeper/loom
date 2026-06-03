@@ -93,3 +93,17 @@ test('RENDER-WINDOW: the default window is a positive integer and applies when o
   // The tail is preserved: last shown item is the last input item.
   assert.equal(w.shown[w.shown.length - 1], big[big.length - 1]);
 });
+
+test('RENDER-WINDOW: the renderer store cap backs the visible window with headroom', async () => {
+  const { MAX_STORE_MESSAGES, DEFAULT_RENDER_WINDOW } = await kit();
+  assert.ok(
+    Number.isInteger(MAX_STORE_MESSAGES) && MAX_STORE_MESSAGES > 0,
+    'store cap must be a positive integer',
+  );
+  // The in-memory store must hold at least the DOM window, or the visible
+  // thread could be starved of messages it should show.
+  assert.ok(
+    MAX_STORE_MESSAGES >= DEFAULT_RENDER_WINDOW,
+    `store cap (${MAX_STORE_MESSAGES}) must be >= render window (${DEFAULT_RENDER_WINDOW})`,
+  );
+});

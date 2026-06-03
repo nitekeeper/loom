@@ -90,6 +90,12 @@ export interface LoomDb {
   insertMessage(row: Omit<MessageRow, 'id'>): MessageRow;
   insertReceipt(row: ReceiptRow): void;
   markReceiptsRead(messageIds: number[], recipient: string, at: number): number;
+  /** Prune the OLDEST messages (and their receipts, FK-safe) so at most `max`
+   *  remain — the newest `max` by id are kept. A non-positive/invalid `max` is
+   *  a no-op (unlimited). Returns the number of messages removed. Bounds memory
+   *  and the full-image flush cost under sustained multi-agent load. O(1) to
+   *  decide (an in-memory count), O(removed) to delete. */
+  pruneMessagesToCap(max: number): number;
 }
 
 type Cell = SqlValue | undefined;
@@ -124,6 +130,10 @@ class SqlJsLoomDb implements LoomDb {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   /** Once closed, no flush may ever write loom.db again (shutdown teardown). */
   private closed = false;
+  /** Live row count of `messages`, maintained in memory so pruneMessagesToCap
+   *  can decide in O(1) instead of a COUNT(*) scan per send. Seeded once in
+   *  init(), bumped on insertMessage, reduced on prune, zeroed on purgeAll. */
+  private messageCount = 0;
 
   async init(rootDir: string): Promise<void> {
     // sql.js wasm + schema sit beside this bundle (dist/) — see build.mjs.
@@ -190,6 +200,11 @@ class SqlJsLoomDb implements LoomDb {
       // Write an initial (empty-schema) snapshot so the file exists on disk.
       this.flushNow();
     }
+
+    // Seed the in-memory message counter from whatever was loaded (0 for a
+    // fresh schema) so the retention cap can decide without a per-send scan.
+    this.messageCount =
+      this.query('SELECT COUNT(*) AS c FROM messages', [], (o) => asInt(o['c']))[0] ?? 0;
   }
 
   private get conn(): Database {
@@ -421,6 +436,7 @@ class SqlJsLoomDb implements LoomDb {
       'INSERT INTO messages (channel_id, sender, body, addressing, target, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       [row.channel_id, row.sender, row.body, row.addressing, row.target, row.created_at],
     );
+    this.messageCount += 1;
     const id = asInt(this.lastInsertRowId());
     return { id, ...row };
   }
@@ -446,6 +462,35 @@ class SqlJsLoomDb implements LoomDb {
     const marked = this.conn.getRowsModified();
     this.flush();
     return marked;
+  }
+
+  pruneMessagesToCap(max: number): number {
+    if (!Number.isInteger(max) || max <= 0) return 0; // unlimited / invalid
+    const excess = this.messageCount - max;
+    if (excess <= 0) return 0;
+    // Delete the OLDEST `excess` messages by id. Receipts (FK child of
+    // messages) MUST go first. The messages table is untouched by the first
+    // statement, so both subselects resolve to the SAME oldest id set.
+    const oldest = 'SELECT id FROM messages ORDER BY id ASC LIMIT ?';
+    const delReceipts = this.conn.prepare(
+      `DELETE FROM receipts WHERE message_id IN (${oldest})`,
+    );
+    try {
+      delReceipts.run([excess]);
+    } finally {
+      delReceipts.free();
+    }
+    const delMessages = this.conn.prepare(
+      `DELETE FROM messages WHERE id IN (${oldest})`,
+    );
+    try {
+      delMessages.run([excess]);
+    } finally {
+      delMessages.free();
+    }
+    this.messageCount -= excess;
+    this.flush();
+    return excess;
   }
 
   // --- internals ------------------------------------------------
@@ -502,6 +547,7 @@ class SqlJsLoomDb implements LoomDb {
     conn.run('DELETE FROM memberships;');
     conn.run('DELETE FROM channels;');
     conn.run('DELETE FROM agents;');
+    this.messageCount = 0;
     this.flushNow();
   }
 

@@ -484,6 +484,13 @@ export interface LoomConfig {
    *  (engine + MCP schema) and advertised in mcp.json so a reader knows the
    *  live limit. Additive (a missing field on an older config is tolerated). */
   maxMessageLength?: number;
+  /** OPTIONAL cap on the persisted message COUNT per folder. Bounds memory and
+   *  the per-flush full-image serialize cost under sustained multi-agent load:
+   *  the newest N messages are kept; older ones (and their receipts) are pruned
+   *  FK-safe on send and on load. 0 disables the cap (unlimited / fully
+   *  persistent). Absent/invalid falls back to DEFAULT_MAX_MESSAGES. Additive
+   *  (a missing field on an older config is tolerated). */
+  maxMessages?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -624,3 +631,11 @@ export const MAX_NAME_LENGTH = 64;
  *  integer is set) and injected into the engine + MCP server; an absent or
  *  invalid config value falls back to this constant. */
 export const MAX_BODY_LENGTH = 500;
+
+/** DEFAULT cap on the number of persisted chat messages per folder. Bounds
+ *  memory + the per-flush full-image serialize cost under sustained multi-agent
+ *  load: the newest N messages are kept; older ones (and their receipts) are
+ *  pruned FK-safe on send and on load. 0 disables the cap (unlimited / fully
+ *  persistent). Overridable via LoomConfig.maxMessages. Generous by default so
+ *  it never bites normal interactive use, only a runaway/marathon session. */
+export const DEFAULT_MAX_MESSAGES = 10000;

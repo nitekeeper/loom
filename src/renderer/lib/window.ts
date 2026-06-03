@@ -19,6 +19,14 @@
 /** Default number of trailing items rendered before windowing kicks in. */
 export const DEFAULT_RENDER_WINDOW = 400;
 
+/** Max messages the renderer keeps in memory (across all channels). Bounds the
+ *  renderer-process footprint over a marathon multi-agent session: the store
+ *  keeps the newest N, and the thread then renders only DEFAULT_RENDER_WINDOW of
+ *  the active channel. MUST be >= DEFAULT_RENDER_WINDOW so the visible window is
+ *  always fully backed. The full transcript still lives in the main-process db
+ *  (itself bounded by LoomConfig.maxMessages). */
+export const MAX_STORE_MESSAGES = 5000;
+
 export interface TailWindow<T> {
   /** The items to actually render (the most recent `limit`, order preserved). */
   shown: T[];

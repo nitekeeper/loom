@@ -13,7 +13,7 @@ import { app, BrowserWindow, dialog } from 'electron';
 // Same build-time-inlined app version the MCP server advertises (esbuild
 // inlines package.json), so the discovery file can never drift from a literal.
 import { version as LOOM_VERSION } from '../../package.json';
-import { MAX_BODY_LENGTH } from '../shared/types.js';
+import { DEFAULT_MAX_MESSAGES, MAX_BODY_LENGTH } from '../shared/types.js';
 import { MCP_HOST, MCP_PATH } from './mcp.js';
 import { createDb } from './db.js';
 import { createEventBus } from './eventbus.js';
@@ -345,12 +345,17 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   // or the MAX_BODY_LENGTH default). The store also drives theme/keybindings
   // for the IPC wiring below — one store, read once here.
   const config = createConfigStore(app.getPath('userData'));
-  const maxBodyLength = config.read().maxMessageLength ?? MAX_BODY_LENGTH;
+  const cfg = config.read();
+  const maxBodyLength = cfg.maxMessageLength ?? MAX_BODY_LENGTH;
+  // Persisted-message retention cap (memory + per-flush serialize-cost bound).
+  // config.read() coerces this to a non-negative integer (0 = unlimited),
+  // defaulting to DEFAULT_MAX_MESSAGES.
+  const maxMessages = cfg.maxMessages ?? DEFAULT_MAX_MESSAGES;
 
   const bus = createEventBus();
-  // Engine enforces the cap (SEC-6) and needs rootDir to delete .loom/temp
-  // report files on purge_all (R4).
-  const engine = createEngine(db, bus, { maxBodyLength, rootDir });
+  // Engine enforces the body cap (SEC-6) + the retention cap, and needs rootDir
+  // to delete .loom/temp report files on purge_all (R4).
+  const engine = createEngine(db, bus, { maxBodyLength, rootDir, maxMessages });
 
   // MCP schema mirrors the SAME cap for an early client-side reject (R1).
   const mcp = createMcpServer(engine, { maxBodyLength });

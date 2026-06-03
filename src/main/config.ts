@@ -12,12 +12,18 @@
  * ============================================================ */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { MAX_BODY_LENGTH, type LoomConfig, type Theme } from '../shared/types.js';
+import {
+  DEFAULT_MAX_MESSAGES,
+  MAX_BODY_LENGTH,
+  type LoomConfig,
+  type Theme,
+} from '../shared/types.js';
 
 export const DEFAULT_CONFIG: LoomConfig = {
   theme: 'dark',
   keybindings: {},
   maxMessageLength: MAX_BODY_LENGTH,
+  maxMessages: DEFAULT_MAX_MESSAGES,
 };
 
 export const CONFIG_FILENAME = 'loom-config.json';
@@ -54,11 +60,24 @@ function coerceMaxMessageLength(value: unknown): number {
   return MAX_BODY_LENGTH;
 }
 
+/** Coerce an unknown value into a valid maxMessages cap (a NON-NEGATIVE
+ *  INTEGER — 0 means unlimited/disabled), falling back to DEFAULT_MAX_MESSAGES
+ *  on anything else (missing, non-number, NaN/Infinity, negative, non-integer).
+ *  Mirrors the tolerant body-cap coercion: a damaged config never throws. Note
+ *  0 is a VALID, explicit "unlimited" choice — distinct from absent (default). */
+function coerceMaxMessages(value: unknown): number {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+  return DEFAULT_MAX_MESSAGES;
+}
+
 /** Validate + normalize an unknown parsed object into a LoomConfig. */
 function coerceConfig(parsed: unknown): LoomConfig {
   let theme: Theme = DEFAULT_CONFIG.theme;
   let keybindings: Record<string, string> = {};
   let maxMessageLength = MAX_BODY_LENGTH;
+  let maxMessages = DEFAULT_MAX_MESSAGES;
   if (parsed && typeof parsed === 'object') {
     const t = (parsed as { theme?: unknown }).theme;
     if (t === 'dark' || t === 'light') theme = t;
@@ -66,8 +85,11 @@ function coerceConfig(parsed: unknown): LoomConfig {
     maxMessageLength = coerceMaxMessageLength(
       (parsed as { maxMessageLength?: unknown }).maxMessageLength,
     );
+    maxMessages = coerceMaxMessages(
+      (parsed as { maxMessages?: unknown }).maxMessages,
+    );
   }
-  return { theme, keybindings, maxMessageLength };
+  return { theme, keybindings, maxMessageLength, maxMessages };
 }
 
 class FileConfigStore implements ConfigStore {

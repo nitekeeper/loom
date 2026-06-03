@@ -68,6 +68,12 @@ export interface EngineOptions {
    *  When absent (e.g. a pure-engine unit test), purge_all skips the fs
    *  removal and reports reports:0 — the table deletes still run. */
   rootDir?: string;
+  /** Persisted-message retention cap (memory + per-flush serialize-cost bound).
+   *  When a positive integer, send_message prunes the oldest beyond it (FK-safe)
+   *  and the cap is enforced once on construction; 0/absent = unlimited. The
+   *  pure-engine test harness omits it, so the default is unlimited and existing
+   *  behaviour is unchanged. Resolved from config (LoomConfig.maxMessages). */
+  maxMessages?: number;
 }
 
 /** Build the engine bound to a db + event bus. */
@@ -85,6 +91,14 @@ export function createEngine(
       ? opts.maxBodyLength
       : MAX_BODY_LENGTH;
   const rootDir = opts.rootDir;
+  // Persisted-message retention cap (memory + flush-cost bound). A positive
+  // integer enables pruning; 0/absent leaves history unlimited.
+  const maxMessages =
+    typeof opts.maxMessages === 'number' &&
+    Number.isInteger(opts.maxMessages) &&
+    opts.maxMessages > 0
+      ? opts.maxMessages
+      : 0;
   /** Epoch-millisecond wall-clock time (the standard JS clock). */
   function now(): number {
     return Date.now();
@@ -139,6 +153,11 @@ export function createEngine(
   ): MessageRow[] {
     return db.listUnreadMessagesFor(recipient, channelId);
   }
+
+  // Enforce the retention cap once on construction so loading a previously
+  // over-cap db (or a lowered config) converges immediately, not only on the
+  // next send. No-op when unlimited.
+  if (maxMessages > 0) db.pruneMessagesToCap(maxMessages);
 
   return {
     register(caller: Caller, params: RegisterParams): RegisterResult {
@@ -354,6 +373,12 @@ export function createEngine(
         recipients,
         channel: channel.name,
       });
+
+      // Bound persisted history (memory + per-flush serialize cost): prune the
+      // oldest beyond the cap. The just-inserted message is the newest, so it is
+      // never pruned. No-op when unlimited (maxMessages = 0).
+      if (maxMessages > 0) db.pruneMessagesToCap(maxMessages);
+
       return { message_id: message.id, recipients };
     },
 

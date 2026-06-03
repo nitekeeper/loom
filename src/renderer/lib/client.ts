@@ -30,6 +30,7 @@ import type {
   Theme,
 } from '../../shared/types.js';
 import { diffOverrides } from './keybindings.js';
+import { MAX_STORE_MESSAGES } from './window.js';
 
 /** Capture hints parsed from location.search (used by --capture). */
 export interface CaptureHints {
@@ -174,7 +175,16 @@ export function createStore(): LoomStore {
       created_at: m.created_at,
       receipts,
     };
-    const messages = [...current.messages, view];
+    // Bound the in-memory transcript so a marathon multi-agent session can't
+    // grow the renderer process without limit (the full history stays in the
+    // main-process db). Keeping only the newest N also bounds the per-event
+    // filter+sort the Chat pane runs over this array. Drop oldest-first; the
+    // thread already renders just the latest DEFAULT_RENDER_WINDOW of these.
+    const appended = [...current.messages, view];
+    const messages =
+      appended.length > MAX_STORE_MESSAGES
+        ? appended.slice(appended.length - MAX_STORE_MESSAGES)
+        : appended;
     // Bump the channel's visible message count (FR-47).
     const channels = current.channels.map((c) =>
       c.id === m.channel_id ? { ...c, messageCount: c.messageCount + 1 } : c,
