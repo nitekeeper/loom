@@ -59,6 +59,13 @@ export type { PathModule } from './main/pathutil.js';
 export { createWsFeed, wsEnabled, WS_HOST, WS_PORT } from './main/ws.js';
 export type { WsFeedHandle } from './main/ws.js';
 
+// The MCP HTTP server (the AGENT transport, NFR-9). Re-exported so the
+// acceptance suite can boot the REAL server in-process and drive it with N
+// concurrent SDK clients — proving the room-as-MCP-server handles 10-20 agents
+// chatting concurrently (the path the engine-level tests do not exercise).
+export { createMcpServer, MCP_HOST, MCP_PORT, MCP_PATH } from './main/mcp.js';
+export type { McpServerHandle } from './main/mcp.js';
+
 // Engine bounds the suite asserts (SEC-6 body cap, OQ-1 name cap).
 export { MAX_BODY_LENGTH, MAX_NAME_LENGTH } from './shared/types.js';
 
