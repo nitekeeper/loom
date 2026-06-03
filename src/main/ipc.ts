@@ -78,16 +78,15 @@ class IpcWiringImpl implements IpcWiring {
 
   private buildAgentViews(): AgentView[] {
     const { db } = this.deps;
-    return db.listAgents().map((a): AgentView => {
-      // Per-agent unread = receipts addressed to this agent, still unread.
-      let unread = 0;
-      for (const m of db.listMessages()) {
-        for (const r of db.listReceipts(m.id)) {
-          if (r.recipient === a.name && r.read_at === null) unread += 1;
-        }
-      }
-      return { name: a.name, status: a.status, unread };
-    });
+    // One GROUP BY over the partial unread index (O(unread)) instead of an
+    // O(agents × messages × receipts) nested scan — the latter froze window
+    // open as history grew and, fired on the counter tick, stalled every agent.
+    const unread = db.unreadCountsByRecipient();
+    return db.listAgents().map((a): AgentView => ({
+      name: a.name,
+      status: a.status,
+      unread: unread.get(a.name) ?? 0,
+    }));
   }
 
   private buildChannelViews(): ChannelView[] {
@@ -123,17 +122,15 @@ class IpcWiringImpl implements IpcWiring {
 
   private computeCounters(): SessionCounters {
     const { db } = this.deps;
-    let agents = 0;
-    for (const a of db.listAgents()) if (a.status === 'active') agents += 1;
-    const channels = db.listChannels().length;
-    const messages = db.listMessages();
-    let receipts = 0;
-    for (const m of messages) receipts += db.listReceipts(m.id).length;
+    // Aggregate counts only — the former version did listMessages() + one
+    // listReceipts() per message (O(messages × receipts)) on every ~100ms tick,
+    // synchronously blocking every agent's tool call. Now: an O(1) message
+    // count + three single COUNT(*) queries.
     return {
-      agents,
-      channels,
-      messages: messages.length,
-      receipts,
+      agents: db.countActiveAgents(),
+      channels: db.listChannels().length,
+      messages: db.countMessages(),
+      receipts: db.countReceipts(),
       files: this.fileCount,
     };
   }

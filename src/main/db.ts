@@ -96,6 +96,17 @@ export interface LoomDb {
    *  and the full-image flush cost under sustained multi-agent load. O(1) to
    *  decide (an in-memory count), O(removed) to delete. */
   pruneMessagesToCap(max: number): number;
+  /** Total persisted message count — O(1) (the in-memory counter). */
+  countMessages(): number;
+  /** Total receipt rows — ONE COUNT(*) query, replacing the former O(messages ×
+   *  receipts) per-message scan the renderer counter tick (~every 100ms) ran. */
+  countReceipts(): number;
+  /** Count of agents whose status is 'active' — one COUNT(*). */
+  countActiveAgents(): number;
+  /** recipient -> count of that recipient's UNREAD receipts, via ONE GROUP BY
+   *  over the partial unread index. Replaces the O(agents × messages × receipts)
+   *  nested scan in buildAgentViews (the multi-second window-open freeze). */
+  unreadCountsByRecipient(): Map<string, number>;
 }
 
 type Cell = SqlValue | undefined;
@@ -491,6 +502,40 @@ class SqlJsLoomDb implements LoomDb {
     this.messageCount -= excess;
     this.flush();
     return excess;
+  }
+
+  countMessages(): number {
+    // O(1): the in-memory counter maintained on insert / prune / purge.
+    return this.messageCount;
+  }
+
+  countReceipts(): number {
+    return (
+      this.query('SELECT COUNT(*) AS c FROM receipts', [], (o) => asInt(o['c']))[0] ?? 0
+    );
+  }
+
+  countActiveAgents(): number {
+    return (
+      this.query(
+        "SELECT COUNT(*) AS c FROM agents WHERE status = 'active'",
+        [],
+        (o) => asInt(o['c']),
+      )[0] ?? 0
+    );
+  }
+
+  unreadCountsByRecipient(): Map<string, number> {
+    // One GROUP BY over idx_receipts_unread — O(unread), not the O(agents ×
+    // messages × receipts) nested scan it replaces in buildAgentViews.
+    const rows = this.query(
+      'SELECT recipient, COUNT(*) AS n FROM receipts WHERE read_at IS NULL GROUP BY recipient',
+      [],
+      (o) => ({ recipient: asText(o['recipient']), n: asInt(o['n']) }),
+    );
+    const out = new Map<string, number>();
+    for (const r of rows) out.set(r.recipient, r.n);
+    return out;
   }
 
   // --- internals ------------------------------------------------

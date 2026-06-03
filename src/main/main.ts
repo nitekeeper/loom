@@ -738,6 +738,18 @@ export function bootstrap(): void {
       // session and must flush it durably). This NEVER deletes loom.db (R2/R3).
       app.on('will-quit', () => persistAndCloseDb(services.db));
 
+      // Gracefully close the network surface on quit. Without this, mcp.stop() /
+      // ws.stop() / watcher.stop() are never called (audit S2): in-flight MCP
+      // requests are severed abruptly, and in any in-process / multi-window
+      // future the port + every live session would leak. will-quit is the
+      // definitive, non-cancelable signal and the process exits right after, so
+      // these are best-effort (fire-and-forget).
+      app.on('will-quit', () => {
+        void services.mcp.stop();
+        void services.ws?.stop();
+        services.watcher.stop();
+      });
+
       if (capture) {
         await runCapture(services, capture);
       } else {
