@@ -12,6 +12,7 @@
 import type { JSX, KeyboardEvent, MouseEvent } from 'react';
 import type { MessageView } from '../../shared/types.js';
 import { renderInline } from '../lib/markdown.js';
+import { tailWindow, DEFAULT_RENDER_WINDOW } from '../lib/window.js';
 import { Avatar, avatarColor } from './Avatar.js';
 
 export interface InboxLensProps {
@@ -53,6 +54,11 @@ export function InboxLens(props: InboxLensProps): JSX.Element {
   // available; otherwise it is omitted so empty backends degrade gracefully.
   const roleLine = role && role.trim().length > 0 ? role.trim() : null;
 
+  // Window the RENDERED inbox to the most recent N so a large inbox can't
+  // freeze the pane. The unread/total counts above still reflect the FULL
+  // inbox; only the DOM list below is bounded (with a non-silent banner).
+  const win = tailWindow(items, DEFAULT_RENDER_WINDOW);
+
   return (
     <>
       <div className="inbox-head">
@@ -76,11 +82,30 @@ export function InboxLens(props: InboxLensProps): JSX.Element {
             Nothing has been addressed to {agent} yet.
           </div>
         ) : (
-          // Newest first, mirroring the prototype's reversed order.
-          items
-            .slice()
-            .reverse()
-            .map((m) => {
+          <>
+            {win.hidden > 0 ? (
+              <div
+                className="inbox-window-notice"
+                role="status"
+                style={{
+                  padding: '5px 12px',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  color: 'var(--text-faint)',
+                  textAlign: 'center',
+                  borderBottom: '1px solid rgba(127,127,127,.18)',
+                }}
+              >
+                ↑ {win.hidden.toLocaleString()} earlier{' '}
+                {win.hidden === 1 ? 'message' : 'messages'} hidden — showing the
+                latest {win.shown.length.toLocaleString()}.
+              </div>
+            ) : null}
+            {/* Newest first, mirroring the prototype's reversed order. */}
+            {win.shown
+              .slice()
+              .reverse()
+              .map((m) => {
               const unreadItem = isUnreadFor(m, agent);
               return (
                 <div
@@ -113,7 +138,8 @@ export function InboxLens(props: InboxLensProps): JSX.Element {
                   </span>
                 </div>
               );
-            })
+            })}
+          </>
         )}
       </div>
     </>

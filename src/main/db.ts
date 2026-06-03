@@ -74,6 +74,13 @@ export interface LoomDb {
   listMemberships(channelId: number): MembershipRow[];
   listMessages(channelId?: number): MessageRow[];
   listReceipts(messageId: number): ReceiptRow[];
+  /** Unread messages addressed to `recipient` (receipt.read_at IS NULL),
+   *  optionally filtered to one channel, ordered by message id ASC. Resolves
+   *  with a single indexed JOIN over the partial unread index — O(unread),
+   *  NOT the O(messages × receipts) per-message scan it replaces. This is the
+   *  concurrency hot path: check_inbox / read_messages are polled by every
+   *  agent, so under many agents the old full scan blocked the single thread. */
+  listUnreadMessagesFor(recipient: string, channelId?: number): MessageRow[];
 
   // --- mutations (writers) ---
   insertAgent(row: AgentRow): void;
@@ -355,6 +362,29 @@ class SqlJsLoomDb implements LoomDb {
       'SELECT message_id, recipient, read_at FROM receipts WHERE message_id = ? ORDER BY recipient ASC',
       [messageId],
       SqlJsLoomDb.toReceipt,
+    );
+  }
+
+  listUnreadMessagesFor(recipient: string, channelId?: number): MessageRow[] {
+    // One indexed JOIN: the partial index idx_receipts_unread(recipient) WHERE
+    // read_at IS NULL selects exactly this recipient's unread receipts, joined
+    // to their messages by PK. Cost scales with the UNREAD set, not the whole
+    // transcript — so many agents polling concurrently can't turn this into an
+    // O(messages × receipts) event-loop stall. The receipts PK (message_id,
+    // recipient) guarantees at most one row per (message, recipient), so no
+    // duplicate messages are produced. Column names of `m.<col>` surface
+    // unprefixed (id, channel_id, …) — exactly what toMessage expects.
+    const base =
+      'SELECT m.id, m.channel_id, m.sender, m.body, m.addressing, m.target, m.created_at ' +
+      'FROM messages m JOIN receipts r ON r.message_id = m.id ' +
+      'WHERE r.recipient = ? AND r.read_at IS NULL';
+    if (channelId === undefined) {
+      return this.query(`${base} ORDER BY m.id ASC`, [recipient], SqlJsLoomDb.toMessage);
+    }
+    return this.query(
+      `${base} AND m.channel_id = ? ORDER BY m.id ASC`,
+      [recipient, channelId],
+      SqlJsLoomDb.toMessage,
     );
   }
 

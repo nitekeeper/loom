@@ -75,6 +75,12 @@ export { escapeHtml, highlightCode } from './renderer/lib/highlight.js';
 export { computeFoldRanges, TAB_WIDTH } from './renderer/lib/fold.js';
 export type { FoldRange } from './renderer/lib/fold.js';
 
+// Pure tail-window helper that bounds the Chat thread + inbox DOM so a 10–20
+// agent firehose can't freeze the observer pane. Re-exported so the suite can
+// pin the windowing math (cap, hidden count, tail/order preservation) DOM-free.
+export { tailWindow, DEFAULT_RENDER_WINDOW } from './renderer/lib/window.js';
+export type { TailWindow } from './renderer/lib/window.js';
+
 // Pure close-file Escape coordination (A11Y-CLOSE-05). Re-exported so the
 // acceptance suite can pin the de-confliction contract (a consumed/tooltip
 // Escape never closes the file; a button-focused Escape rescues focus) without

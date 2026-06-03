@@ -125,23 +125,19 @@ export function createEngine(
   }
 
   /** All UNREAD MessageRows addressed to a recipient (receipt read_at NULL),
-   *  optionally filtered by channel id. Sorted by message id ascending so
-   *  delivery order is stable across check_inbox / read_messages. */
+   *  optionally filtered by channel id, ordered by message id ascending so
+   *  delivery order is stable across check_inbox / read_messages.
+   *
+   *  Backed by a single indexed JOIN (db.listUnreadMessagesFor) — O(unread),
+   *  not the former O(messages × receipts) per-message scan. check_inbox and
+   *  read_messages are the tools every agent polls, so this is the path that
+   *  must stay cheap when many agents chat concurrently (single-threaded
+   *  sql.js: a slow scan here blocks every other session AND the UI). */
   function unreadMessagesFor(
     recipient: string,
     channelId?: number,
   ): MessageRow[] {
-    const messages = db.listMessages(channelId);
-    const out: MessageRow[] = [];
-    for (const message of messages) {
-      const receipts = db.listReceipts(message.id);
-      const mine = receipts.find(
-        (r) => r.recipient === recipient && r.read_at === null,
-      );
-      if (mine !== undefined) out.push(message);
-    }
-    out.sort((a, b) => a.id - b.id);
-    return out;
+    return db.listUnreadMessagesFor(recipient, channelId);
   }
 
   return {
