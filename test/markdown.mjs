@@ -77,14 +77,28 @@ test('MARKDOWN alerts: > [!NOTE] becomes a typed callout; unknown types stay pla
   assert.match(bogus, /\[!BOGUS\]/, 'unknown marker left as literal text');
 });
 
-test('LINKS: safeExternalUrl allows only http/https/mailto', async () => {
+test('LINKS: safeExternalUrl allows only bare http/https/mailto (no userinfo, no padding)', async () => {
   const { safeExternalUrl } = await kit();
+  // ALLOWED: bare http/https and a bare mailto address.
   assert.equal(safeExternalUrl('http://a.com/x'), 'http://a.com/x');
   assert.equal(safeExternalUrl('https://a.com/x'), 'https://a.com/x');
-  assert.ok(safeExternalUrl('mailto:a@b.com'), 'mailto is allowed');
+  assert.ok(safeExternalUrl('mailto:a@b.com'), 'a bare mailto address is allowed');
   for (const bad of [
+    // Dangerous schemes / relative / empty / nullish (existing contract).
     'javascript:alert(1)', 'file:///etc/passwd', 'data:text/plain,x',
     'vbscript:x', 'blob:https://a', 'relative/path', '#frag', '', null, undefined,
+    // FIX 1 — embedded credentials / userinfo (incl. the @host spoof and the
+    // password-only sub-clause: url.username === '' && url.password !== '').
+    'http://u:p@host.com/', 'http://legit.com@evil.com/', 'http://:p@host.com/',
+    // FIX 3 — leading / trailing whitespace.
+    '  http://a.com', 'http://a.com ',
+    // FIX 4 — mailto with injectable params / fragment / no address.
+    'mailto:a@b.com?subject=x', 'mailto:a@b.com?body=y', 'mailto:a@b.com#frag', 'mailto:foo',
+    // FIX 4 — percent-encoded separators that an RFC-6068 handler would decode
+    // back into header/option metacharacters (must not slip past search/hash).
+    'mailto:a@b.com%3Fsubject=Pwned', 'mailto:a@b.com%0D%0ABcc:evil@x.com',
+    // FIX 4 — multi-recipient list (comma / semicolon) is not a bare address.
+    'mailto:a@b.com,evil@x.com', 'mailto:a@b.com;evil@x.com',
   ]) {
     assert.equal(safeExternalUrl(bad), null, `must reject ${String(bad)}`);
   }
@@ -97,5 +111,28 @@ test('LINKS: dangerous-scheme markdown links get NO href (neutralized); text sur
     assert.doesNotMatch(html, /href\s*=/i, `no href for ${url}`);
     assert.doesNotMatch(html, /data-loom-ext/, `not marked external for ${url}`);
     assert.match(html, /clickme/, 'link text still renders');
+  }
+});
+
+test('LINKS: a bare safe link renders WITH data-loom-ext; userinfo / parameterized mailto do NOT', async () => {
+  const { renderMarkdown } = await kit();
+  // A bare, safe http link is navigable + marked for external open.
+  const ok = renderMarkdown('[ok](http://a.com/x)');
+  assert.match(ok, /href="http:\/\/a\.com\/x"/, 'a bare safe link keeps a navigable href');
+  assert.match(ok, /data-loom-ext="1"/, 'and is marked for shell.openExternal');
+  // Newly-rejected targets render inert: NO href, NO data-loom-ext (text survives).
+  for (const url of [
+    'http://u:p@host.com/',          // FIX 1 — userinfo
+    'http://legit.com@evil.com/',    // FIX 1 — @host spoof
+    'mailto:a@b.com?subject=x',      // FIX 4 — injectable mailto param
+    'mailto:a@b.com#frag',           // FIX 4 — mailto with a fragment
+    'mailto:foo',                    // FIX 4 — mailto with no address
+    'mailto:a@b.com%3Fsubject=Pwned',// FIX 4 — percent-encoded `?` bypass
+    'mailto:a@b.com%0D%0ABcc:evil@x.com', // FIX 4 — percent-encoded CRLF/Bcc
+  ]) {
+    const html = renderMarkdown(`[clickme](${url})`);
+    assert.doesNotMatch(html, /href\s*=/i, `no href for ${url}`);
+    assert.doesNotMatch(html, /data-loom-ext/, `not marked external for ${url}`);
+    assert.match(html, /clickme/, `link text still renders for ${url}`);
   }
 });

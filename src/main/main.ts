@@ -541,6 +541,11 @@ async function runCapture(services: Services, capture: CaptureArgs): Promise<voi
         offscreen: false,
       },
     });
+    // Layer-4 defense-in-depth parity with the main window: deny in-app
+    // navigation / child windows and route any SAFE target to the external
+    // browser. will-navigate does NOT fire for the programmatic loadURL below,
+    // and denying child windows is fine for capture (no popups expected).
+    installNavGuard(win);
     services.ipc.attachRenderer((channel, payload) => {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     });
