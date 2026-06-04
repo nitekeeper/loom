@@ -21,8 +21,10 @@ the `OPEN_EXTERNAL` IPC re-validation and the window navigation guard. The
 
 ```
 ```mermaid fence  →  inert .mermaid-diagram placeholder (renderMarkdown)
-      →  Viewer effect dynamic-imports lib/mermaid-render.ts
-      →  mermaid.render (securityLevel:'strict')  →  sanitizeSvg (DOMPurify)
+      →  Viewer effect dynamic-imports lib/mermaid-loader.ts (mermaid-FREE)
+      →  ensureMermaid() injects dist/mermaid.js (classic <script>, lazy, once)
+      →  renderMermaidIn → mermaid.render (securityLevel:'strict')
+      →  sanitizeSvg (DOMPurify)
       →  innerHTML  →  .mermaid-done (or .mermaid-error fallback)
 ```
 
@@ -67,9 +69,15 @@ question "which diagram types degrade?" was independently verified:
 
 - mermaid 11.15.0's `dist/mermaid.core.mjs` contains **zero** `eval(` /
   `new Function` (`grep` = 0), and esbuild **inlines every diagram-type module
-  into the renderer IIFE** — the built `dist/renderer.js` has **zero** runtime
-  `import(...)`, **zero** `import.meta`, and **zero** `new Function`/`eval(`
-  across the whole bundle (deps included).
+  into a single browser IIFE** with **zero** runtime `import(...)`, **zero**
+  `import.meta`, and **zero** `new Function`/`eval(`. As of the lazy-chunk split,
+  that IIFE is a SEPARATE bundle — **`dist/mermaid.js`** (~7MB) — injected as a
+  same-origin classic `<script src="./mermaid.js">` by `lib/mermaid-loader.ts`
+  only when a document actually contains a `.mermaid-diagram`. The startup
+  bundle, **`dist/renderer.js`**, is mermaid-FREE (back to a few hundred KB) and
+  the eval-free guarantee holds for BOTH bundles (the `test/bundle-split.mjs`
+  unit guard asserts mermaid-library signatures are absent from `renderer.js`
+  and that neither bundle contains `eval(`/`new Function(`).
 - Therefore every standard v11 type (flowchart, sequenceDiagram, classDiagram,
   stateDiagram, erDiagram, gantt, pie, gitGraph, …) is **bundled and available
   at `file://` runtime** with no module-loader fetch and no CSP `eval`

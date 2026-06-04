@@ -6,6 +6,7 @@
  *   dist/main.cjs        main process     (format=cjs,  platform=node)
  *   dist/preload.cjs     preload bridge   (format=cjs,  platform=node)
  *   dist/renderer.js     React UI bundle  (format=iife, platform=browser)
+ *   dist/mermaid.js      LAZY mermaid chunk (format=iife, platform=browser)
  *   dist/renderer.css    bundled styles
  *   dist/index.html      copied shell
  *   dist/schema.sql      copied DDL (loaded by main at runtime)
@@ -92,6 +93,27 @@ const rendererBuild = {
   loader: { '.css': 'css' },
 };
 
+// LAZY mermaid chunk — its OWN browser IIFE, kept OUT of renderer.js.
+//
+// esbuild's IIFE format CANNOT code-split, so the Viewer's old dynamic
+// import('../lib/mermaid-render.js') was INLINED into renderer.js, dragging the
+// ~7-8MB mermaid library into the startup bundle. Instead we build a SEPARATE
+// bundle from src/renderer/lib/mermaid-entry.ts (the ONLY module that statically
+// pulls mermaid) into dist/mermaid.js. The renderer never statically imports the
+// mermaid graph; lib/mermaid-loader.ts (mermaid-free) injects this bundle as a
+// same-origin classic <script src="./mermaid.js"> lazily, only when a document
+// actually contains a `.mermaid-diagram`. dist/mermaid.js lands beside index.html
+// so the relative './mermaid.js' resolves over file://. Same target/format as the
+// renderer (chrome130 IIFE) — eval-free, no module-CORS, no CSP change.
+const mermaidBuild = {
+  ...common,
+  entryPoints: [path.join(__dirname, 'src/renderer/lib/mermaid-entry.ts')],
+  outfile: path.join(DIST, 'mermaid.js'),
+  platform: 'browser',
+  format: 'iife',
+  target: 'chrome130',
+};
+
 // Electron-free CJS bundle the acceptance suite requires (db + engine +
 // eventbus + dispatch). It sits in dist/ so db.ts locates sql-wasm.wasm and
 // schema.sql via __dirname, exactly like main.cjs does.
@@ -123,6 +145,7 @@ async function run() {
     build(mainBuild),
     build(preloadBuild),
     build(rendererBuild),
+    build(mermaidBuild),
     build(testkitBuild),
   ]);
   await copyAssets();

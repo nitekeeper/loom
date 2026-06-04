@@ -509,30 +509,41 @@ function MarkdownView({
 
   // ---- mermaid: upgrade diagram placeholders AFTER the HTML is injected ------
   // Keyed on the injected HTML so it re-runs whenever the rendered content
-  // changes (new file, edited file). It does nothing — and never imports the
-  // heavy mermaid bundle — unless the freshly-injected HTML actually contains a
+  // changes (new file, edited file). It does nothing — and never loads the heavy
+  // mermaid bundle — unless the freshly-injected HTML actually contains a
   // `.mermaid-diagram` placeholder, keeping non-diagram files on the hot path.
+  //
+  // LAZY CHUNK: mermaid (~7-8MB) is NOT in renderer.js. We dynamic-import the
+  // mermaid-FREE loader (lib/mermaid-loader.ts), then ensureMermaid() injects the
+  // SEPARATE dist/mermaid.js as a same-origin classic <script> on first use and
+  // resolves the render API. The loader has no static mermaid import, so the
+  // renderer IIFE (which esbuild cannot code-split) stays mermaid-free; mermaid
+  // also never enters the shared testkit bundle.
   //
   // Cancellation (Law-1-adjacent correctness): mermaid.render is async; if the
   // user switches files mid-render, the cleanup flips `cancelled` so the loop in
   // renderMermaidIn bails BEFORE writing a stale SVG into the new file's DOM.
-  // The dynamic import keeps mermaid out of the bundle's hot path AND out of the
-  // shared testkit bundle.
   useEffect(() => {
     const host = mdRef.current;
     if (!host) return;
-    // Cheap synchronous gate: skip the dynamic import entirely when there is no
-    // diagram to render (the overwhelmingly common case).
+    // Cheap synchronous gate: skip the loader entirely when there is no diagram
+    // to render (the overwhelmingly common case).
     if (host.querySelector('.mermaid-diagram') === null) return;
 
     let cancelled = false;
-    void import('../lib/mermaid-render.js')
-      .then(({ renderMermaidIn }) => {
+    void import('../lib/mermaid-loader.js')
+      .then(({ ensureMermaid }) => {
         if (cancelled) return;
-        return renderMermaidIn(host, { isCancelled: () => cancelled });
+        // Inject + load dist/mermaid.js on first use; resolves the render API.
+        return ensureMermaid().then((api) => {
+          if (cancelled) return;
+          return api.renderMermaidIn(host, { isCancelled: () => cancelled });
+        });
       })
-      // Swallow a chunk-load / render failure: the escaped code-block fallback
-      // is already on screen, so a failure degrades gracefully (Law 1 safe).
+      // Swallow a chunk-load / render failure: the escaped code-block fallback is
+      // already on screen, so a failure degrades gracefully (Law 1 safe). This now
+      // ALSO covers the new path where dist/mermaid.js itself fails to load —
+      // ensureMermaid() rejects, we keep the fallback, and the app never breaks.
       .catch(() => {});
 
     return () => {

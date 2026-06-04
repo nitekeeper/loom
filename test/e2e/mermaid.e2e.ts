@@ -273,7 +273,14 @@ test('1: a valid mermaid fence renders to an <svg> diagram (real Chromium), no n
     // either alone is weaker (a class with no svg, or an svg the sanitizer
     // emptied, would be a false pass). mermaid.render needs real SVG layout, so
     // this can only succeed in real Chromium.
-    await page.waitForSelector('.pane.viewer .md .mermaid-diagram.mermaid-done', { timeout: 20_000 });
+    // COLD-PATH timeout (30s, not 20s): this is the FIRST diagram in a fresh app
+    // instance, so it pays the one-time lazy-chunk cost the pre-split suite never
+    // measured — the Viewer dynamic-imports the loader, ensureMermaid() injects the
+    // ~7MB dist/mermaid.js classic script over file://, the browser parses/evaluates
+    // that whole IIFE, THEN mermaid.initialize + render + a real SVG layout run. 30s
+    // absorbs that one-time parse on slower/contended CI runners, matching the 30s
+    // the harness already allows for the initial tree mount. No assertion weakened.
+    await page.waitForSelector('.pane.viewer .md .mermaid-diagram.mermaid-done', { timeout: 30_000 });
     const svg = page.locator('.pane.viewer .md .mermaid-diagram svg');
     await expect(svg).toHaveCount(1);
     // A rendered flowchart draws path/edge geometry — assert non-empty SVG body
@@ -312,9 +319,15 @@ test('2: a hostile mermaid diagram is neutralized — no script, no on* handler,
     // on the un-upgraded placeholder. We wait for EITHER class, then proceed.
     // (A valid-but-hostile diagram should render: strict mode neutralizes the
     // payload WITHOUT failing the layout.)
+    // COLD-PATH timeout (30s, not 20s): a fresh app instance pays the one-time
+    // lazy-chunk cost (dynamic-import the loader -> inject + parse the ~7MB
+    // dist/mermaid.js IIFE over file:// -> initialize + render + layout) before this
+    // terminal class can appear. 30s absorbs that on slower/contended CI runners,
+    // matching the 30s the harness allows for the initial tree mount. No assertion
+    // weakened — only the wait window widened.
     await page.waitForSelector(
       '.pane.viewer .md .mermaid-diagram.mermaid-done, .pane.viewer .md .mermaid-diagram.mermaid-error',
-      { timeout: 20_000 },
+      { timeout: 30_000 },
     );
 
     // (POSITIVE) The hostile diagram is VALID mermaid (a flowchart with a labeled
@@ -394,7 +407,12 @@ test('3: an invalid mermaid body degrades gracefully — .mermaid-error + the es
     // mermaid.render rejects the garbage body; the loop CATCHES and tags the
     // node .mermaid-error (never .mermaid-done). If it instead crashed the loop
     // or left the placeholder un-upgraded, this wait times out (fail).
-    await page.waitForSelector('.pane.viewer .md .mermaid-diagram.mermaid-error', { timeout: 20_000 });
+    // COLD-PATH timeout (30s, not 20s): even the error path must FIRST inject +
+    // parse the ~7MB dist/mermaid.js IIFE over file:// before mermaid.render can
+    // reject the garbage body and the loop can tag .mermaid-error — this fresh app
+    // instance pays the same one-time lazy-chunk cost as the render tests. 30s
+    // absorbs it on slower/contended CI runners. No assertion weakened.
+    await page.waitForSelector('.pane.viewer .md .mermaid-diagram.mermaid-error', { timeout: 30_000 });
     await expect(page.locator('.pane.viewer .md .mermaid-diagram.mermaid-done')).toHaveCount(0);
 
     // The escaped code-block fallback must STILL be on screen (graceful
@@ -443,7 +461,12 @@ test('4: switching files mid-render never leaks a stale diagram into the new fil
     // The SECOND file owns exactly ONE diagram, and it must render to completion
     // (the new file's own effect run is NOT cancelled). Waiting on its terminal
     // state proves the switch did not wedge rendering.
-    await page.waitForSelector('.pane.viewer .md .mermaid-diagram.mermaid-done', { timeout: 20_000 });
+    // COLD-PATH timeout (30s, not 20s): this fresh app instance pays the one-time
+    // lazy-chunk cost during the HEAVY file open (inject + parse the ~7MB
+    // dist/mermaid.js IIFE over file://), and this wait spans that cold load plus the
+    // heavy-render cancellation and the other-file render. 30s absorbs the one-time
+    // chunk parse on slower/contended CI runners. No assertion weakened.
+    await page.waitForSelector('.pane.viewer .md .mermaid-diagram.mermaid-done', { timeout: 30_000 });
     const diagrams = page.locator('.pane.viewer .md .mermaid-diagram');
     await expect(diagrams).toHaveCount(1);
 
@@ -499,7 +522,12 @@ for (const t of TYPE_FIXTURES) {
       // If this type secretly needed eval/Function, CSP would throw it into the
       // catch and it would land .mermaid-error — so .mermaid-done is the precise
       // proof of "renders under the locked CSP without unsafe-eval".
-      await page.waitForSelector('.pane.viewer .md .mermaid-diagram.mermaid-done', { timeout: 20_000 });
+      // COLD-PATH timeout (30s, not 20s): each type runs in its OWN fresh app
+      // instance, so every iteration pays the one-time lazy-chunk cost (inject +
+      // parse the ~7MB dist/mermaid.js IIFE over file://) before its first diagram
+      // can render. 30s absorbs that on slower/contended CI runners. No assertion
+      // weakened.
+      await page.waitForSelector('.pane.viewer .md .mermaid-diagram.mermaid-done', { timeout: 30_000 });
       await expect(page.locator('.pane.viewer .md .mermaid-diagram.mermaid-error')).toHaveCount(0);
 
       // A real, non-empty <svg> body — guards against a class-only false pass or a
