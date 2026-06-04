@@ -54,24 +54,64 @@ const md = new MarkdownIt({
  *  `export =` typings). */
 type MdRenderRule = NonNullable<typeof md.renderer.rules.fence>;
 
+/** One markdown-it token, derived from the render-rule signature so we never
+ *  reference the markdown-it namespace as a value (keeps tsc happy under the
+ *  `export =` typings). */
+type MdToken = Parameters<MdRenderRule>[0][number];
+
+/** The first `inline` token of the block opened at `tokens[start]`, scanning
+ *  forward until the matching `stopType` close (or end). Used by the task-list
+ *  and alert core rules to reach a block's first line of inline content. */
+function firstInlineOf(
+  tokens: MdToken[],
+  start: number,
+  stopType: string,
+): MdToken | undefined {
+  for (let k = start + 1; k < tokens.length; k += 1) {
+    const t = tokens[k];
+    if (t === undefined || t.type === stopType) return undefined;
+    if (t.type === 'inline') return t;
+  }
+  return undefined;
+}
+
 /* Render the highlighted-source body shared by fenced + indented code.
    Each physical line becomes <span class="ln">…</span>; blank lines are
    already rendered as &nbsp; by highlightCode, so line numbers/heights
    stay honest. The token content is the ONLY user data and it flows
    through highlightCode -> escapeHtml, so it cannot inject markup. */
-function renderCodeBlock(code: string): string {
-  const lines = highlightCode(code).map((l) => `<span class="ln">${l}</span>`).join('');
-  return `<pre class="md-code"><code>${lines}</code></pre>`;
+/** Languages our (JS-family) highlighter actually understands. Other languages
+ *  — and untagged / indented blocks — render as PLAIN escaped text: applying
+ *  the JS tokenizer to YAML / logs / Python miscolors English words as JS
+ *  keywords, which is worse than no highlighting (GitHub leaves them plain). */
+const HIGHLIGHT_LANGS = new Set([
+  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'javascript', 'typescript', 'json',
+]);
+
+/** Render a fenced/indented code block. Highlight ONLY when the fence language
+ *  is JS-family; otherwise emit plain, escaped lines (still one <span class=ln>
+ *  per line, blank lines as &nbsp; — matching highlightCode's structure). Law-1
+ *  safe: every non-highlighted line flows through escapeHtml. `data-lang` is
+ *  stamped for an optional future language label (no CSS needed now). */
+function renderCodeBlock(code: string, lang: string): string {
+  const rendered = HIGHLIGHT_LANGS.has(lang.toLowerCase())
+    ? highlightCode(code)
+    : code.replace(/\n$/, '').split('\n').map((l) => escapeHtml(l) || '&nbsp;');
+  const lines = rendered.map((l) => `<span class="ln">${l}</span>`).join('');
+  const langAttr = lang ? ` data-lang="${escapeHtml(lang)}"` : '';
+  return `<pre class="md-code"${langAttr}><code>${lines}</code></pre>`;
 }
 
-/* ---- fenced code: ```lang … ``` ---- */
+/* ---- fenced code: ```lang … ``` — highlight only JS-family langs ---- */
 const fenceRule: MdRenderRule = (tokens, idx) => {
   const token = tokens[idx];
-  return renderCodeBlock(token ? token.content : '');
+  // The info string is the language tag (first word after the opening fence).
+  const lang = (token?.info ?? '').trim().split(/\s+/)[0] ?? '';
+  return renderCodeBlock(token?.content ?? '', lang);
 };
 md.renderer.rules.fence = fenceRule;
 
-/* ---- indented code blocks ---- */
+/* ---- indented code blocks: no language → always plain escaped ---- */
 md.renderer.rules.code_block = fenceRule;
 
 /* ---- links: render styled but NON-navigating (NO href at all) ----
@@ -159,6 +199,56 @@ md.core.ruler.push('loom_srcline', (state) => {
       token.attrSet('data-srcline', String(token.map[0] + 1));
     }
   }
+});
+
+/* ---- GFM task lists: `- [ ] todo` / `- [x] done` ----
+   markdown-it's default preset does NOT parse these — they render as a literal
+   "[ ]"/"[x]" text prefix. We detect the marker at the start of a list item's
+   first inline text token, STRIP it, and tag the <li> with a class. The checkbox
+   glyph itself is drawn by renderer.css (::before) — we never emit a real
+   <input> (keeps the fixed-structural-tag / html:false threat model intact).
+   This runs after inline parsing (a pushed core rule), so children exist. */
+md.core.ruler.push('loom_tasklist', (state) => {
+  state.tokens.forEach((open, i) => {
+    if (open.type !== 'list_item_open') return;
+    const inline = firstInlineOf(state.tokens, i, 'list_item_close');
+    const first = inline?.children?.[0];
+    if (first === undefined || first.type !== 'text') return;
+    const m = /^\[([ xX])\][ \t]+/.exec(first.content);
+    if (m === null) return;
+    first.content = first.content.slice(m[0]?.length ?? 0);
+    const done = (m[1] ?? '').toLowerCase() === 'x';
+    open.attrJoin('class', done ? 'md-task md-task-done' : 'md-task');
+  });
+});
+
+/* ---- GitHub alerts: a `> [!NOTE]` (TIP/IMPORTANT/WARNING/CAUTION) first line
+   of a blockquote. markdown-it renders an ordinary quote with a literal
+   "[!NOTE]" line; we detect the marker on the blockquote's first inline token,
+   strip that line, and tag the <blockquote> with a class renderer.css styles as
+   a colored callout (title via ::before). No HTML/links emitted — Law-1 safe. */
+const ALERT_TYPES = new Set(['note', 'tip', 'important', 'warning', 'caution']);
+md.core.ruler.push('loom_alerts', (state) => {
+  state.tokens.forEach((open, i) => {
+    if (open.type !== 'blockquote_open') return;
+    const inline = firstInlineOf(state.tokens, i, 'blockquote_close');
+    const children = inline?.children;
+    if (children === undefined || children === null) return;
+    const head = children[0];
+    if (head === undefined || head.type !== 'text') return;
+    const m = /^\[!(\w+)\]/.exec(head.content);
+    const type = (m?.[1] ?? '').toLowerCase();
+    if (m === null || !ALERT_TYPES.has(type)) return;
+    // Strip the "[!TYPE]" marker; drop a trailing break so the body starts clean.
+    head.content = head.content.slice(m[0]?.length ?? 0).replace(/^[ \t]+/, '');
+    const next = children[1];
+    if (head.content === '' && next !== undefined && (next.type === 'softbreak' || next.type === 'hardbreak')) {
+      children.splice(0, 2);
+    } else if (head.content === '') {
+      children.splice(0, 1);
+    }
+    open.attrJoin('class', `md-alert md-alert-${type}`);
+  });
 });
 
 /* ------------------------------------------------------------------ */

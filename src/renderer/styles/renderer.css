@@ -829,8 +829,10 @@ mark.search-hit {
 .md h2 { font-size: 19px; font-weight: 700; letter-spacing: -.01em; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
 .md h3 { font-size: 15.5px; font-weight: 700; margin: 20px 0 8px; }
 .md h4 { font-size: 14px; font-weight: 700; margin: 16px 0 6px; }
+.md h5 { font-size: 13px; font-weight: 700; margin: 14px 0 4px; }
+.md h6 { font-size: 12.5px; font-weight: 700; margin: 14px 0 4px; color: var(--text-dim); }
 .md p { margin: 0 0 12px; }
-.md ul, .md ol { margin: 0 0 12px; padding-left: 22px; }
+.md ul, .md ol { margin: 0 0 12px; padding-left: 26px; }
 .md li { margin: 4px 0; }
 .md a { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in oklab, var(--accent) 40%, transparent); cursor: default; }
 .md code { font-family: var(--font-mono); font-size: 12.5px; background: var(--panel-2); border: 1px solid var(--border-soft); padding: 1px 5px; border-radius: 5px; }
@@ -849,6 +851,37 @@ mark.search-hit {
 .md th, .md td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; vertical-align: top; }
 .md thead th { background: var(--panel-2); font-weight: 700; white-space: nowrap; }
 .md tbody tr:nth-child(even) { background: color-mix(in oklab, var(--panel-2) 45%, transparent); }
+/* Strikethrough (~~text~~) — muted; both render paths (Viewer + chat body). */
+.md s, .md del { text-decoration: line-through; color: var(--text-dim); }
+.msg-body s, .msg-body del { text-decoration: line-through; color: var(--text-dim); }
+/* Trim the trailing margin on the last block inside list items / blockquotes so
+   loose lists + multi-paragraph quotes match GitHub's height. */
+.md li > p { margin: 0 0 8px; }
+.md li > p:last-child { margin-bottom: 0; }
+.md blockquote > p:last-child { margin-bottom: 0; }
+/* Inline image placeholder (![alt] renders inert, Law 2) — show it as a chip
+   so a reader can tell it was an image rather than prose. */
+.md .md-img { display: inline-flex; align-items: baseline; gap: 4px; font-family: var(--font-mono); font-size: 12.5px; color: var(--text-dim); background: var(--panel-2); border: 1px dashed var(--border-soft); border-radius: 5px; padding: 1px 6px; }
+.md .md-img::before { content: "🖼"; opacity: .7; }
+/* GFM task lists (- [ ] / - [x]) — an inert CSS checkbox (no <input> emitted). */
+.md li.md-task { list-style: none; margin-left: -26px; padding-left: 26px; position: relative; }
+.md li.md-task::before { content: ""; position: absolute; left: 5px; top: .32em; width: 13px; height: 13px; border: 1px solid var(--border); border-radius: 3px; background: var(--panel-2); box-sizing: border-box; }
+.md li.md-task-done::before { background: var(--accent); border-color: var(--accent); }
+.md li.md-task-done::after { content: "✓"; position: absolute; left: 5px; top: .32em; width: 13px; height: 13px; display: grid; place-items: center; font-size: 9px; line-height: 1; color: var(--accent-ink); }
+/* GitHub alerts (> [!NOTE]/[!TIP]/[!IMPORTANT]/[!WARNING]/[!CAUTION]) — colored
+   callout with a typed title (semantic, fixed colors; inherits .md blockquote). */
+.md blockquote.md-alert { color: var(--text); border-radius: 0 8px 8px 0; }
+.md blockquote.md-alert::before { display: block; font-weight: 700; font-size: 12px; letter-spacing: .03em; margin-bottom: 4px; }
+.md blockquote.md-alert-note { border-left-color: #3b82f6; background: color-mix(in oklab, #3b82f6 9%, transparent); }
+.md blockquote.md-alert-note::before { content: "NOTE"; color: #3b82f6; }
+.md blockquote.md-alert-tip { border-left-color: #22c55e; background: color-mix(in oklab, #22c55e 9%, transparent); }
+.md blockquote.md-alert-tip::before { content: "TIP"; color: #22c55e; }
+.md blockquote.md-alert-important { border-left-color: #a855f7; background: color-mix(in oklab, #a855f7 9%, transparent); }
+.md blockquote.md-alert-important::before { content: "IMPORTANT"; color: #a855f7; }
+.md blockquote.md-alert-warning { border-left-color: #f59e0b; background: color-mix(in oklab, #f59e0b 9%, transparent); }
+.md blockquote.md-alert-warning::before { content: "WARNING"; color: #f59e0b; }
+.md blockquote.md-alert-caution { border-left-color: #ef4444; background: color-mix(in oklab, #ef4444 9%, transparent); }
+.md blockquote.md-alert-caution::before { content: "CAUTION"; color: #ef4444; }
 
 /* image preview */
 .imgwrap { padding: 22px; }

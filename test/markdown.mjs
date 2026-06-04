@@ -44,3 +44,35 @@ test('MARKDOWN tables: hostile cell content is still HTML-escaped (Law 1)', asyn
   assert.match(html, /&lt;img/i, 'a hostile cell is escaped to &lt;img');
   assert.doesNotMatch(html, /<img\b[^>]*\bonerror\s*=/i, 'never rendered as a live element');
 });
+
+test('MARKDOWN task lists: [ ]/[x] become tagged items (marker stripped, no <input>)', async () => {
+  const { renderMarkdown } = await kit();
+  const html = renderMarkdown('- [ ] todo\n- [x] done\n- normal');
+  assert.match(html, /<li[^>]*\bclass="md-task"[^>]*>todo<\/li>/, 'unchecked -> li.md-task, marker stripped');
+  assert.match(html, /<li[^>]*\bclass="md-task md-task-done"[^>]*>done<\/li>/, 'checked -> li.md-task-done');
+  assert.match(html, /<li[^>]*>normal<\/li>/, 'a plain item is untouched');
+  assert.doesNotMatch(html, /\[ \]|\[x\]/, 'no literal [ ]/[x] marker remains');
+  assert.doesNotMatch(html, /<input/i, 'no real <input> emitted — inert CSS checkbox only');
+});
+
+test('MARKDOWN code: only JS-family langs are highlighted; others render plain + escaped', async () => {
+  const { renderMarkdown } = await kit();
+  assert.match(renderMarkdown('```js\nconst x = 1;\n```'), /tok-kw/, 'a js block IS highlighted');
+  const yaml = renderMarkdown('```yaml\nfor: all\nclass: x\n```');
+  assert.doesNotMatch(yaml, /tok-kw/, 'a yaml block must NOT get JS keyword coloring');
+  assert.match(yaml, /data-lang="yaml"/, 'the language is stamped');
+  const hostile = renderMarkdown('```text\n<img src=x onerror=alert(1)>\n```');
+  assert.match(hostile, /&lt;img/i, 'plain (non-highlighted) code is still escaped');
+  assert.doesNotMatch(hostile, /<img\b[^>]*\bonerror/i, 'never a live element');
+});
+
+test('MARKDOWN alerts: > [!NOTE] becomes a typed callout; unknown types stay plain quotes', async () => {
+  const { renderMarkdown } = await kit();
+  const note = renderMarkdown('> [!NOTE]\n> Be careful.');
+  assert.match(note, /<blockquote[^>]*\bclass="md-alert md-alert-note"/, 'NOTE -> blockquote.md-alert-note');
+  assert.doesNotMatch(note, /\[!NOTE\]/, 'the [!NOTE] marker is stripped');
+  assert.match(note, /Be careful\./, 'the alert body survives');
+  const bogus = renderMarkdown('> [!BOGUS]\n> hi');
+  assert.doesNotMatch(bogus, /md-alert/, 'an unknown type is not promoted to an alert');
+  assert.match(bogus, /\[!BOGUS\]/, 'unknown marker left as literal text');
+});
