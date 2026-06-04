@@ -361,10 +361,12 @@ export function createEngine(
         created_at: at,
       });
 
-      // One receipt per recipient (read_at NULL = unread) — FR-21/28.
-      for (const recipient of recipients) {
-        db.insertReceipt({ message_id: message.id, recipient, read_at: null });
-      }
+      // One receipt per recipient (read_at NULL = unread) — FR-21/28. Batched
+      // into a single multi-row INSERT + one flush (the @here fan-out writes
+      // N-1 receipts at once) instead of N execWrite+flush re-arms.
+      db.insertReceipts(
+        recipients.map((recipient) => ({ message_id: message.id, recipient, read_at: null })),
+      );
       db.flush();
 
       bus.publish({

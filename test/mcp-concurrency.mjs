@@ -65,7 +65,7 @@ test('MCP-CONCURRENCY: 20 agents register/join/broadcast/poll concurrently over 
   await db.init(dir);
   const bus = mod.createEventBus();
   const engine = mod.createEngine(db, bus);
-  const server = mod.createMcpServer(engine);
+  const server = mod.createMcpServer(engine, { startPort: 0 }); // ephemeral: no cross-test port contention
   await server.start();
   const url = `http://${mod.MCP_HOST}:${server.port}${mod.MCP_PATH}`;
 

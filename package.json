@@ -18,7 +18,7 @@
     "dist:linux": "electron-builder --config electron-builder.config.cjs --linux deb --publish never",
     "start": "electron .",
     "loom": "node bin/loom.cjs",
-    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs",
+    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

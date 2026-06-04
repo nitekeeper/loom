@@ -89,6 +89,10 @@ export interface LoomDb {
   insertMembership(row: MembershipRow): void;
   insertMessage(row: Omit<MessageRow, 'id'>): MessageRow;
   insertReceipt(row: ReceiptRow): void;
+  /** Insert receipts in ONE multi-row INSERT + a single flush, instead of N
+   *  execWrite+flush re-arms (the @here fan-out writes N-1 receipts at once).
+   *  No-op for an empty list. */
+  insertReceipts(rows: ReceiptRow[]): void;
   markReceiptsRead(messageIds: number[], recipient: string, at: number): number;
   /** Prune the OLDEST messages (and their receipts, FK-safe) so at most `max`
    *  remain — the newest `max` by id are kept. A non-positive/invalid `max` is
@@ -456,6 +460,18 @@ class SqlJsLoomDb implements LoomDb {
     this.execWrite(
       'INSERT INTO receipts (message_id, recipient, read_at) VALUES (?, ?, ?)',
       [row.message_id, row.recipient, row.read_at],
+    );
+  }
+
+  insertReceipts(rows: ReceiptRow[]): void {
+    if (rows.length === 0) return;
+    // One multi-row INSERT + a single flush (vs N execWrite+flush re-arms).
+    const placeholders = rows.map(() => '(?, ?, ?)').join(', ');
+    const params: SqlValue[] = [];
+    for (const r of rows) params.push(r.message_id, r.recipient, r.read_at);
+    this.execWrite(
+      `INSERT INTO receipts (message_id, recipient, read_at) VALUES ${placeholders}`,
+      params,
     );
   }
 

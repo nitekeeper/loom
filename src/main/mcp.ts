@@ -55,6 +55,13 @@ export interface McpServerHandle {
   stop(): Promise<void>;
   /** The TCP port the agent transport listens on (NFR-9, OQ-4). */
   readonly port: number;
+  /** Number of live MCP sessions currently held (monitoring + tests). */
+  sessionCount(): number;
+  /** Evict every session last seen at or before `idleSince` (epoch ms),
+   *  closing its transport + server. Returns the count reaped. The idle reaper
+   *  calls this with (now - sessionIdleTtlMs); exposed so a test can force
+   *  reaping deterministically without waiting on the timer. */
+  reapIdleSessions(idleSince: number): Promise<number>;
 }
 
 export const MCP_HOST = '127.0.0.1';
@@ -101,6 +108,9 @@ interface Session {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
   caller: Caller;
+  /** Epoch ms of the last request routed to (or creating) this session.
+   *  Drives the idle reaper (S1) — a session not seen for the TTL is evicted. */
+  lastSeen: number;
 }
 
 /** How many consecutive ports to try (MCP_PORT..MCP_PORT+N-1) before giving
@@ -116,6 +126,19 @@ export interface McpServerOptions {
    *  MAX_BODY_LENGTH. Mirrored into the send_message zod schema + description
    *  so a client sees the SAME live limit the engine enforces. */
   maxBodyLength?: number;
+  /** M3: max concurrent sessions before a NEW initialize is rejected with 503.
+   *  Well above the 10-20 target; guards a local runaway. Default 100. */
+  maxSessions?: number;
+  /** S1: a session not seen for this many ms is evicted by the reaper (its
+   *  transport + server closed). Real agents exit without DELETE, so the SDK's
+   *  onclose never fires — the reaper is the backstop. Default 5 min. */
+  sessionIdleTtlMs?: number;
+  /** S1: how often the idle reaper sweeps, in ms. Default 60s. */
+  sessionReaperIntervalMs?: number;
+  /** Starting TCP port for the listen scan (default MCP_PORT). Pass 0 to bind
+   *  an ephemeral OS-assigned port — used by tests so concurrent server boots
+   *  never contend for a fixed port or scan into the ws feed's port. */
+  startPort?: number;
 }
 
 export function createMcpServer(
@@ -130,8 +153,26 @@ export function createMcpServer(
     opts.maxBodyLength > 0
       ? opts.maxBodyLength
       : MAX_BODY_LENGTH;
+  // M3 ceiling + S1 reaper TTL/interval, resolved from opts with safe defaults.
+  const maxSessions =
+    typeof opts.maxSessions === 'number' && Number.isInteger(opts.maxSessions) && opts.maxSessions > 0
+      ? opts.maxSessions
+      : 100;
+  const sessionIdleTtlMs =
+    typeof opts.sessionIdleTtlMs === 'number' && opts.sessionIdleTtlMs > 0
+      ? opts.sessionIdleTtlMs
+      : 5 * 60_000;
+  const sessionReaperIntervalMs =
+    typeof opts.sessionReaperIntervalMs === 'number' && opts.sessionReaperIntervalMs > 0
+      ? opts.sessionReaperIntervalMs
+      : 60_000;
+  const startPort =
+    typeof opts.startPort === 'number' && Number.isInteger(opts.startPort) && opts.startPort >= 0
+      ? opts.startPort
+      : MCP_PORT;
   const sessions = new Map<string, Session>();
   let http: HttpServer | undefined;
+  let reaperTimer: ReturnType<typeof setInterval> | null = null;
   // The port actually bound (may differ from MCP_PORT if it was in use). The
   // Host/Origin allow-lists are derived from THIS value so SEC-1 stays correct
   // on whatever port we end up on.
@@ -412,6 +453,7 @@ export function createMcpServer(
 
     if (existing !== undefined) {
       // Subsequent request on a known session (POST call, GET SSE, DELETE).
+      existing.lastSeen = Date.now(); // keep the session out of the idle reaper
       const body = req.method === 'POST' ? await readBody(req) : undefined;
       await existing.transport.handleRequest(req, res, body);
       return;
@@ -419,6 +461,12 @@ export function createMcpServer(
 
     if (req.method === 'POST') {
       // No (or unknown) session id: treat as a new session's initialize.
+      // M3: bound concurrent sessions. Loopback blocks the external threat, but
+      // not a local agent opening unbounded handshakes (worsened by any leak).
+      if (sessions.size >= maxSessions) {
+        res.writeHead(503, { 'Retry-After': '5' }).end('too many sessions');
+        return;
+      }
       const body = await readBody(req);
       const caller: Caller = { name: null };
       const server = buildServer(caller);
@@ -432,7 +480,7 @@ export function createMcpServer(
         allowedHosts: allowedHostsNow(),
         allowedOrigins: allowedOriginsNow(),
         onsessioninitialized: (newId: string) => {
-          sessions.set(newId, { transport, server, caller });
+          sessions.set(newId, { transport, server, caller, lastSeen: Date.now() });
         },
       });
       transport.onclose = () => {
@@ -448,10 +496,41 @@ export function createMcpServer(
     res.writeHead(400).end('missing or invalid mcp-session-id');
   }
 
+  /** S1: evict every session last seen at or before `idleSince` (epoch ms),
+   *  closing its transport + server. Deletes from the Map FIRST so the
+   *  transport.onclose handler's own delete is a harmless no-op. Returns the
+   *  number reaped. The reaper timer calls this with (now - sessionIdleTtlMs);
+   *  also exposed on the handle for monitoring + deterministic tests. */
+  async function reapIdleSessions(idleSince: number): Promise<number> {
+    let reaped = 0;
+    for (const [id, s] of [...sessions]) {
+      if (s.lastSeen > idleSince) continue;
+      sessions.delete(id);
+      try {
+        await s.transport.close();
+      } catch {
+        /* ignore */
+      }
+      try {
+        await s.server.close();
+      } catch {
+        /* ignore */
+      }
+      reaped += 1;
+    }
+    return reaped;
+  }
+
   return {
     get port(): number {
       return boundPort;
     },
+
+    sessionCount(): number {
+      return sessions.size;
+    },
+
+    reapIdleSessions,
 
     start(): Promise<void> {
       return new Promise<void>((resolve, reject) => {
@@ -460,8 +539,11 @@ export function createMcpServer(
             handle(req, res).catch((err: unknown) => {
               // SEC-3: an over-cap body surfaces as PayloadTooLarge -> 413.
               if (err instanceof PayloadTooLarge) {
-                if (!res.headersSent) res.writeHead(413);
+                // M2: close the keep-alive socket so an undrained over-cap body
+                // cannot desync the HTTP/1.1 stream and wedge the connection.
+                if (!res.headersSent) res.writeHead(413, { Connection: 'close' });
                 res.end('payload too large');
+                req.destroy();
                 return;
               }
               const message = err instanceof Error ? err.message : String(err);
@@ -488,16 +570,34 @@ export function createMcpServer(
           srv.on('error', onError);
           srv.listen(port, MCP_HOST, () => {
             srv.removeListener('error', onError);
-            boundPort = port;
+            // Read the ACTUAL bound port (matters when startPort is 0 = an
+            // ephemeral OS-assigned port). The Host/Origin allow-lists derive
+            // from boundPort, so they must reflect what we really bound.
+            const addr = srv.address();
+            boundPort = addr !== null && typeof addr === 'object' ? addr.port : port;
             http = srv;
+            // S1: start the idle-session reaper. It sweeps every
+            // sessionReaperIntervalMs and evicts sessions not seen for
+            // sessionIdleTtlMs — the backstop for agents that exit without
+            // DELETE (the SDK's onclose never fires then). unref'd so it never
+            // holds the process open on its own.
+            reaperTimer = setInterval(() => {
+              void reapIdleSessions(Date.now() - sessionIdleTtlMs);
+            }, sessionReaperIntervalMs);
+            (reaperTimer as { unref?: () => void }).unref?.();
             resolve();
           });
         };
-        tryListen(MCP_PORT, 0);
+        tryListen(startPort, 0);
       });
     },
 
     async stop(): Promise<void> {
+      // Stop the idle reaper first so it cannot fire mid-teardown.
+      if (reaperTimer !== null) {
+        clearInterval(reaperTimer);
+        reaperTimer = null;
+      }
       // Close every live session transport/server first.
       for (const { transport, server } of sessions.values()) {
         try {
