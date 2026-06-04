@@ -48,6 +48,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.SET_KEYBINDINGS,
   IPC.SET_LIVE_STATE,
   IPC.OPEN_EXTERNAL,
+  IPC.COPY_TO_CLIPBOARD,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
@@ -125,6 +126,14 @@ export function createBridge(): LoomBridge {
     },
     openExternal(url: string): Promise<void> {
       return ipcRenderer.invoke(assertInvoke(IPC.OPEN_EXTERNAL), url);
+    },
+    copyToClipboard(payload: { html: string; text: string }): Promise<boolean> {
+      // The payload is forwarded as-is; main is the authority — it RE-VALIDATES
+      // the {html, text} shape and bounds the size before touching the OS
+      // clipboard (never trust the renderer; mirror of openExternal). main
+      // returns whether it WROTE (false = dropped/oversize) so the renderer can
+      // give honest feedback instead of a false-positive "Copied".
+      return ipcRenderer.invoke(assertInvoke(IPC.COPY_TO_CLIPBOARD), payload);
     },
     onEvent(handler: (e: LoomEvent) => void): () => void {
       return subscribe<LoomEvent>(IPC.EVENT, handler);

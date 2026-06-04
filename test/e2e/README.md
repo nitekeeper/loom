@@ -2,7 +2,7 @@
 
 Real-stack end-to-end tests that launch the **built** Loom app (`dist/main.cjs`)
 with Playwright's `_electron` API — a real Chromium renderer driven against the
-real Electron main process — so the whole chain is under test. Two features:
+real Electron main process — so the whole chain is under test. Three features:
 
 ### `navlinks.e2e.ts` — navigable links
 
@@ -89,6 +89,67 @@ question "which diagram types degrade?" was independently verified:
 - The graceful-degradation fallback (test 3) is the safety net for **any**
   future eval-dependent type: it keeps the escaped code-block fallback instead
   of crashing, so an unsupported type never blanks the document.
+
+### `copy-rendered.e2e.ts` — Viewer "Copy rendered"
+
+```
+Viewer head button  /  Ctrl(⌘)+Shift+C shortcut
+      →  MarkdownCopyHandle.copyRendered  (serializes the LIVE .md DOM)
+      →  serializeRenderedForCopy  (allowlist rebuild, lib/copy-serialize.ts)
+      →  preload bridge  window.loom.copyToClipboard
+      →  COPY_TO_CLIPBOARD IPC  (main re-validation, src/main/ipc.ts)
+      →  Electron  clipboard.write({ text, html })
+```
+
+This is the **only** layer that can exercise the **main-process** halves and a
+**real OS clipboard** end to end: the `COPY_TO_CLIPBOARD` IPC's shape
+re-validation and the native `clipboard.write`. The `npm test` node-`--test`
+suite (`test/copy-serialize.mjs`) proves the **pure** serializer
+(`serializeRenderedForCopy`) in isolation under jsdom — the allowlist rebuild,
+the link-href gate, the code-block reconstruction, the hostile-input scrub —
+but it never touches the bridge, the IPC, or the clipboard.
+
+Tests, each failing for the right reason:
+
+1. **BUTTON** — open a `.md` with a heading, bold, a list, a safe link, and a
+   code block; `clipboard.clear()` first (so a leftover value can't pass it for
+   the wrong reason); click the header **Copy rendered** button; assert
+   `clipboard.readHTML()` carries the rendered structure (`<h1>`, `<strong>`,
+   `<a href="https://…">`, a clean `<pre><code>`) and does **not** contain
+   `class="ln"`, `data-loom`, or `javascript:`; assert `clipboard.readText()`
+   carries the heading + code text.
+2. **SHORTCUT parity + native Ctrl/⌘+C** — with the same file, press the
+   platform copy shortcut (`⌘+Shift+C` on macOS, `Ctrl+Shift+C` elsewhere — the
+   renderer maps both to the one `copyRendered` command) and assert the
+   clipboard matches the **same** cleaned, portable contract as the button.
+   Then seed a sentinel, press **plain** Ctrl/⌘+C, and assert the rendered HTML
+   did **not** land — plain copy must stay native selection-copy, never
+   rendered-copy.
+3. **AFFORDANCE** — after a successful copy the button label flips to **Copied**
+   (+ a `.copied` class) and a polite `role="status"` region announces it, then
+   it reverts to **Copy rendered** (the transient success affordance for
+   sighted + AT users). The three success markers are asserted in **one atomic
+   `expect.poll`** (one snapshot per poll) so they are observed at the same
+   instant of the ~1.5 s transient window — separate awaits could race the
+   window under CI load and burn the full expect timeout on a stale revert.
+4. **MAIN-process gate (length cap + bad-shape no-op)** — drives the **real**
+   preload bridge `window.loom.copyToClipboard` (→ `COPY_TO_CLIPBOARD` IPC →
+   `src/main/ipc.ts`) with payloads the renderer never builds: an
+   `> 5,000,000`-char `html`, an oversize `text`, and malformed shapes
+   (`{ html: 123 }`, a missing field, `null`, a bare string). A seeded sentinel
+   is asserted **untouched** after each (the cap / shape check silently dropped
+   the write). A final well-formed, in-bounds `{ html, text }` pair **does**
+   land — proving the no-ops were the gate, not a broken IPC that drops
+   everything. This is the only layer that can reach that main-process branch
+   (the jsdom serializer suite cannot), closing the spec checklist's
+   *very large doc (length cap)* coverage item.
+
+The clipboard is read back **from the main process** —
+`electronApp.evaluate(({ clipboard }) => ({ html: clipboard.readHTML(), text: clipboard.readText() }))`
+— so there is **no** renderer-side Clipboard API and **no** production seam (see
+*Zero production seam* below). Electron wraps written HTML in a
+`<html><body>`/`<meta>` (CF_HTML) fragment, so the HTML assertions check
+substrings of the inner markers, not string equality.
 
 ## Run it locally (real hardware)
 

@@ -17,7 +17,7 @@
  *   - PAUSED    when the human set it via SET_LIVE_STATE; PAUSED is
  *               sticky — it overrides LIVE/CAUGHT_UP until unset.
  * ============================================================ */
-import { ipcMain, shell } from 'electron';
+import { clipboard, ipcMain, shell } from 'electron';
 import {
   IPC,
   type FileNode,
@@ -48,6 +48,10 @@ import { safeExternalUrl } from '../shared/url.js';
 const COUNTERS_DEBOUNCE_MS = 100;
 /** Idle window after which LIVE settles to CAUGHT_UP (FR-36). */
 const CAUGHT_UP_IDLE_MS = 4000;
+/** Hard cap (chars) on either clipboard field. Bounds a runaway / hostile
+ *  serialize so a single copy cannot push multi-megabyte blobs at the OS
+ *  clipboard. A real rendered .md doc is orders of magnitude below this. */
+const MAX_CLIPBOARD_CHARS = 5_000_000;
 
 export interface IpcWiring {
   /** Register ipcMain.handle handlers (call once, before window load). */
@@ -210,6 +214,22 @@ class IpcWiringImpl implements IpcWiring {
       // this is the authoritative gate.
       const safe = typeof url === 'string' ? safeExternalUrl(url) : null;
       if (safe !== null) await shell.openExternal(safe);
+    });
+
+    ipcMain.handle(IPC.COPY_TO_CLIPBOARD, (_evt, payload: unknown): boolean => {
+      // RE-VALIDATE in main — never trust the renderer. Accept ONLY an object
+      // with string `html` + `text`, each within the size cap; anything else is
+      // a DROPPED write (return false) — the authoritative gate (mirror of
+      // OPEN_EXTERNAL). The renderer has already allowlist-rebuilt + link-vetted
+      // the html, but the clipboard is a privileged surface so we still bound the
+      // shape here. We return whether we WROTE so the renderer gives honest UI
+      // feedback (no "Copied" affordance on a dropped/oversize write).
+      if (typeof payload !== 'object' || payload === null) return false;
+      const { html, text } = payload as { html?: unknown; text?: unknown };
+      if (typeof html !== 'string' || typeof text !== 'string') return false;
+      if (html.length > MAX_CLIPBOARD_CHARS || text.length > MAX_CLIPBOARD_CHARS) return false;
+      clipboard.write({ text, html });
+      return true;
     });
   }
 

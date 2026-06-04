@@ -793,6 +793,27 @@ mark.search-hit {
   background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
 
+/* Copy-rendered control in the Viewer head (RENDERED .md files only). Mirrors
+   the .fold-all-btn affordances (focus ring + hover) with a leading icon. It
+   sits before the render-tag (margin-left:auto), so it stays left-adjacent to
+   the breadcrumb while the badge + close push to the right edge. The transient
+   .copied state flips to a confirming accent/green so the success is visible. */
+.copy-rendered-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .03em; color: var(--text-dim);
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 9px; cursor: pointer;
+}
+.copy-rendered-btn svg { flex: 0 0 auto; }
+.copy-rendered-btn:hover { color: var(--text); background: var(--panel-3); }
+.copy-rendered-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.copy-rendered-btn.copied {
+  color: var(--live);
+  border-color: color-mix(in oklab, var(--live) 40%, transparent);
+  background: color-mix(in oklab, var(--live) 12%, transparent);
+}
+
 .tok-kw { color: var(--t-kw); } .tok-str { color: var(--t-str); }
 .tok-num { color: var(--t-num); } .tok-com { color: var(--t-com); font-style: italic; }
 .tok-punc { color: var(--t-punc); } .tok-fn { color: var(--t-fn); }

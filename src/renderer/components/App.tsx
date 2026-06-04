@@ -660,6 +660,16 @@ export function App(): JSX.Element {
     setFoldCommand({ nonce: foldNonceRef.current, intent });
   }, []);
 
+  // Copy-command signal lifted to the Viewer (copyRendered shortcut). An
+  // incrementing nonce so each press fires exactly once; ViewerContent no-ops
+  // when the open file is not RENDERED markdown.
+  const [copyCommand, setCopyCommand] = useState<{ nonce: number } | null>(null);
+  const copyNonceRef = useRef(0);
+  const fireCopyCommand = useCallback((): void => {
+    copyNonceRef.current += 1;
+    setCopyCommand({ nonce: copyNonceRef.current });
+  }, []);
+
   /* ============================================================
    * Project-wide content search (Explorer SEARCH mode)
    * ------------------------------------------------------------
@@ -1088,6 +1098,13 @@ export function App(): JSX.Element {
         case 'unfoldAll':
           fireFoldCommand('unfold');
           break;
+        case 'copyRendered':
+          // Copy the rendered Viewer content. ViewerContent no-ops unless the
+          // open file is RENDERED markdown, so the shortcut is harmless on
+          // source/image/binary/empty views. Ctrl+C stays native (selection
+          // copy) — only the distinct Ctrl/Cmd+Shift+C combo maps here.
+          fireCopyCommand();
+          break;
         case 'toggleTheme':
           void store.setTheme(vm?.theme === 'dark' ? 'light' : 'dark');
           break;
@@ -1112,6 +1129,7 @@ export function App(): JSX.Element {
     toggleExplorer,
     toggleChat,
     fireFoldCommand,
+    fireCopyCommand,
     openShortcuts,
     runCloseFileCommand,
     openSearch,
@@ -1238,6 +1256,7 @@ export function App(): JSX.Element {
           content={content}
           onClose={closeFileFromButton}
           foldCommand={foldCommand}
+          copyCommand={copyCommand}
           targetLine={targetLine}
         />
         {!explorerHidden && (

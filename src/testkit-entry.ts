@@ -75,6 +75,14 @@ export { MAX_BODY_LENGTH, MAX_NAME_LENGTH } from './shared/types.js';
 export { renderMarkdown, renderInline } from './renderer/lib/markdown.js';
 export { escapeHtml, highlightCode } from './renderer/lib/highlight.js';
 
+// "Copy rendered" serializer (pure; DOM via a passed-in window + safeExternalUrl
+// only — no mermaid/React). Re-exported so the jsdom suite can prove the
+// allowlist rebuild over the REAL renderMarkdown output: clean portable HTML
+// (no class/data-*, clean code blocks, vetted links only) + a readable
+// text/plain fallback, and that hostile source can never emit script/handlers.
+export { serializeRenderedForCopy } from './renderer/lib/copy-serialize.js';
+export type { CopyPayload } from './renderer/lib/copy-serialize.js';
+
 // Mermaid SVG sanitizer (DOMPurify-only — NO mermaid import, so it is safe to
 // pull into the Node test bundle). Re-exported so the jsdom suite can prove the
 // SVG scrub (strips <script>/foreignObject/on*-handlers/javascript: hrefs while

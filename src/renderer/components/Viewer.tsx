@@ -16,13 +16,14 @@
  * neutralized) or lib/highlight (per-token escaped). No other path
  * may inject markup; image bytes are NEVER decoded.
  * ============================================================ */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { JSX } from 'react';
+import { Fragment, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import type { JSX, RefObject } from 'react';
 import type { FileContent, RenderState } from '../../shared/types.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { highlightCode } from '../lib/highlight.js';
 import { computeFoldRanges } from '../lib/fold.js';
 import type { FoldRange } from '../lib/fold.js';
+import { serializeRenderedForCopy } from '../lib/copy-serialize.js';
 
 /** Close (×) glyph for the Viewer-head close control. Decorative — the
  *  accessible name comes from the button's aria-label (FR-54, FR-42). */
@@ -58,6 +59,46 @@ function ShieldIcon(): JSX.Element {
       aria-hidden="true"
     >
       <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+
+/** Clipboard glyph for the "Copy rendered" control. Decorative — the
+ *  accessible name comes from the button's aria-label. */
+function CopyIcon(): JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+/** Checkmark glyph shown transiently after a successful copy. Decorative. */
+function CheckIcon(): JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 6 9 17l-5-5" />
     </svg>
   );
 }
@@ -432,14 +473,27 @@ function CodeView({
  *  promise holds for the most common searchable file type (.md), conveyed both
  *  visually and to assistive tech. The path gate ignores a signal meant for a
  *  now-closed file (mirrors CodeView). */
+/** Imperative handle the Viewer head's "Copy rendered" button + the
+ *  copyRendered keyboard shortcut invoke. Serializes the LIVE .md DOM (so a
+ *  rendered mermaid SVG is captured) into a cleaned, portable {html, text} pair
+ *  and writes it to the clipboard via the preload bridge. Resolves to true on a
+ *  successful copy, false otherwise (so the head can show a transient state). */
+export interface MarkdownCopyHandle {
+  copyRendered(): Promise<boolean>;
+}
+
 function MarkdownView({
   text,
   path,
   targetLine,
+  copyRef,
 }: {
   text: string;
   path: string;
   targetLine: { path: string; line: number; nonce: number } | null;
+  /** Lifted so the Viewer head + the keyboard shortcut can trigger a copy of
+   *  the live rendered content. */
+  copyRef: RefObject<MarkdownCopyHandle | null>;
 }): JSX.Element {
   const html = useMemo(() => renderMarkdown(text), [text]);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -453,6 +507,31 @@ function MarkdownView({
   // aimed at a different file. Mirrors CodeView's lastRevealNonce gate.
   const lastRevealNonce = useRef<number | null>(
     targetLine && targetLine.path === path ? null : (targetLine?.nonce ?? null),
+  );
+
+  // Expose the copy action to the Viewer head + the keyboard shortcut. Serialize
+  // the LIVE .md container's innerHTML (captures any runtime-rendered mermaid
+  // SVG), produce the cleaned portable {html, text}, and hand it to main through
+  // the preload bridge (the renderer NEVER touches the OS clipboard directly).
+  useImperativeHandle(
+    copyRef,
+    () => ({
+      async copyRendered(): Promise<boolean> {
+        const host = mdRef.current;
+        if (!host) return false;
+        try {
+          const payload = serializeRenderedForCopy(host.innerHTML);
+          // main is authoritative: it RE-VALIDATES the shape + bounds the size
+          // and resolves false when the write was DROPPED (oversize / bad
+          // shape). Reflect that real outcome so runCopy never shows a
+          // false-positive "Copied" affordance for content that wasn't written.
+          return await window.loom.copyToClipboard(payload);
+        } catch {
+          return false;
+        }
+      },
+    }),
+    [],
   );
 
   // Reset on file change: re-arm for a reveal that targets the new file, else
@@ -596,7 +675,7 @@ function Breadcrumb({ path }: { path: string }): JSX.Element {
   );
 }
 
-export function Viewer({ content, onClose, foldCommand, targetLine }: ViewerProps): JSX.Element {
+export function Viewer({ content, onClose, foldCommand, copyCommand, targetLine }: ViewerProps): JSX.Element {
   // Empty state — reinforce the principle (FR-42).
   if (content === null) {
     return (
@@ -632,6 +711,7 @@ export function Viewer({ content, onClose, foldCommand, targetLine }: ViewerProp
       content={content}
       onClose={onClose}
       foldCommand={foldCommand}
+      copyCommand={copyCommand}
       targetLine={targetLine}
     />
   );
@@ -643,11 +723,13 @@ function ViewerContent({
   content,
   onClose,
   foldCommand,
+  copyCommand,
   targetLine,
 }: {
   content: FileContent;
   onClose(): void;
   foldCommand: { nonce: number; intent: 'fold' | 'unfold' } | null;
+  copyCommand: { nonce: number } | null;
   targetLine: { path: string; line: number; nonce: number } | null;
 }): JSX.Element {
   const { dispatch, meta, text, path } = content;
@@ -655,6 +737,53 @@ function ViewerContent({
   const fileName = path.split('/').filter((p) => p.length > 0).pop() ?? path;
 
   const isSource = renderState === 'SOURCE';
+  // RENDERED markdown is the ONLY copyable render state (scope: the Viewer .md
+  // file only). The MarkdownView publishes its copy handle here so the head
+  // button + the keyboard shortcut can trigger a copy of the live content.
+  const isRendered = renderState === 'RENDERED';
+  const copyHandleRef = useRef<MarkdownCopyHandle | null>(null);
+  // Transient "Copied" affordance: flips the button label + announces politely
+  // for ~1.5s after a successful copy, then reverts. Cleared on file change.
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const runCopy = useCallback(async (): Promise<void> => {
+    const ok = await copyHandleRef.current?.copyRendered();
+    if (!ok) return;
+    setCopied(true);
+    if (copyTimer.current !== null) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => {
+      setCopied(false);
+      copyTimer.current = null;
+    }, 1500);
+  }, []);
+
+  // Reset the transient state + cancel any pending revert when the file changes
+  // or the component unmounts (no stale "Copied" carries to the next file).
+  useEffect(() => {
+    setCopied(false);
+    return () => {
+      if (copyTimer.current !== null) {
+        clearTimeout(copyTimer.current);
+        copyTimer.current = null;
+      }
+    };
+  }, [path]);
+
+  // Apply the copyRendered keyboard-shortcut command lifted from App: an
+  // incrementing nonce fires the copy exactly once per press. Only meaningful
+  // for a RENDERED file (the handle is null otherwise — a harmless no-op). Seed
+  // the seen-nonce from whatever exists at mount so switching to a new file does
+  // NOT replay a stale command.
+  const lastCopyNonce = useRef<number | null>(copyCommand?.nonce ?? null);
+  useEffect(() => {
+    if (copyCommand === null) return;
+    if (lastCopyNonce.current === copyCommand.nonce) return;
+    lastCopyNonce.current = copyCommand.nonce;
+    if (!isRendered) return; // nothing to copy — harmless no-op
+    void runCopy();
+  }, [copyCommand, isRendered, runCopy]);
+
   // Capture/initial fold-all intent: read once on mount; re-evaluated per file
   // so a `?foldall` capture seeds the first-opened SOURCE file collapsed.
   const startFolded = useMemo(() => (isSource ? readFoldAllHint() : false), [isSource]);
@@ -692,7 +821,14 @@ function ViewerContent({
 
   let body: JSX.Element;
   if (renderState === 'RENDERED') {
-    body = <MarkdownView text={text ?? ''} path={path} targetLine={targetLine} />;
+    body = (
+      <MarkdownView
+        text={text ?? ''}
+        path={path}
+        targetLine={targetLine}
+        copyRef={copyHandleRef}
+      />
+    );
   } else if (renderState === 'SOURCE') {
     body = (
       <CodeView
@@ -744,6 +880,29 @@ function ViewerContent({
     <section className="pane viewer" aria-label="File viewer">
       <div className="viewer-head">
         <Breadcrumb path={path} />
+        {/* Copy rendered — RENDERED (.md) files only. Copies the CLEANED,
+            PORTABLE rendered content (formatted html + plaintext fallback) to
+            the clipboard via the preload bridge so it pastes formatted into
+            Jira/Confluence/Docs/email. A transient "Copied" affordance + a
+            polite live announcement confirm success for ~1.5s. Real <button>,
+            keyboard-operable, reusing the .fold-all-btn affordances. */}
+        {isRendered && (
+          <button
+            type="button"
+            className={'copy-rendered-btn' + (copied ? ' copied' : '')}
+            aria-label="Copy rendered content to clipboard"
+            title="Copy rendered (Ctrl/Cmd+Shift+C)"
+            onClick={() => void runCopy()}
+          >
+            {copied ? <CheckIcon /> : <CopyIcon />}
+            <span>{copied ? 'Copied' : 'Copy rendered'}</span>
+          </button>
+        )}
+        {/* SC 4.1.3: announce the successful copy politely so the action is
+            perceivable to assistive tech regardless of focus location. */}
+        <span className="sr-only" role="status" aria-live="polite">
+          {copied ? 'Rendered content copied to clipboard' : ''}
+        </span>
         {/* Fold-all / Unfold-all — SOURCE files only, and only when the file
             actually has foldable regions (foldAll !== null). Hidden for
             markdown/image/binary render states. Real <button>, keyboard-
@@ -804,6 +963,10 @@ export interface ViewerProps {
    *  an incrementing nonce + intent. CodeView applies it once per nonce;
    *  no-op when the open file is not foldable code. */
   foldCommand: { nonce: number; intent: 'fold' | 'unfold' } | null;
+  /** Keyboard-shortcut copy command lifted from App (copyRendered) as an
+   *  incrementing nonce. ViewerContent copies the rendered content once per
+   *  nonce; no-op when the open file is not RENDERED markdown. */
+  copyCommand: { nonce: number } | null;
   /** A "reveal line" signal from a search-result open (incrementing nonce +
    *  target path + 1-based line). CodeView unfolds any region containing the
    *  line, scrolls it into view, and briefly flashes it. null = no reveal. */

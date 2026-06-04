@@ -451,7 +451,7 @@ export interface InitialState {
   wsEnabled: boolean;
   /** RESOLVED keyboard shortcut bindings (defaults merged with the
    *  persisted user overrides) — a full commandId -> canonical combo map
-   *  for all 8 customizable commands. The renderer dispatcher + Shortcuts
+   *  for all customizable commands. The renderer dispatcher + Shortcuts
    *  panel read this; the panel writes overrides back via SET_KEYBINDINGS.
    *  Additive to the boot snapshot (mirrors `theme`). */
   keybindings: Record<string, string>;
@@ -525,6 +525,15 @@ export const IPC = {
    *  scheme; dangerous/relative targets are dropped. The renderer only ever
    *  passes URLs that already carry a vetted href (data-loom-ext links). */
   OPEN_EXTERNAL: 'loom:external:open',
+  /** invoke(payload: { html: string; text: string }): void — write CLEANED,
+   *  PORTABLE rendered Viewer content to the OS clipboard so it pastes formatted
+   *  into Jira/Confluence/Docs/email (text/html) with a text/plain fallback. The
+   *  renderer NEVER touches the clipboard directly — it hands an already-
+   *  serialized {html, text} pair (allowlist-rebuilt, link-vetted) through this
+   *  channel; main RE-VALIDATES the shape + bounds the size before writing
+   *  (mirror of OPEN_EXTERNAL: never trust the renderer). Invalid input is a
+   *  silent no-op. */
+  COPY_TO_CLIPBOARD: 'loom:clipboard:write',
   /** send(LoomEvent) main->renderer — the live event feed. */
   EVENT: 'loom:event',
   /** send(SessionCounters) main->renderer — telemetry tick. */
@@ -562,6 +571,13 @@ export interface LoomBridge {
   /** Open a SAFE (http/https/mailto) external URL in the user's default browser.
    *  main re-validates the scheme; dangerous/relative targets are ignored. */
   openExternal(url: string): Promise<void>;
+  /** Write CLEANED, PORTABLE rendered Viewer content to the OS clipboard as a
+   *  text/html + text/plain pair, so it pastes formatted into external apps.
+   *  main re-validates the shape + bounds the size; resolves `true` when it
+   *  WROTE and `false` when the write was DROPPED (invalid shape or over the
+   *  size cap), so the caller can give honest UI feedback (no false "Copied").
+   *  The renderer hands an already-serialized {html, text} (never raw DOM). */
+  copyToClipboard(payload: { html: string; text: string }): Promise<boolean>;
   /** Subscribe to the live event feed. Returns an unsubscribe fn. */
   onEvent(handler: (e: LoomEvent) => void): () => void;
   /** Subscribe to telemetry counter updates. Returns an unsubscribe fn. */
