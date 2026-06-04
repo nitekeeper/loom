@@ -13,8 +13,12 @@
  *     browser-only runtime into the Node test bundle).
  *
  * SECURITY (Law 1): the diagram source is hostile, agent-authored.
- *   1. securityLevel:'strict' disables htmlLabels and click/call/script
- *      directives at the mermaid layer.
+ *   1. securityLevel:'strict' blocks click/call/script directives at the
+ *      mermaid layer. It does NOT reliably disable flowchart htmlLabels, so
+ *      we ALSO force htmlLabels:false explicitly (see ensureInitialized) —
+ *      labels become inert native SVG <text>, never <foreignObject> HTML.
+ *      This both (a) makes labels survive svg-sanitize's foreignObject scrub
+ *      and (b) removes the HTML-in-SVG attack surface.
  *   2. The produced SVG is run through sanitizeSvg (DOMPurify) before it
  *      EVER touches innerHTML — we do not trust mermaid's output.
  *   3. No CSP relaxation: mermaid runs under script-src 'self' WITHOUT
@@ -26,11 +30,12 @@ import mermaid from 'mermaid';
 import { sanitizeSvg, svgHasRenderableContent } from './svg-sanitize.js';
 
 /* One-time mermaid configuration. startOnLoad:false — we drive rendering
-   ourselves, after injection, per Viewer effect. securityLevel:'strict' is the
-   Law-1 anchor (no htmlLabels, no interaction directives). theme:'dark' matches
-   Loom's dark UI. deterministicIds keeps generated ids stable (no per-render
-   churn). maxTextSize / maxEdges bound the work a hostile diagram can demand.
-   fontFamily 'inherit' so labels use Loom's UI font. */
+   ourselves, after injection, per Viewer effect. securityLevel:'strict' blocks
+   click/call/script directives (a Law-1 anchor), but it does NOT reliably turn
+   off flowchart htmlLabels — so we EXPLICITLY force htmlLabels:false below.
+   theme:'dark' matches Loom's dark UI. deterministicIds keeps generated ids
+   stable (no per-render churn). maxTextSize / maxEdges bound the work a hostile
+   diagram can demand. fontFamily 'inherit' so labels use Loom's UI font. */
 let initialized = false;
 function ensureInitialized(): void {
   if (initialized) return;
@@ -39,6 +44,21 @@ function ensureInitialized(): void {
     securityLevel: 'strict',
     theme: 'dark',
     deterministicIds: true,
+    // CRITICAL (Law 1 + correctness): force HTML labels OFF. By default mermaid
+    // v11 renders FLOWCHART (and class) node labels as HTML inside <foreignObject>
+    // (HTML-in-SVG). securityLevel:'strict' does NOT reliably disable this. Our
+    // svg-sanitize.ts FORBIDS <foreignObject> (an XSS escape hatch — correctly,
+    // and unchanged), which would otherwise STRIP those HTML labels and leave
+    // flowcharts with shapes/edges but NO text. Forcing htmlLabels:false makes
+    // mermaid emit labels as native SVG <text>/<tspan>, which (a) survive the
+    // foreignObject scrub and so render correctly, and (b) remove the HTML-in-SVG
+    // surface entirely. The root-level htmlLabels is the canonical v11 switch and
+    // takes precedence over diagram-specific settings; we ALSO set the flowchart
+    // (the proven culprit) and class keys belt-and-braces. All three keys are
+    // type-valid against mermaid v11's MermaidConfig (no casts, no @ts-ignore).
+    htmlLabels: false,
+    flowchart: { htmlLabels: false },
+    class: { htmlLabels: false },
     // Bound the work a hostile source can demand (DoS guard). These are
     // generous for legitimate docs but cap pathological inputs.
     maxTextSize: 50000,
@@ -106,18 +126,19 @@ export async function renderMermaidIn(
       // TRANSIENT scratch element (enclosing div id 'd'+id) directly to
       // document.body for layout measurement (getBBox), OUTSIDE this .md
       // container and therefore OUTSIDE sanitizeSvg, before returning the SVG
-      // STRING we sanitize below. Today this is NOT exploitable: under
-      // securityLevel:'strict' htmlLabels are disabled (labels are inert SVG
-      // <text>, never HTML/foreignObject), and mermaid emits no <script> into its
-      // own output, so the body-level temp node holds nothing executable and
-      // there is no XSS window. The only residual (orphan accumulation on the
+      // STRING we sanitize below. Today this is NOT exploitable: we force
+      // htmlLabels:false in ensureInitialized (labels are inert SVG <text>, never
+      // HTML/foreignObject), and mermaid emits no <script> into its own output, so
+      // the body-level temp node holds nothing executable and there is no XSS
+      // window. The only residual (orphan accumulation on the
       // error path — a DoS-adjacent leak from an agent flooding malformed
       // diagrams) is closed by suppressErrorRendering:true PLUS the explicit
       // getElementById('d'+id)/.getElementById(id) removal in the catch below. On
-      // a mermaid MAJOR-version bump, re-confirm strict mode STILL disables
-      // htmlLabels and that this body-level temp node never receives
+      // a mermaid MAJOR-version bump, re-confirm our htmlLabels:false config STILL
+      // takes effect (config keys unrenamed) and that this body-level temp node never receives
       // htmlLabel/foreignObject content; the e2e XSS test (#2) already exercises
-      // the real pipeline and would catch a strict-mode label regression.
+      // the real pipeline and would catch an htmlLabels-regression (foreignObject
+      // labels would be scrubbed and the sentinel text would vanish).
       const { svg } = await mermaid.render(id, src);
       // The user may have switched files while we awaited layout — do not write
       // a stale diagram into the new file's DOM.
