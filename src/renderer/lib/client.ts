@@ -62,6 +62,11 @@ export interface ViewModel extends InitialState {
   justModified: ReadonlySet<string>;
   /** Paths that appeared this session — NEW badge (FR-39a). */
   newlyAdded: ReadonlySet<string>;
+  /** Monotonic revision for the SELECTED file's content. Bumped whenever the
+   *  open file changes on disk (a change/add FileEvent for `selected`) or the
+   *  user (re-)selects a file. The Viewer's content hook re-reads on every bump
+   *  so a file edited by an agent (or re-opened) shows its fresh contents. */
+  fileRev: number;
 }
 
 export interface LoomStore {
@@ -334,7 +339,16 @@ export function createStore(): LoomStore {
       ...current.counters,
       files: current.counters.files + (e.action === 'add' ? 1 : 0),
     };
-    return { ...current, tree, flashing, justModified, newlyAdded, counters };
+
+    // If the file the user is VIEWING just changed (or was re-created) on disk,
+    // bump fileRev so the Viewer's content hook re-reads it — fixing stale
+    // contents after an agent edits the open file.
+    const fileRev =
+      e.path === current.selected && (e.action === 'change' || e.action === 'add')
+        ? current.fileRev + 1
+        : current.fileRev;
+
+    return { ...current, tree, flashing, justModified, newlyAdded, counters, fileRev };
   };
 
   const reduce = (current: ViewModel, e: LoomEvent): ViewModel => {
@@ -403,6 +417,7 @@ export function createStore(): LoomStore {
       flashing: new Set<string>(),
       justModified: new Set<string>(),
       newlyAdded: new Set<string>(),
+      fileRev: 0,
     };
     emit();
 
@@ -486,7 +501,10 @@ export function createStore(): LoomStore {
   };
 
   const selectFile = (path: string): void => {
-    set({ selected: path });
+    // Always bump fileRev — even re-selecting the SAME path forces the Viewer
+    // to re-read from disk, so reopening a file an agent edited shows the fresh
+    // contents (not a cached render of the old text).
+    set({ selected: path, fileRev: (vm?.fileRev ?? 0) + 1 });
   };
 
   // Dismiss the open file: set UI-local `selected` back to null so the Viewer

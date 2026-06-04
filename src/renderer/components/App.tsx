@@ -41,8 +41,10 @@ function useViewModel(store: LoomStore): ViewModel | null {
 }
 
 /** Resolve FileContent for the selected path via the readFile bridge.
- *  Returns null while empty or loading; ignores stale responses. */
-function useFileContent(selected: string | null): FileContent | null {
+ *  Returns null while empty or loading; ignores stale responses. Re-reads
+ *  whenever `rev` bumps (the open file changed on disk, or was re-selected) so
+ *  the Viewer never shows stale contents after an agent edits the file. */
+function useFileContent(selected: string | null, rev: number): FileContent | null {
   const [content, setContent] = useState<FileContent | null>(null);
   // Track the latest request so an out-of-order resolve can't clobber state.
   const requestId = useRef(0);
@@ -65,7 +67,7 @@ function useFileContent(selected: string | null): FileContent | null {
     return () => {
       cancelled = true;
     };
-  }, [selected]);
+  }, [selected, rev]);
 
   return content;
 }
@@ -641,7 +643,7 @@ export function App(): JSX.Element {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  const content = useFileContent(vm?.selected ?? null);
+  const content = useFileContent(vm?.selected ?? null, vm?.fileRev ?? 0);
 
   // Resizable chat width (FR-54). Hook lives above the early return so the
   // hook order stays stable across the pre-boot / booted renders.
