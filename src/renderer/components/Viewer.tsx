@@ -443,6 +443,9 @@ function MarkdownView({
 }): JSX.Element {
   const html = useMemo(() => renderMarkdown(text), [text]);
   const containerRef = useRef<HTMLDivElement>(null);
+  // The .md element that owns the injected HTML (the dangerouslySetInnerHTML
+  // sink). mermaid diagrams live inside it; we scan it after each (re)inject.
+  const mdRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState('');
   // Seed the seen-nonce so a reveal already pending FOR THIS FILE still fires on
   // mount (a search-open sets selectFile(path) + targetLine in one tick, so the
@@ -504,6 +507,39 @@ function MarkdownView({
     return () => cancelAnimationFrame(raf);
   }, [targetLine, path]);
 
+  // ---- mermaid: upgrade diagram placeholders AFTER the HTML is injected ------
+  // Keyed on the injected HTML so it re-runs whenever the rendered content
+  // changes (new file, edited file). It does nothing — and never imports the
+  // heavy mermaid bundle — unless the freshly-injected HTML actually contains a
+  // `.mermaid-diagram` placeholder, keeping non-diagram files on the hot path.
+  //
+  // Cancellation (Law-1-adjacent correctness): mermaid.render is async; if the
+  // user switches files mid-render, the cleanup flips `cancelled` so the loop in
+  // renderMermaidIn bails BEFORE writing a stale SVG into the new file's DOM.
+  // The dynamic import keeps mermaid out of the bundle's hot path AND out of the
+  // shared testkit bundle.
+  useEffect(() => {
+    const host = mdRef.current;
+    if (!host) return;
+    // Cheap synchronous gate: skip the dynamic import entirely when there is no
+    // diagram to render (the overwhelmingly common case).
+    if (host.querySelector('.mermaid-diagram') === null) return;
+
+    let cancelled = false;
+    void import('../lib/mermaid-render.js')
+      .then(({ renderMermaidIn }) => {
+        if (cancelled) return;
+        return renderMermaidIn(host, { isCancelled: () => cancelled });
+      })
+      // Swallow a chunk-load / render failure: the escaped code-block fallback
+      // is already on screen, so a failure degrades gracefully (Law 1 safe).
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [html]);
+
   return (
     <div className="md-scroll" ref={containerRef}>
       {/* SC 4.1.3: a polite live region announces the revealed line so a
@@ -514,6 +550,7 @@ function MarkdownView({
       </span>
       <div
         className="md"
+        ref={mdRef}
         // eslint-disable-next-line react/no-danger -- escaped + neutralized by lib/markdown
         dangerouslySetInnerHTML={{ __html: html }}
       />

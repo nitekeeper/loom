@@ -883,6 +883,44 @@ mark.search-hit {
 .md blockquote.md-alert-caution { border-left-color: #ef4444; background: color-mix(in oklab, #ef4444 9%, transparent); }
 .md blockquote.md-alert-caution::before { content: "CAUTION"; color: #ef4444; }
 
+/* mermaid diagrams (Viewer .md only) — a ```mermaid fence renders to a
+   sanitized SVG IN the renderer (lib/mermaid-render.ts, securityLevel:'strict'
+   + DOMPurify). The .mermaid-diagram wrapper holds, in order:
+     - .mermaid-src  : the hidden, escaped raw source (decoded for re-render);
+                       never displayed.
+     - the FALLBACK escaped code block, shown until JS upgrades it OR if render
+       fails (graceful degradation).
+   On success the wrapper's innerHTML is replaced by the SVG (.mermaid-done);
+   on failure the code-block fallback stays and .mermaid-error adds a subtle
+   affordance. */
+.md .mermaid-src { display: none; }
+.md .mermaid-diagram { margin: 0 0 14px; }
+/* While unprocessed, the wrapper just shows the fallback code block (its own
+   margin is suppressed since the wrapper owns the spacing). */
+.md .mermaid-diagram pre.md-code { margin: 0; }
+/* Rendered diagram: center the responsive SVG on a panel that matches the
+   code-block surface so a diagram reads as a sibling of fenced code. */
+.md .mermaid-diagram.mermaid-done {
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  text-align: center;
+}
+.md .mermaid-diagram.mermaid-done svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin-inline: auto;
+}
+/* Render failed (or the type needed eval and was blocked by CSP): keep the
+   escaped source as a normal code block with a subtle warning left-border so
+   the human can see it did not become a diagram. */
+.md .mermaid-diagram.mermaid-error pre.md-code {
+  border-left: 3px solid var(--warn);
+}
+
 /* image preview */
 .imgwrap { padding: 22px; }
 .imgprev {

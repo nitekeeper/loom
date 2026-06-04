@@ -103,11 +103,58 @@ function renderCodeBlock(code: string, lang: string): string {
   return `<pre class="md-code"${langAttr}><code>${lines}</code></pre>`;
 }
 
+/* ---- mermaid fences: ```mermaid … ``` → a SAFE, SYNC placeholder ----
+   The Viewer renders the diagram AFTER injection (lib/mermaid-render.ts), in
+   the browser only, under securityLevel:'strict' + DOMPurify SVG sanitize. Here
+   — in the SHARED, PURE renderer (also bundled into testkit.cjs) — we emit ONLY
+   inert markup and MUST NOT import mermaid/DOMPurify/DOM.
+
+   Shape:
+     <div class="mermaid-diagram">
+       <pre class="mermaid-src" hidden>ESCAPED_RAW_SOURCE</pre>
+       FALLBACK            ← the normal escaped code block
+     </div>
+
+   Law-1 safety: the diagram source appears ONLY as escaped text inside a
+   <pre> text node — never as live markup, never as an href/script. The browser
+   decodes the HTML entities back to the EXACT original source via .textContent
+   (so whitespace/indentation is preserved byte-for-byte for mermaid.render),
+   while the rendered DOM stays inert. NOTE: markdown-it normalizes CRLF (\r\n)
+   to LF (\n) in the fence body BEFORE the fence rule sees token.content, so the
+   round-trip is exact MODULO newline normalization, not literally for raw CRLF
+   input (mermaid treats \r\n and \n identically, so this is benign — and it is
+   markdown-it preprocessing, not the placeholder). We do NOT base64 the source: this module
+   is shared with the Node test bundle and must avoid env-specific encoders, and
+   escaped text is already the correct, decode-on-read representation.
+
+   FALLBACK is the existing escaped code block (renderCodeBlock). It is shown
+   until mermaid replaces the container, and is also the graceful-degradation
+   view when JS is off OR a render fails (mermaid-render keeps it on error). */
+function renderMermaidPlaceholder(source: string): string {
+  const src = `<pre class="mermaid-src" hidden>${escapeHtml(source)}</pre>`;
+  const fallback = renderCodeBlock(source, 'mermaid');
+  // CONSCIOUS CHOICE (search-reveal): like every fence rule here, this returns a
+  // hand-built string and therefore does NOT carry the `data-srcline` the
+  // loom_srcline core rule set on the fence token. So a search that lands on a
+  // line INSIDE a diagram fence reveals the nearest PRECEDING mapped block, not
+  // the diagram itself — IDENTICAL to a normal ```js fence (whose <pre
+  // class=md-code> also lacks data-srcline). This is intentional consistency, not
+  // an oversight: mermaid introduces no regression. If diagram-precise reveal is
+  // ever wanted, stamp data-srcline onto the wrapper div from token.map[0]+1
+  // (a controlled integer string — Law-1 safe) for both this and renderCodeBlock.
+  return `<div class="mermaid-diagram">${src}${fallback}</div>`;
+}
+
 /* ---- fenced code: ```lang … ``` — highlight only JS-family langs ---- */
 const fenceRule: MdRenderRule = (tokens, idx) => {
   const token = tokens[idx];
   // The info string is the language tag (first word after the opening fence).
   const lang = (token?.info ?? '').trim().split(/\s+/)[0] ?? '';
+  // A `mermaid` fence becomes an inert placeholder the Viewer upgrades to an
+  // SVG diagram after injection; every other fence is the normal code block.
+  if (lang.toLowerCase() === 'mermaid') {
+    return renderMermaidPlaceholder(token?.content ?? '');
+  }
   return renderCodeBlock(token?.content ?? '', lang);
 };
 md.renderer.rules.fence = fenceRule;

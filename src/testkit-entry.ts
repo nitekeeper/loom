@@ -75,6 +75,16 @@ export { MAX_BODY_LENGTH, MAX_NAME_LENGTH } from './shared/types.js';
 export { renderMarkdown, renderInline } from './renderer/lib/markdown.js';
 export { escapeHtml, highlightCode } from './renderer/lib/highlight.js';
 
+// Mermaid SVG sanitizer (DOMPurify-only — NO mermaid import, so it is safe to
+// pull into the Node test bundle). Re-exported so the jsdom suite can prove the
+// SVG scrub (strips <script>/foreignObject/on*-handlers/javascript: hrefs while
+// keeping benign shapes + <style>) by passing its own jsdom window. The actual
+// mermaid.render path is browser-only (lib/mermaid-render.ts) and proven in e2e.
+// svgHasRenderableContent is the DOMPurify-free predicate the renderer uses to
+// decide whether a SANITIZED SVG actually has content to draw (vs degrading to
+// the fallback when the scrub left a bare/empty <svg>); jsdom-testable.
+export { sanitizeSvg, svgHasRenderableContent } from './renderer/lib/svg-sanitize.js';
+
 // Shared safe-external-URL gate (the single allow-list the renderer link rule,
 // the IPC open handler, and the window nav guard all apply). Re-exported so the
 // suite can pin which schemes are navigable vs neutralized.

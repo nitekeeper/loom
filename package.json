@@ -18,7 +18,7 @@
     "dist:linux": "electron-builder --config electron-builder.config.cjs --linux deb --publish never",
     "start": "electron .",
     "loom": "node bin/loom.cjs",
-    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs",
+    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs test/mermaid.mjs",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
@@ -26,7 +26,9 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.0",
     "chokidar": "^4.0.3",
+    "dompurify": "3.4.8",
     "markdown-it": "^14.1.0",
+    "mermaid": "11.15.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sql.js": "^1.13.0",

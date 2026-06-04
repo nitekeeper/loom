@@ -1,9 +1,10 @@
 # Tier 2 — Playwright Electron e2e
 
-Real-stack end-to-end tests for the **navigable-links** feature. They launch the
-**built** Loom app (`dist/main.cjs`) with Playwright's `_electron` API — a real
-Chromium renderer driven against the real Electron main process — so the whole
-chain is under test:
+Real-stack end-to-end tests that launch the **built** Loom app (`dist/main.cjs`)
+with Playwright's `_electron` API — a real Chromium renderer driven against the
+real Electron main process — so the whole chain is under test. Two features:
+
+### `navlinks.e2e.ts` — navigable links
 
 ```
 markdown link rule  →  renderer click guard  →  preload bridge
@@ -15,6 +16,71 @@ This is the **only** layer that can exercise the **main-process** halves:
 the `OPEN_EXTERNAL` IPC re-validation and the window navigation guard. The
 `npm test` node-`--test` suites and the jsdom Tier-1 harness
 (`test/anchor-guard.mjs`) cannot reach those.
+
+### `mermaid.e2e.ts` — Viewer mermaid diagrams
+
+```
+```mermaid fence  →  inert .mermaid-diagram placeholder (renderMarkdown)
+      →  Viewer effect dynamic-imports lib/mermaid-render.ts
+      →  mermaid.render (securityLevel:'strict')  →  sanitizeSvg (DOMPurify)
+      →  innerHTML  →  .mermaid-done (or .mermaid-error fallback)
+```
+
+This is the **only** layer that can exercise the mermaid feature's **runtime**
+half: `mermaid.render` needs real SVG layout (`getBBox`) that jsdom does not
+implement, so the actual fence → `<svg>` upgrade can only be proven in real
+Chromium. The Tier-1 suite (`test/mermaid.mjs`) covers the pure placeholder
+markup and `sanitizeSvg` in isolation, but cannot run a real render nor prove
+`securityLevel:'strict'` + the DOMPurify scrub hold on what mermaid **actually
+produces** from a hostile diagram under the app's real CSP (no `unsafe-eval`).
+
+Tests, each failing for the right reason:
+
+1. **RENDER** — a valid `graph TD` fence becomes a real `<svg>` (`.mermaid-done`
+   + a non-empty SVG body); the window never navigates; no uncaught page error.
+2. **XSS NEUTRALIZED** — a hostile diagram (a node label smuggling
+   `<img onerror>` + a `click … "javascript:…"` interaction directive) renders
+   inert: **no** `<script>`/`<foreignObject>`, **no** `on*` handler attribute,
+   **no** `<img>` element, the javascript: target **never** reaches the
+   `shell.openExternal` spy, and **no** native dialog fires. Proves strict mode
+   + DOMPurify hold in real Chromium.
+3. **DEGRADE** — a garbage diagram body errors gracefully: `.mermaid-error` is
+   set, `.mermaid-done` is not, and the escaped code-block fallback stays
+   visible (no crash, no blank).
+4. **FILE-SWITCH RACE / CANCELLATION** — opening a heavy multi-diagram file and
+   immediately switching to another file mid-render must **not** leak a stale SVG
+   into the new file's DOM. Exercises the Viewer effect cleanup (`cancelled =
+   true`) + `renderMermaidIn`'s `isCancelled()` / `el.isConnected` guards — the
+   one path no Tier-1 test can reach (the unit layer never calls
+   `mermaid.render`), so a regressed guard would leave every other test green.
+   The second file's own diagram still renders to `.mermaid-done`; the first
+   file's diagrams never appear; no uncaught page error.
+5. **NON-FLOWCHART TYPES UNDER CSP** — one test per additional type
+   (`sequenceDiagram`, `pie`) asserts each renders to `.mermaid-done` (a real
+   `<svg>`), **not** `.mermaid-error`, under the locked CSP (`script-src 'self'`,
+   **no** `'unsafe-eval'`). See the per-type support note below.
+
+### Supported diagram types under the locked CSP
+
+Loom runs mermaid under `script-src 'self'` with **no** `'unsafe-eval'`. The
+question "which diagram types degrade?" was independently verified:
+
+- mermaid 11.15.0's `dist/mermaid.core.mjs` contains **zero** `eval(` /
+  `new Function` (`grep` = 0), and esbuild **inlines every diagram-type module
+  into the renderer IIFE** — the built `dist/renderer.js` has **zero** runtime
+  `import(...)`, **zero** `import.meta`, and **zero** `new Function`/`eval(`
+  across the whole bundle (deps included).
+- Therefore every standard v11 type (flowchart, sequenceDiagram, classDiagram,
+  stateDiagram, erDiagram, gantt, pie, gitGraph, …) is **bundled and available
+  at `file://` runtime** with no module-loader fetch and no CSP `eval`
+  violation — **none hard-degrades** for want of eval.
+- Tests 1–2 prove the flowchart path end-to-end; test 5 locks the non-flowchart
+  paths (sequence + pie) so a **future** mermaid bump that reintroduced
+  `eval`/`new Function` in any of those layouts fails here (the diagram would
+  throw under CSP and land `.mermaid-error`, not `.mermaid-done`).
+- The graceful-degradation fallback (test 3) is the safety net for **any**
+  future eval-dependent type: it keeps the escaped code-block fallback instead
+  of crashing, so an unsupported type never blanks the document.
 
 ## Run it locally (real hardware)
 
