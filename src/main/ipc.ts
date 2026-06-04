@@ -17,7 +17,7 @@
  *   - PAUSED    when the human set it via SET_LIVE_STATE; PAUSED is
  *               sticky — it overrides LIVE/CAUGHT_UP until unset.
  * ============================================================ */
-import { ipcMain } from 'electron';
+import { ipcMain, shell } from 'electron';
 import {
   IPC,
   type FileNode,
@@ -42,6 +42,7 @@ import { wsEnabled } from './ws.js';
 // Pure (DOM/Node-free) keybinding core — merges persisted user overrides
 // over the defaults so the boot snapshot carries the FULL resolved map.
 import { resolveBindings } from '../renderer/lib/keybindings.js';
+import { safeExternalUrl } from '../shared/url.js';
 
 /** Debounce for COUNTERS recompute+push (telemetry tick). */
 const COUNTERS_DEBOUNCE_MS = 100;
@@ -200,6 +201,15 @@ class IpcWiringImpl implements IpcWiring {
     ipcMain.handle(IPC.SET_LIVE_STATE, (_evt, state: LiveState): void => {
       // The human can PAUSE (sticky) or release back to the auto machine.
       this.setHumanLiveState(state);
+    });
+
+    ipcMain.handle(IPC.OPEN_EXTERNAL, async (_evt, url: unknown): Promise<void> => {
+      // RE-VALIDATE in main — never trust the renderer. Only an http/https/mailto
+      // URL is ever handed to the OS; dangerous schemes (javascript:/file:/data:)
+      // and non-strings are dropped silently. The renderer already vets links,
+      // this is the authoritative gate.
+      const safe = typeof url === 'string' ? safeExternalUrl(url) : null;
+      if (safe !== null) await shell.openExternal(safe);
     });
   }
 

@@ -9,11 +9,12 @@
  * ============================================================ */
 import { readFileSync, writeFileSync, statSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 // Same build-time-inlined app version the MCP server advertises (esbuild
 // inlines package.json), so the discovery file can never drift from a literal.
 import { version as LOOM_VERSION } from '../../package.json';
 import { DEFAULT_MAX_MESSAGES, MAX_BODY_LENGTH } from '../shared/types.js';
+import { safeExternalUrl } from '../shared/url.js';
 import { MCP_HOST, MCP_PATH } from './mcp.js';
 import { createDb } from './db.js';
 import { createEventBus } from './eventbus.js';
@@ -440,10 +441,31 @@ function createMainWindow(services: Services): BrowserWindow {
     webPreferences: hardenedWebPreferences(),
   });
   void win.loadURL(indexUrl(null));
+  installNavGuard(win);
   services.ipc.attachRenderer((channel, payload) => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   });
   return win;
+}
+
+/** Navigation backstop for the navigable-links feature (defense in depth). The
+ *  viewer window must NEVER navigate away from its own bundle or open a child
+ *  window in-app — that would load arbitrary (agent-influenced) web content with
+ *  the app's privileges. Any SAFE http/https/mailto target from a link,
+ *  window.open, or ctrl/middle-click is redirected to the EXTERNAL browser;
+ *  anything else is dropped. This holds even if the renderer-side click guard is
+ *  bypassed. */
+function installNavGuard(win: BrowserWindow): void {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    const safe = safeExternalUrl(url);
+    if (safe !== null) void shell.openExternal(safe);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (e, url) => {
+    e.preventDefault();
+    const safe = safeExternalUrl(url);
+    if (safe !== null) void shell.openExternal(safe);
+  });
 }
 
 /** Poll the renderer until `selector` matches an element, or `timeoutMs`

@@ -47,6 +47,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.SET_THEME,
   IPC.SET_KEYBINDINGS,
   IPC.SET_LIVE_STATE,
+  IPC.OPEN_EXTERNAL,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
@@ -121,6 +122,9 @@ export function createBridge(): LoomBridge {
     },
     setLiveState(state: LiveState): Promise<void> {
       return ipcRenderer.invoke(assertInvoke(IPC.SET_LIVE_STATE), state);
+    },
+    openExternal(url: string): Promise<void> {
+      return ipcRenderer.invoke(assertInvoke(IPC.OPEN_EXTERNAL), url);
     },
     onEvent(handler: (e: LoomEvent) => void): () => void {
       return subscribe<LoomEvent>(IPC.EVENT, handler);

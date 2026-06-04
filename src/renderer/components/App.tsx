@@ -73,11 +73,12 @@ function useFileContent(selected: string | null, rev: number): FileContent | nul
 }
 
 /** Containers whose innerHTML is agent-authored, renderer-sanitized markdown
- *  (Viewer `.md`, chat `.msg-body`, inbox `.ib-body`). Neutralized links in
- *  these already carry NO href, but we belt-and-braces preventDefault any
- *  anchor activation (mouse click OR keyboard Enter/Space) globally so a
- *  link can never navigate even if a future sink slips an href through
- *  (AC-21 / FR-52 / SEC-5). */
+ *  (Viewer `.md`, chat `.msg-body`, inbox `.ib-body`). We intercept every anchor
+ *  activation (mouse click OR keyboard Enter/Space) here: a VETTED external link
+ *  (data-loom-ext — set by the markdown renderer ONLY for safe http/https/mailto)
+ *  opens in the user's BROWSER via openExternal; any other (neutralized) link is
+ *  blocked. The window never navigates in-app regardless — main's nav guard
+ *  backstops this (SEC-5). */
 const RENDERED_MARKDOWN_SELECTOR = '.md, .msg-body, .ib-body';
 
 function installGlobalAnchorGuard(): () => void {
@@ -90,7 +91,13 @@ function installGlobalAnchorGuard(): () => void {
     if (!target) return;
     const anchor = target.closest('a');
     if (anchor && anchor.closest(RENDERED_MARKDOWN_SELECTOR)) {
+      // Never navigate in-app. A vetted external link opens in the real browser;
+      // an inert/neutralized link is simply blocked.
       e.preventDefault();
+      if (anchor.dataset.loomExt === '1') {
+        const href = anchor.getAttribute('href');
+        if (href) void window.loom.openExternal(href);
+      }
     }
   };
   // Capture phase so we run before any bubbling default-navigation occurs.

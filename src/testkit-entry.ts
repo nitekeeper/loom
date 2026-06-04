@@ -75,6 +75,11 @@ export { MAX_BODY_LENGTH, MAX_NAME_LENGTH } from './shared/types.js';
 export { renderMarkdown, renderInline } from './renderer/lib/markdown.js';
 export { escapeHtml, highlightCode } from './renderer/lib/highlight.js';
 
+// Shared safe-external-URL gate (the single allow-list the renderer link rule,
+// the IPC open handler, and the window nav guard all apply). Re-exported so the
+// suite can pin which schemes are navigable vs neutralized.
+export { safeExternalUrl } from './shared/url.js';
+
 // Pure code-folding range computation (indentation-based; Law 1 safe — no
 // parsing/eval, operates only on raw text). Re-exported so the acceptance
 // suite can pin the fold geometry (nesting, blank-line inclusion, dedent

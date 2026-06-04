@@ -520,6 +520,11 @@ export const IPC = {
   SET_KEYBINDINGS: 'loom:keybindings:set',
   /** invoke(state: LiveState): void — human toggled pause/live. */
   SET_LIVE_STATE: 'loom:live:set',
+  /** invoke(url: string): void — open a SAFE (http/https/mailto) external URL
+   *  in the user's default browser via shell.openExternal. main re-validates the
+   *  scheme; dangerous/relative targets are dropped. The renderer only ever
+   *  passes URLs that already carry a vetted href (data-loom-ext links). */
+  OPEN_EXTERNAL: 'loom:external:open',
   /** send(LoomEvent) main->renderer — the live event feed. */
   EVENT: 'loom:event',
   /** send(SessionCounters) main->renderer — telemetry tick. */
@@ -554,6 +559,9 @@ export interface LoomBridge {
    *  only entries differing from defaults). Mirrors setTheme. */
   setKeybindings(map: Record<string, string>): Promise<void>;
   setLiveState(state: LiveState): Promise<void>;
+  /** Open a SAFE (http/https/mailto) external URL in the user's default browser.
+   *  main re-validates the scheme; dangerous/relative targets are ignored. */
+  openExternal(url: string): Promise<void>;
   /** Subscribe to the live event feed. Returns an unsubscribe fn. */
   onEvent(handler: (e: LoomEvent) => void): () => void;
   /** Subscribe to telemetry counter updates. Returns an unsubscribe fn. */

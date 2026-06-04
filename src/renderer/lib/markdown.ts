@@ -31,6 +31,7 @@
  * ============================================================ */
 import MarkdownIt from 'markdown-it';
 import { escapeHtml, highlightCode } from './highlight.js';
+import { safeExternalUrl } from '../../shared/url.js';
 
 /* ------------------------------------------------------------------ */
 /* Single shared, hardened markdown-it instance.                       */
@@ -128,15 +129,24 @@ const linkOpenRule: MdRenderRule = (tokens, idx, options, _env, self) => {
   const token = tokens[idx];
   if (token) {
     const rawHref = token.attrGet('href');
-    // Strip ALL existing attributes, then re-add only inert ones. We do NOT
-    // re-add any href: a hrefless anchor cannot navigate or fragment-scroll.
+    const safe = safeExternalUrl(rawHref);
+    // Drop markdown-it's attrs; re-add only vetted ones.
     token.attrs = null;
     token.attrSet('rel', 'noopener noreferrer nofollow');
-    // Original target preserved for display only — escaped, inert. The
-    // attribute name deliberately does NOT contain "href": the raw target
-    // must never appear in any attribute that could be mistaken for (or
-    // parsed as) a navigable href, even as a substring (FR-48/52, AC-21/22).
-    token.attrSet('data-loom-link', rawHref ?? '');
+    if (safe !== null) {
+      // SAFE http/https/mailto: keep the NORMALIZED href so it is a real link,
+      // and mark it (data-loom-ext) for the renderer's click handler to open in
+      // the EXTERNAL browser via shell.openExternal — NEVER in-app navigation.
+      // main re-validates the scheme before opening; the window blocks
+      // in-app navigation as a backstop.
+      token.attrSet('href', safe);
+      token.attrSet('data-loom-ext', '1');
+    } else {
+      // Dangerous (javascript:/file:/data:/…) or relative/unparseable target:
+      // emit NO href — inert, non-navigating — preserving the raw target only
+      // in a non-href data-* attribute for display (FR-52 / SEC-5 still hold).
+      token.attrSet('data-loom-link', rawHref ?? '');
+    }
   }
   return self.renderToken(tokens, idx, options);
 };

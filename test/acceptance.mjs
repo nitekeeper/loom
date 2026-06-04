@@ -831,16 +831,18 @@ test('AC-22 Viewer markdown: embedded HTML is ESCAPED to text, not interpreted (
   );
 });
 
-test('AC-22 Viewer markdown: links are non-navigating (href neutralized) (FR-5/52)', async () => {
+test('AC-22 Viewer markdown: a safe http link keeps a real href + data-loom-ext (opens externally)', async () => {
   const mod = await kit();
   if (typeof mod.renderMarkdown !== 'function') {
     assert.fail('renderMarkdown export missing — see notes_for_integrator.');
   }
-  const httpLink = '[click me](http://evil.example.com/phish)';
-  const html = mod.renderMarkdown(httpLink);
-  // The visible link TEXT should still render.
+  const html = mod.renderMarkdown('[click me](http://example.com/page)');
   assert.match(html, /click me/, 'link text must still be rendered');
-  assertNoNavigableHref(html, 'http://evil.example.com/phish');
+  // NEW contract: a safe http(s) link keeps a navigable href + data-loom-ext so
+  // the renderer opens it in the EXTERNAL browser (not in-app navigation).
+  assert.match(html, /href="http:\/\/example\.com\/page"/, 'safe http link keeps a navigable href');
+  assert.match(html, /data-loom-ext="1"/, 'and is marked for shell.openExternal');
+  assert.doesNotMatch(html, /href\s*=\s*["']?\s*javascript:/i, 'never a javascript: href');
 });
 
 test('AC-22 Viewer markdown: a javascript: link is neutralized (no executable href) (FR-52)', async () => {
@@ -854,7 +856,7 @@ test('AC-22 Viewer markdown: a javascript: link is neutralized (no executable hr
   assertNoNavigableHref(html, 'javascript:alert(document.cookie)');
 });
 
-test('AC-21 message body: inline links are non-navigating (href neutralized) (FR-48/52)', async () => {
+test('AC-21 message body: a safe http inline link keeps a real href + data-loom-ext (FR-48/52)', async () => {
   const mod = await kit();
   if (typeof mod.renderInline !== 'function') {
     assert.fail(
@@ -862,10 +864,10 @@ test('AC-21 message body: inline links are non-navigating (href neutralized) (FR
         'safety. Ask the integrator to add it to the testkit bundle (see notes_for_integrator).',
     );
   }
-  const httpLink = '[open](http://evil.example.com)';
-  const html = mod.renderInline(httpLink);
+  const html = mod.renderInline('[open](https://example.com/x)');
   assert.match(html, /open/, 'link text must render');
-  assertNoNavigableHref(html, 'http://evil.example.com');
+  assert.match(html, /href="https:\/\/example\.com\/x"/, 'safe https link keeps a navigable href');
+  assert.match(html, /data-loom-ext="1"/, 'marked for external open');
 });
 
 test('AC-21 message body: a javascript: inline link is neutralized (FR-48/52)', async () => {
@@ -1517,16 +1519,23 @@ test('SEC-4 corpus: renderInline (chat) neutralizes every adversarial input', as
 });
 
 /* ================================================================== */
-/* SEC-5 — neutralized links carry NO href attribute at all (not even    */
-/* href="#"): a hrefless anchor cannot navigate NOR fragment-scroll.     */
+/* SEC-5 — a SAFE link carries its real external href tagged data-loom-ext (the */
+/* renderer click guard + main nav guard open it in the BROWSER, never in-app), */
+/* and never href="#" (no fragment scroll) nor a dangerous scheme. A relative   */
+/* or dangerous target gets no navigable href at all.                           */
 /* ================================================================== */
-test('SEC-5: a neutralized link renders with NO href attribute (not href="#")', async () => {
+test('SEC-5: a safe link keeps its real external href (data-loom-ext), never href="#" / javascript:', async () => {
   const mod = await kit();
   const renderInline = requireExport(mod, 'renderInline');
-  const html = renderInline('[open](http://evil.example.com)');
+  const html = renderInline('[open](http://example.com/p)');
   assert.match(html, /<a\b/i, 'an anchor element is still rendered');
   assert.match(html, /open/, 'the link text still renders');
-  assert.doesNotMatch(html, /\bhref\s*=/i, 'a neutralized link must carry NO href attribute');
+  assert.match(html, /href="http:\/\/example\.com\/p"/, 'a safe link keeps its real external href');
+  assert.match(html, /data-loom-ext="1"/, 'tagged for external (browser) open, not in-app navigation');
+  assert.doesNotMatch(html, /href\s*=\s*["']#/, 'never href="#" (no in-document fragment scroll)');
+  assert.doesNotMatch(html, /href\s*=\s*["']?\s*javascript:/i, 'never a javascript: href');
+  // A relative target stays inert (no base document for agent content).
+  assert.doesNotMatch(renderInline('[r](relative/path)'), /\bhref\s*=/i, 'relative link is not navigable');
 });
 
 /* ================================================================== */

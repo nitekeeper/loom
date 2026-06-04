@@ -76,3 +76,26 @@ test('MARKDOWN alerts: > [!NOTE] becomes a typed callout; unknown types stay pla
   assert.doesNotMatch(bogus, /md-alert/, 'an unknown type is not promoted to an alert');
   assert.match(bogus, /\[!BOGUS\]/, 'unknown marker left as literal text');
 });
+
+test('LINKS: safeExternalUrl allows only http/https/mailto', async () => {
+  const { safeExternalUrl } = await kit();
+  assert.equal(safeExternalUrl('http://a.com/x'), 'http://a.com/x');
+  assert.equal(safeExternalUrl('https://a.com/x'), 'https://a.com/x');
+  assert.ok(safeExternalUrl('mailto:a@b.com'), 'mailto is allowed');
+  for (const bad of [
+    'javascript:alert(1)', 'file:///etc/passwd', 'data:text/plain,x',
+    'vbscript:x', 'blob:https://a', 'relative/path', '#frag', '', null, undefined,
+  ]) {
+    assert.equal(safeExternalUrl(bad), null, `must reject ${String(bad)}`);
+  }
+});
+
+test('LINKS: dangerous-scheme markdown links get NO href (neutralized); text survives', async () => {
+  const { renderMarkdown } = await kit();
+  for (const url of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/plain,hello']) {
+    const html = renderMarkdown(`[clickme](${url})`);
+    assert.doesNotMatch(html, /href\s*=/i, `no href for ${url}`);
+    assert.doesNotMatch(html, /data-loom-ext/, `not marked external for ${url}`);
+    assert.match(html, /clickme/, 'link text still renders');
+  }
+});
