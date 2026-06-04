@@ -88,6 +88,12 @@ export type { FoldRange } from './renderer/lib/fold.js';
 export { tailWindow, DEFAULT_RENDER_WINDOW, MAX_STORE_MESSAGES } from './renderer/lib/window.js';
 export type { TailWindow } from './renderer/lib/window.js';
 
+// Pure live file-tree mutation (FR-39) — keeps the lazily-loaded FileNode tree
+// in sync with watcher FileEvents so a file/folder created in an expanded dir
+// appears without a relaunch. Re-exported so the suite can pin the splice math
+// (loaded-only, sort order, dedup, no-op on unloaded/absent parents) DOM-free.
+export { insertNode, removeNode, makeNode } from './renderer/lib/filetree.js';
+
 // Pure close-file Escape coordination (A11Y-CLOSE-05). Re-exported so the
 // acceptance suite can pin the de-confliction contract (a consumed/tooltip
 // Escape never closes the file; a button-focused Escape rescues focus) without

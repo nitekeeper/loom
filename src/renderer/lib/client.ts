@@ -31,6 +31,7 @@ import type {
 } from '../../shared/types.js';
 import { diffOverrides } from './keybindings.js';
 import { MAX_STORE_MESSAGES } from './window.js';
+import { insertNode, removeNode, makeNode } from './filetree.js';
 
 /** Capture hints parsed from location.search (used by --capture). */
 export interface CaptureHints {
@@ -263,23 +264,33 @@ export function createStore(): LoomStore {
     flashing.add(path);
     const justModified = new Set(current.justModified);
     const newlyAdded = new Set(current.newlyAdded);
-    if (e.action === 'add') {
+    if (e.action === 'add' || e.action === 'addDir') {
       newlyAdded.add(path);
     } else if (e.action === 'change') {
       justModified.add(path);
-    } else if (e.action === 'unlink') {
-      // A removed file drops all of its activity markers.
+    } else if (e.action === 'unlink' || e.action === 'unlinkDir') {
+      // A removed file/dir drops all of its activity markers.
       flashing.delete(path);
       justModified.delete(path);
       newlyAdded.delete(path);
     }
+
+    // Keep the lazily-loaded FileNode tree in sync so a file/folder created (or
+    // deleted) in an ALREADY-EXPANDED directory appears (or disappears)
+    // immediately, not only after a relaunch. Insert into LOADED dirs only — a
+    // collapsed dir re-reads from disk on expand (filetree helpers are no-ops
+    // for an unloaded/absent parent).
+    let tree = current.tree;
+    if (e.action === 'add') tree = insertNode(tree, makeNode(path, false));
+    else if (e.action === 'addDir') tree = insertNode(tree, makeNode(path, true));
+    else if (e.action === 'unlink' || e.action === 'unlinkDir') tree = removeNode(tree, path);
 
     // Schedule expiry timers (transient affordances, FR-39).
     const clearTimer = (key: string): void => {
       const t = timers.get(key);
       if (t) clearTimeout(t);
     };
-    if (e.action !== 'unlink') {
+    if (e.action !== 'unlink' && e.action !== 'unlinkDir') {
       clearTimer(`flash:${path}`);
       timers.set(
         `flash:${path}`,
@@ -303,7 +314,7 @@ export function createStore(): LoomStore {
         }, JUST_MODIFIED_MS),
       );
     }
-    if (e.action === 'add') {
+    if (e.action === 'add' || e.action === 'addDir') {
       clearTimer(`new:${path}`);
       timers.set(
         `new:${path}`,
@@ -320,7 +331,7 @@ export function createStore(): LoomStore {
       ...current.counters,
       files: current.counters.files + (e.action === 'add' ? 1 : 0),
     };
-    return { ...current, flashing, justModified, newlyAdded, counters };
+    return { ...current, tree, flashing, justModified, newlyAdded, counters };
   };
 
   const reduce = (current: ViewModel, e: LoomEvent): ViewModel => {
