@@ -216,11 +216,18 @@ export function createMcpServer(
         structuredContent: { code: err.code, message: err.message },
       };
     }
-    const message = err instanceof Error ? err.message : String(err);
+    // A non-LoomError throw is an INTERNAL fault, not domain feedback. Don't
+    // echo its raw message (paths/stack fragments) to the semi-trusted client
+    // (L3): emit a correlation id, return a generic message carrying only that
+    // id, and log the real detail server-side under it for the operator.
+    const ref = randomUUID();
+    const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    process.stderr.write(`[loom:mcp] internal tool error ref=${ref}: ${detail}\n`);
+    const message = `internal error (ref: ${ref})`;
     return {
-      content: [{ type: 'text', text: `BAD_REQUEST: ${message}` }],
+      content: [{ type: 'text', text: `INTERNAL_ERROR: ${message}` }],
       isError: true,
-      structuredContent: { code: 'BAD_REQUEST', message },
+      structuredContent: { code: 'INTERNAL_ERROR', message, ref },
     };
   }
   function run(fn: () => unknown): ToolResult {
@@ -546,9 +553,13 @@ export function createMcpServer(
                 req.destroy();
                 return;
               }
-              const message = err instanceof Error ? err.message : String(err);
+              // L3: generic client body + correlation id; the real fault is
+              // logged server-side under that id (never echo internals).
+              const ref = randomUUID();
+              const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+              process.stderr.write(`[loom:mcp] internal http error ref=${ref}: ${detail}\n`);
               if (!res.headersSent) res.writeHead(500);
-              res.end(`internal error: ${message}`);
+              res.end(`internal error (ref: ${ref})`);
             });
           });
 
