@@ -560,12 +560,15 @@ export function createMcpServer(
           const srv = makeServer();
           const onError = (err: NodeJS.ErrnoException): void => {
             srv.removeListener('error', onError);
-            srv.close();
-            if (err.code === 'EADDRINUSE' && attempt + 1 < MAX_PORT_ATTEMPTS) {
-              tryListen(port + 1, attempt + 1);
-              return;
-            }
-            reject(err);
+            // L4: await the close (via its callback) before relistening on the
+            // next port, so the failed listener is fully released first.
+            srv.close(() => {
+              if (err.code === 'EADDRINUSE' && attempt + 1 < MAX_PORT_ATTEMPTS) {
+                tryListen(port + 1, attempt + 1);
+              } else {
+                reject(err);
+              }
+            });
           };
           srv.on('error', onError);
           srv.listen(port, MCP_HOST, () => {

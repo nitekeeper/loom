@@ -93,7 +93,11 @@ export interface LoomDb {
    *  execWrite+flush re-arms (the @here fan-out writes N-1 receipts at once).
    *  No-op for an empty list. */
   insertReceipts(rows: ReceiptRow[]): void;
-  markReceiptsRead(messageIds: number[], recipient: string, at: number): number;
+  /** Mark the caller's unread receipts for the given message ids as read at
+   *  `at`. Returns the message_ids that actually FLIPPED (were unread -> now
+   *  read), so the caller can build ReceiptEvents from (id, recipient, at)
+   *  without a per-id listReceipts re-query. */
+  markReceiptsRead(messageIds: number[], recipient: string, at: number): number[];
   /** Prune the OLDEST messages (and their receipts, FK-safe) so at most `max`
    *  remain — the newest `max` by id are kept. A non-positive/invalid `max` is
    *  a no-op (unlimited). Returns the number of messages removed. Bounds memory
@@ -475,9 +479,18 @@ class SqlJsLoomDb implements LoomDb {
     );
   }
 
-  markReceiptsRead(messageIds: number[], recipient: string, at: number): number {
-    if (messageIds.length === 0) return 0;
+  markReceiptsRead(messageIds: number[], recipient: string, at: number): number[] {
+    if (messageIds.length === 0) return [];
     const placeholders = messageIds.map(() => '?').join(', ');
+    // Capture which receipts WILL flip (currently unread for this recipient)
+    // BEFORE the UPDATE — same WHERE, so it is exactly the touched set. This
+    // lets mark_read emit ReceiptEvents without re-querying listReceipts per id.
+    const flipped = this.query(
+      `SELECT message_id AS id FROM receipts WHERE recipient = ? AND read_at IS NULL AND message_id IN (${placeholders})`,
+      [recipient, ...messageIds],
+      (o) => asInt(o['id']),
+    );
+    if (flipped.length === 0) return [];
     const stmt = this.conn.prepare(
       `UPDATE receipts SET read_at = ? WHERE recipient = ? AND read_at IS NULL AND message_id IN (${placeholders})`,
     );
@@ -486,9 +499,8 @@ class SqlJsLoomDb implements LoomDb {
     } finally {
       stmt.free();
     }
-    const marked = this.conn.getRowsModified();
     this.flush();
-    return marked;
+    return flipped;
   }
 
   pruneMessagesToCap(max: number): number {

@@ -168,8 +168,16 @@ export function createEngine(
           `name exceeds ${MAX_NAME_LENGTH} characters`,
         );
       }
-      // Assign a unique name by suffixing against ANY existing row,
-      // active OR gone (FR-15, AC-6, OQ-1).
+      // Assign a unique name by suffixing against ANY existing row, active OR
+      // gone (FR-15, AC-6, OQ-1).
+      //
+      // CONCURRENCY INVARIANT (audit H3): this name-claim — read `taken`, pick a
+      // free suffix, db.insertAgent — MUST run as ONE synchronous unit with NO
+      // `await` between the read and the insert. The MCP transport binds one
+      // Caller per session and serializes concurrent register() calls on the
+      // single-threaded event loop, so two sessions racing the SAME name each
+      // observe the other's row in `taken` and get distinct suffixes. The
+      // agents.name PRIMARY KEY is the DB-level backstop. Do NOT add an await.
       const taken = new Set(db.listAgents().map((a) => a.name));
       let assigned = requested;
       let n = 2;
@@ -439,23 +447,19 @@ export function createEngine(
       const me = requireRegistered(caller);
       const at = now();
 
-      // Set read_at for the caller's receipts whose message_id is in the
-      // list AND currently NULL; return the count actually updated (FR-27).
-      const marked = db.markReceiptsRead(params.message_ids, me, at);
-      if (marked > 0) db.flush();
+      // Set read_at for the caller's receipts whose message_id is in the list
+      // AND currently NULL (FR-27). markReceiptsRead returns the ids that
+      // actually FLIPPED (was unread -> now read) and flushes internally.
+      const flipped = db.markReceiptsRead(params.message_ids, me, at);
 
-      // Publish a ReceiptEvent for each receipt that flipped to read so the
-      // live feed + ws + counters update (FR-29/30).
-      for (const id of params.message_ids) {
-        const receipt = db
-          .listReceipts(id)
-          .find((r) => r.recipient === me && r.read_at === at);
-        if (receipt !== undefined) {
-          bus.publish({ kind: 'receipt', receipt });
-        }
+      // Publish one ReceiptEvent per flipped receipt so the live feed + ws +
+      // counters update (FR-29/30). We know recipient=me and read_at=at, so we
+      // build the events directly — no per-id listReceipts re-query (L2).
+      for (const id of flipped) {
+        bus.publish({ kind: 'receipt', receipt: { message_id: id, recipient: me, read_at: at } });
       }
 
-      return { marked };
+      return { marked: flipped.length };
     },
 
     purge_all(caller: Caller): PurgeAllResult {
