@@ -18,8 +18,10 @@
     "dist:linux": "electron-builder --config electron-builder.config.cjs --linux deb --publish never",
     "start": "electron .",
     "loom": "node bin/loom.cjs",
-    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs",
-    "typecheck": "tsc --noEmit"
+    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.0",
@@ -31,6 +33,7 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.19.0",
     "@types/react": "^18.3.12",
@@ -40,6 +43,7 @@
     "electron": "33.4.11",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.24.2",
+    "jsdom": "^29.1.1",
     "typescript": "^5.9.0"
   },
   "engines": {

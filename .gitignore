@@ -25,6 +25,12 @@ Thumbs.db
 *.png.tmp
 /tmp/loom_*.png
 
+# Playwright e2e (Tier 2) output: HTML report + per-run results (CI uploads
+# the report as an artifact; it must never be committed).
+playwright-report/
+test-results/
+.last-run.json
+
 # Windows (WSL) alternate-data-stream cruft
 *:Zone.Identifier
 

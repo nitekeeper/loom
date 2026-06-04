@@ -34,6 +34,7 @@ import { SearchView } from './SearchView.js';
 import { Viewer } from './Viewer.js';
 import { Chat } from './Chat.js';
 import { ShortcutsPanel } from './ShortcutsPanel.js';
+import { installGlobalAnchorGuard } from '../lib/anchor-guard.js';
 
 /** Subscribe a React component to the store via useSyncExternalStore. */
 function useViewModel(store: LoomStore): ViewModel | null {
@@ -70,43 +71,6 @@ function useFileContent(selected: string | null, rev: number): FileContent | nul
   }, [selected, rev]);
 
   return content;
-}
-
-/** Containers whose innerHTML is agent-authored, renderer-sanitized markdown
- *  (Viewer `.md`, chat `.msg-body`, inbox `.ib-body`). We intercept every anchor
- *  activation (mouse click OR keyboard Enter/Space) here: a VETTED external link
- *  (data-loom-ext — set by the markdown renderer ONLY for safe http/https/mailto)
- *  opens in the user's BROWSER via openExternal; any other (neutralized) link is
- *  blocked. The window never navigates in-app regardless — main's nav guard
- *  backstops this (SEC-5). */
-const RENDERED_MARKDOWN_SELECTOR = '.md, .msg-body, .ib-body';
-
-function installGlobalAnchorGuard(): () => void {
-  const onActivate = (e: Event): void => {
-    if (e instanceof KeyboardEvent) {
-      const k = e.key;
-      if (k !== 'Enter' && k !== ' ' && k !== 'Spacebar') return;
-    }
-    const target = e.target as HTMLElement | null;
-    if (!target) return;
-    const anchor = target.closest('a');
-    if (anchor && anchor.closest(RENDERED_MARKDOWN_SELECTOR)) {
-      // Never navigate in-app. A vetted external link opens in the real browser;
-      // an inert/neutralized link is simply blocked.
-      e.preventDefault();
-      if (anchor.dataset.loomExt === '1') {
-        const href = anchor.getAttribute('href');
-        if (href) void window.loom.openExternal(href);
-      }
-    }
-  };
-  // Capture phase so we run before any bubbling default-navigation occurs.
-  document.addEventListener('click', onActivate, true);
-  document.addEventListener('keydown', onActivate, true);
-  return () => {
-    document.removeEventListener('click', onActivate, true);
-    document.removeEventListener('keydown', onActivate, true);
-  };
 }
 
 /** True when an event target is a text-editable element (input, textarea, or

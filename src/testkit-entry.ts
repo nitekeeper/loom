@@ -80,6 +80,12 @@ export { escapeHtml, highlightCode } from './renderer/lib/highlight.js';
 // suite can pin which schemes are navigable vs neutralized.
 export { safeExternalUrl } from './shared/url.js';
 
+// Renderer click guard (the renderer half of navigable-links). Pure DOM (no
+// React/Electron), so the jsdom suite can install it over the REAL renderMarkdown
+// output and prove a VETTED external link opens via window.loom.openExternal while
+// a neutralized link is blocked — integration of render + guard (AC-21 / SEC-5).
+export { installGlobalAnchorGuard, RENDERED_MARKDOWN_SELECTOR } from './renderer/lib/anchor-guard.js';
+
 // Pure code-folding range computation (indentation-based; Law 1 safe — no
 // parsing/eval, operates only on raw text). Re-exported so the acceptance
 // suite can pin the fold geometry (nesting, blank-line inclusion, dedent

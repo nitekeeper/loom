@@ -1,0 +1,33 @@
+{
+  /* ============================================================
+   * Loom — TIER-2 e2e type-check project
+   * ------------------------------------------------------------
+   * The base tsconfig.json deliberately scopes `tsc --noEmit`
+   * (`npm run typecheck`) to src/**, and EXCLUDES test/ — so the
+   * Playwright config and the e2e spec are never seen by the main
+   * type-check. Playwright's own transpiler (used by both
+   * `npx playwright test` and `--list`) DOES compile them, but it
+   * tolerates type errors a strict tsc would reject, so a type
+   * regression in the e2e spec would only surface when the e2e job
+   * actually launches Electron (needs a display) — not in a fast,
+   * display-free gate.
+   *
+   * This project closes that drift: it type-checks ONLY the e2e
+   * artifacts (playwright.config.ts + test/e2e/**) under the SAME
+   * strict compiler options as src, so `npm run typecheck:e2e`
+   * fails fast on a spec type error WITHOUT a display. The e2e CI
+   * job runs it before launching Electron (see .github/workflows/
+   * e2e.yml). It changes NO production code and emits nothing
+   * (noEmit is inherited).
+   * ============================================================ */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    /* The e2e spec imports @playwright/test + playwright; pull in their
+       ambient types alongside node. (Base sets `types: ["node"]`, which
+       would otherwise suppress automatic type acquisition.) */
+    "types": ["node", "@playwright/test"]
+  },
+  /* Override the base include/exclude: check the e2e surface only. */
+  "include": ["playwright.config.ts", "test/e2e/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
