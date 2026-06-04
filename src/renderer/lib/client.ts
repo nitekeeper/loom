@@ -201,15 +201,18 @@ export function createStore(): LoomStore {
   const reduceAgent = (current: ViewModel, e: LoomEvent): ViewModel => {
     if (e.kind !== 'agent') return current;
     const a = e.agent;
-    const existing = current.agents.find((x) => x.name === a.name);
-    let agents: AgentView[];
-    if (existing) {
-      agents = current.agents.map((x) =>
-        x.name === a.name ? { ...x, status: a.status } : x,
-      );
-    } else {
-      agents = [...current.agents, { name: a.name, status: a.status, unread: 0 }];
+    // A DEREGISTERED ('gone') agent is REMOVED from the roster so deregistered
+    // names don't stack up and bury the chat over a long project. History is
+    // untouched — the message thread still shows that agent's past messages by
+    // sender name; the db keeps the row for name-collision accounting.
+    if (a.status === 'gone') {
+      if (!current.agents.some((x) => x.name === a.name)) return current;
+      return { ...current, agents: current.agents.filter((x) => x.name !== a.name) };
     }
+    const existing = current.agents.find((x) => x.name === a.name);
+    const agents: AgentView[] = existing
+      ? current.agents.map((x) => (x.name === a.name ? { ...x, status: a.status } : x))
+      : [...current.agents, { name: a.name, status: a.status, unread: 0 }];
     return { ...current, agents };
   };
 

@@ -82,11 +82,17 @@ class IpcWiringImpl implements IpcWiring {
     // O(agents × messages × receipts) nested scan — the latter froze window
     // open as history grew and, fired on the counter tick, stalled every agent.
     const unread = db.unreadCountsByRecipient();
-    return db.listAgents().map((a): AgentView => ({
-      name: a.name,
-      status: a.status,
-      unread: unread.get(a.name) ?? 0,
-    }));
+    // Deregistered ('gone') agents stay in the db (history + name-collision
+    // accounting) but are NOT surfaced to the roster: a long project cycles
+    // many agents and their names would otherwise stack up and bury the chat.
+    return db
+      .listAgents()
+      .filter((a) => a.status === 'active')
+      .map((a): AgentView => ({
+        name: a.name,
+        status: a.status,
+        unread: unread.get(a.name) ?? 0,
+      }));
   }
 
   private buildChannelViews(): ChannelView[] {
