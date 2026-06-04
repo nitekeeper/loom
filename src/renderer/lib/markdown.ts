@@ -127,6 +127,20 @@ const rawHtmlRule: MdRenderRule = (tokens, idx) => {
 md.renderer.rules.html_block = rawHtmlRule;
 md.renderer.rules.html_inline = rawHtmlRule;
 
+/* ---- tables: wrap in a horizontally-scrollable container ----
+   markdown-it (default preset) parses GFM tables and emits a bare <table>; a
+   wide one would overflow the centered .md measure. We wrap the table in a
+   fixed, inert <div class="md-table-wrap"> that the renderer.css scrolls. The
+   wrapper is a CONSTANT structural tag (no user bytes), and the <table> token
+   itself is still rendered by renderToken (keeping its data-srcline) — Law-1
+   safe; the cell CONTENT continues to flow through the escaped inline path. */
+const tableOpenRule: MdRenderRule = (tokens, idx, options, _env, self) =>
+  `<div class="md-table-wrap">${self.renderToken(tokens, idx, options)}`;
+md.renderer.rules.table_open = tableOpenRule;
+const tableCloseRule: MdRenderRule = (tokens, idx, options, _env, self) =>
+  `${self.renderToken(tokens, idx, options)}</div>`;
+md.renderer.rules.table_close = tableCloseRule;
+
 /* ---- source-line mapping (A11Y-SEARCH-01 / UX-SEARCH-01) ----
    A core rule that stamps each block-level OPENING token with a
    `data-srcline` attribute carrying its 1-based source line. markdown-it

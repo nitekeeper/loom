@@ -841,6 +841,14 @@ mark.search-hit {
 .md hr { border: 0; border-top: 1px solid var(--border); margin: 22px 0; }
 .md strong { font-weight: 700; }
 .md em { font-style: italic; }
+/* Tables (GFM). Bordered + header-emphasized + zebra rows; a wide table
+   scrolls horizontally inside the .md-table-wrap the markdown renderer injects,
+   instead of overflowing the centered measure. */
+.md .md-table-wrap { overflow-x: auto; margin: 0 0 14px; }
+.md table { border-collapse: collapse; width: auto; font-size: 13.5px; }
+.md th, .md td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; vertical-align: top; }
+.md thead th { background: var(--panel-2); font-weight: 700; white-space: nowrap; }
+.md tbody tr:nth-child(even) { background: color-mix(in oklab, var(--panel-2) 45%, transparent); }
 
 /* image preview */
 .imgwrap { padding: 22px; }
