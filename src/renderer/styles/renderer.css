@@ -14,7 +14,6 @@
    ============================================================ */
 
 :root {
-  --r-win: 12px;
   --font-ui: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
@@ -122,12 +121,14 @@ body {
     radial-gradient(1200px 700px at 18% -8%, color-mix(in oklab, var(--accent) 12%, transparent), transparent 60%),
     radial-gradient(1000px 800px at 110% 120%, color-mix(in oklab, var(--a-scout) 10%, transparent), transparent 55%),
     var(--bg);
-  display: grid;
-  place-items: center;
+  /* Every platform is now FRAMELESS (darwin hiddenInset; win/linux frame:false),
+     so the window fills the OS window edge-to-edge — .win is full-bleed (below),
+     not a centered floating card. block layout lets it take the full viewport. */
+  display: block;
   overflow: hidden;
 }
 
-#root { width: 100%; height: 100%; display: grid; place-items: center; }
+#root { width: 100%; height: 100%; display: block; }
 
 /* ============================================================
    Shared focus-visible affordance (FR-54, NFR-12 / WCAG 2.4.7)
@@ -167,18 +168,35 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
   .iconbtn, .viewer-close {
     border-color: ButtonText;
   }
+  /* The custom frameless caption controls (win/linux) lose their var-based
+     hover tints in forced-colors mode, so pin a perceivable boundary to the
+     system ButtonText and let the glyph (currentColor → ButtonText) carry the
+     meaning. The :focus-visible ring is already pinned to Highlight above.
+     The base .win-ctl already reserves a 1px TRANSPARENT border (below), so we
+     only swap the COLOR here — entering High Contrast reveals the boundary with
+     NO 2px layout shift of the three controls. */
+  .win-ctl {
+    border-color: ButtonText;
+  }
 }
 
 /* ============================================================
    Window shell
    ============================================================ */
+/* FRAMELESS on every platform: the window fills the OS window edge-to-edge
+   (full-bleed, square corners, no centering margin / shadow), so .win's first
+   row IS the window's top. On darwin the inset native traffic-lights overlay the
+   bar; on win/linux our custom .win-controls draw min/max/close. (The legacy
+   centered floating "card" — width:min(1440px,96vw) / rounded / shadowed — is
+   gone now that win/linux are also frameless; the old darwin-only full-bleed
+   override below is therefore redundant and removed.) */
 .win {
-  width: min(1440px, 96vw);
-  height: min(900px, 94vh);
+  width: 100vw;
+  height: 100vh;
   background: var(--win);
-  border: 1px solid var(--border);
-  border-radius: var(--r-win);
-  box-shadow: var(--shadow);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   display: grid;
   grid-template-rows: auto auto 1fr;
   overflow: hidden;
@@ -191,12 +209,29 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
   border-bottom: 1px solid var(--border-soft);
   display: grid;
   /* Two-column identity row (no faux window controls on the left): the
-     centered identity + the end-aligned "loom ." label. The leading empty
-     track keeps the identity visually centered without a dead gap. */
+     centered identity + the end-aligned "loom ." label / custom controls. The
+     leading empty track keeps the identity visually centered without a dead gap. */
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   padding: 0 14px;
   user-select: none;
+  /* The native frame is gone on every platform, so the bar is the window DRAG
+     region everywhere. Interactive children opt back OUT (no-drag) below so they
+     stay clickable; double-click here toggles maximize (TitleBar.tsx). */
+  -webkit-app-region: drag;
+}
+/* Drag region must not swallow the interactive controls / inputs — opt them out
+   (mirrors the darwin-only rule that previously did this; now needed on ALL
+   platforms since the whole bar drags everywhere). The identity <h1> is
+   deliberately NOT opted out: a non-interactive heading SHOULD stay a drag
+   region so the window can be grabbed by its title, and double-click-to-maximize
+   (TitleBar.tsx, exercised by window-controls.e2e.ts test 4) relies on it. */
+.titlebar a,
+.titlebar button,
+.titlebar input,
+.titlebar [role='button'],
+.titlebar .win-controls {
+  -webkit-app-region: no-drag;
 }
 /* .title-center is an <h1> (A11Y-TB-01): pin font-size/weight/line-height so
    the heading is VISUALLY identical to the former <div> (the UA h1 defaults —
@@ -207,11 +242,26 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
   font-size: 12.5px; font-weight: 400; line-height: 1; color: var(--text-dim);
   justify-self: center;
   grid-column: 2;
+  /* A11Y-TB-04: the heading sits in the `auto` middle track between two `1fr`
+     edge tracks, but the right track now also carries the .win-controls
+     (~102px). Without a min-width:0 the `auto` track refuses to shrink, so at a
+     narrow window width the centered heading could drift/collide toward the
+     controls. min-width:0 lets the track shrink and the root name truncate with
+     an ellipsis (the <b> below carries the actual overflow) instead of
+     overlapping the controls. */
+  min-width: 0;
 }
 /* .lock is an inline SVG (A11Y-TB-02): color drives the stroke via currentColor;
    the explicit size keeps the glyph crisp and vertically centered in the bar. */
 .title-center .lock { color: var(--text-faint); display: block; flex: none; }
-.title-center b { color: var(--text); font-weight: 600; }
+/* A11Y-TB-04: the root name truncates (rather than colliding with the controls)
+   when the window is dragged narrow — min-width:0 on the flex item lets it
+   shrink below its content width, and the ellipsis keeps the name readable. The
+   lock glyph (flex:none) and the "— Loom" suffix never truncate. */
+.title-center b {
+  color: var(--text); font-weight: 600;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .title-center .mono { font-family: var(--font-mono); }
 .title-right { justify-self: end; display: flex; align-items: center; gap: 8px; grid-column: 3; }
 
@@ -219,49 +269,87 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
    macOS-only title-bar integration (gated on <html data-platform>).
    The main BrowserWindow uses titleBarStyle 'hiddenInset' on darwin
    (see main.ts), so the NATIVE traffic lights float inset over THIS
-   custom bar. Two adjustments make them coexist cleanly:
-     1) Reserve ~78px of left padding so the centered identity never
-        sits under the inset lights.
-     2) Make the bar a window DRAG region so the user can move the
-        window by grabbing it (the native frame is hidden). Interactive
-        children opt back OUT with no-drag. Status-bar buttons live in a
-        separate row below and are unaffected.
-   On Windows/Linux the default native frame handles dragging, so NONE
-   of this applies (no inset padding, no drag region).
+   custom bar. The full-bleed .win + the bar's drag region + the no-drag
+   children are now the BASE behavior (every platform is frameless), so
+   only ONE darwin-specific adjustment remains:
+     - Reserve ~78px of left padding so the centered identity never sits
+       under the inset traffic-lights (UX-MAC-TRAFFICLIGHT-INSET-01).
+   win/linux get NO left inset — their custom controls sit on the RIGHT.
+   The native traffic-lights ARE the controls on darwin, so the custom
+   .win-controls group is hidden there (below).
    ------------------------------------------------------------ */
-/* macOS uses titleBarStyle 'hiddenInset' (main.ts): the NATIVE traffic lights
-   float INSET, measured from the WINDOW's top-left — NOT from the centered .win
-   panel. So on darwin the custom title bar MUST be flush to the window top-left,
-   or the inset lights land in the gradient margin ABOVE/LEFT of the rounded
-   panel (orphaned in dead space) while the bar's reserved 78px sits empty, and
-   the window's top edge is a non-draggable, non-frame zone
-   (UX-MAC-TRAFFICLIGHT-INSET-01 / UX-MAC-DRAG-REGION-02).
-
-   Fix: drop the centered-panel chrome on darwin only and let .win FILL the
-   window (full-bleed, square corners, no centering margin), so .win's first row
-   IS the window's top — the inset lights now overlay the 40px bar, the 78px
-   left padding clears them, and the drag region is exactly where the user grabs
-   to move a frameless mac window. Windows/Linux keep the centered rounded panel
-   unchanged (they draw a real native frame that handles dragging). */
-html[data-platform='darwin'] body { display: block; }
-html[data-platform='darwin'] #root { display: block; }
-html[data-platform='darwin'] .win {
-  width: 100vw;
-  height: 100vh;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
 html[data-platform='darwin'] .titlebar {
   padding-left: 78px;
-  -webkit-app-region: drag;
 }
-html[data-platform='darwin'] .titlebar a,
-html[data-platform='darwin'] .titlebar button,
-html[data-platform='darwin'] .titlebar input,
-html[data-platform='darwin'] .titlebar [role='button'],
-html[data-platform='darwin'] .titlebar [role='heading'] {
-  -webkit-app-region: no-drag;
+/* darwin draws the native inset traffic-lights — never our custom controls. */
+html[data-platform='darwin'] .win-controls { display: none; }
+
+/* ------------------------------------------------------------
+   Custom frameless window controls (win32/linux) — min / max-restore / close.
+   Compact caption buttons sized to the 40px bar, themed via the CSS variables
+   (dark/light parity), right-aligned after the "loom ." label. The CLOSE button
+   uses the codebase red (--a-critic) on hover/active per window-control
+   convention; min/max use a neutral panel tint. Visible :focus-visible ring
+   (inherited from the global rule) + a forced-colors fallback below.
+   ------------------------------------------------------------ */
+.win-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* Pull the controls toward the bar's right edge by partially cancelling the
+     titlebar's 14px right pad. We deliberately keep a few px of inset (not a full
+     -14px flush) so the rightmost (Close) button's keyboard :focus-visible ring
+     (2px outline + 2px offset, ~4px beyond the box) is NEVER clipped by .win's
+     `overflow: hidden` at the window's right edge — A11Y-WIN-FOCUS (WCAG 2.4.7 /
+     2.4.13 focus-appearance). -6px leaves the Close button's box ~8px from the
+     window edge, so the ~4px ring still clears the clip. Do NOT widen this to
+     -10px/-14px without re-checking the focus ring at an exact-fit width. */
+  margin-right: -6px;
+}
+.win-ctl {
+  width: 34px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  /* Reserve a 1px TRANSPARENT border so the forced-colors fallback (which only
+     swaps border-COLOR to ButtonText) reveals the boundary without growing the
+     button by 2px — no layout shift entering High Contrast mode. */
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.win-ctl svg { display: block; }
+.win-ctl:hover { background: var(--panel-3); color: var(--text); }
+.win-ctl:active { background: var(--panel-2); }
+/* Light-theme hover parity (A11Y-WIN-HOVER): in light mode --panel-3 (oklch
+   ~0.95) sits only ~0.015 lighter than the at-rest --titlebar (~0.965), so the
+   default hover face is barely perceptible. Dark mode reads clearly (--panel-3
+   0.255 over --titlebar 0.185). Give light mode a stronger hover by mixing the
+   surface DOWN toward --text, yielding a visibly darker face with a real
+   lightness delta from the bar — restoring dark/light hover parity. (The close
+   button keeps its own red danger hover below; this only targets the neutral
+   min/maximize controls, so :not(.win-ctl-close).) */
+[data-theme='light'] .win-ctl:not(.win-ctl-close):hover {
+  background: color-mix(in oklab, var(--titlebar) 86%, var(--text));
+}
+/* Close: neutral at rest, red danger on hover/active (window-control convention,
+   mirroring native OS close buttons). White glyph on the red fill.
+   A11Y-CLOSE-07 (SC 1.4.11 Non-text Contrast): pure --a-critic
+   (oklch(0.69 0.16 18) ≈ #ee6c75) gives white-on-red only ~2.99:1 — just under
+   the 3:1 threshold for the X glyph (a graphical object). Darken the hover fill
+   slightly (mix 8% black, matching the spirit of the already-darkened :active
+   rule) so white-on-red clears 3:1 in BOTH themes; the :active state darkens
+   further still. The danger meaning is also carried multi-channel (X SHAPE +
+   "Close window" label), so this only closes the non-text-contrast gap. */
+.win-ctl-close:hover {
+  background: color-mix(in oklab, var(--a-critic) 92%, black);
+  color: white;
+}
+.win-ctl-close:active {
+  background: color-mix(in oklab, var(--a-critic) 86%, black);
+  color: white;
 }
 
 /* ============================================================

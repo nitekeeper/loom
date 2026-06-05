@@ -9,11 +9,11 @@
  * ============================================================ */
 import { readFileSync, writeFileSync, statSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 // Same build-time-inlined app version the MCP server advertises (esbuild
 // inlines package.json), so the discovery file can never drift from a literal.
 import { version as LOOM_VERSION } from '../../package.json';
-import { DEFAULT_MAX_MESSAGES, MAX_BODY_LENGTH } from '../shared/types.js';
+import { DEFAULT_MAX_MESSAGES, IPC, MAX_BODY_LENGTH } from '../shared/types.js';
 import { safeExternalUrl } from '../shared/url.js';
 import { MCP_HOST, MCP_PATH } from './mcp.js';
 import { createDb } from './db.js';
@@ -466,9 +466,12 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
  *    title bar reserves left padding for the inset lights + becomes a drag
  *    region (see TitleBar.tsx / renderer.css, gated on the mac platform).
  *    trafficLightPosition nudges the lights to sit centered in the 40px bar.
- *  - win32 / linux (+ any other): keep the DEFAULT native frame — the OS
- *    frame draws the controls and handles window dragging. (Fully frameless /
- *    custom controls are intentionally out of scope.)
+ *  - win32 / linux (+ any other): FRAMELESS (`frame: false`) — the native OS
+ *    frame is removed and the renderer's custom title bar draws our own
+ *    minimize / maximize-restore / close controls + handles dragging (the
+ *    titlebar is a -webkit-app-region drag region; the controls are no-drag).
+ *    The window stays `resizable` (Electron keeps invisible edge resize regions
+ *    on Windows; Linux edge-resize is WM-dependent) and keeps backgroundColor.
  *  The hardened webPreferences are IDENTICAL on every platform. */
 function mainWindowChrome(): Electron.BrowserWindowConstructorOptions {
   if (process.platform === 'darwin') {
@@ -478,7 +481,41 @@ function mainWindowChrome(): Electron.BrowserWindowConstructorOptions {
       trafficLightPosition: { x: 14, y: 13 },
     };
   }
-  return {}; // win32 / linux / other: default native frame.
+  // win32 / linux / other: frameless — our custom TitleBar draws the controls.
+  return { frame: false };
+}
+
+/** Wire the three frameless window-control IPC handlers ONCE for the whole
+ *  process. Each handler resolves its target window from the SENDER
+ *  (BrowserWindow.fromWebContents) — NEVER a caller-supplied id — and takes NO
+ *  untrusted args, so a renderer can only act on its OWN window. The offscreen
+ *  capture window simply never calls these. Guarded by a module flag so a
+ *  second window (or app.activate re-create) cannot double-register a handler
+ *  (ipcMain.handle throws on a duplicate channel). */
+let windowControlsRegistered = false;
+function registerWindowControlHandlers(): void {
+  if (windowControlsRegistered) return;
+  windowControlsRegistered = true;
+  const senderWindow = (evt: Electron.IpcMainInvokeEvent): BrowserWindow | null =>
+    BrowserWindow.fromWebContents(evt.sender);
+  ipcMain.handle(IPC.WINDOW_MINIMIZE, (evt) => {
+    senderWindow(evt)?.minimize();
+  });
+  ipcMain.handle(IPC.WINDOW_TOGGLE_MAXIMIZE, (evt) => {
+    const win = senderWindow(evt);
+    if (!win) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+  });
+  ipcMain.handle(IPC.WINDOW_CLOSE, (evt) => {
+    senderWindow(evt)?.close();
+  });
+  // Pull-based authoritative maximize state. The renderer seeds its glyph from
+  // this on mount so it never depends on catching the fire-and-forget initial
+  // WINDOW_MAXIMIZED push (which is sent on did-finish-load — BEFORE the
+  // renderer's onMaximizeChange listener attaches, and Electron does not replay
+  // it). Sender-scoped, no untrusted args; false when the window is unresolved.
+  ipcMain.handle(IPC.WINDOW_IS_MAXIMIZED, (evt) => senderWindow(evt)?.isMaximized() ?? false);
 }
 
 /** Create the normal, visible application window. */
@@ -498,6 +535,26 @@ function createMainWindow(services: Services): BrowserWindow {
   // unchanged (indexUrl emits no query and persisted localStorage wins).
   void win.loadURL(indexUrl(parseLayoutHints(process.argv)));
   installNavGuard(win);
+  // Frameless custom chrome (win32/linux): the renderer draws its own
+  // min/max/close controls, so it needs the live maximize state to flip the
+  // maximize<->restore glyph. Register the (process-wide, once) sender-scoped
+  // control handlers and push the maximize state to THIS window on every
+  // toggle. The push is harmless on darwin (the renderer there renders no
+  // controls and ignores it).
+  registerWindowControlHandlers();
+  const pushMaximized = (): void => {
+    if (!win.isDestroyed()) win.webContents.send(IPC.WINDOW_MAXIMIZED, win.isMaximized());
+  };
+  win.on('maximize', pushMaximized);
+  win.on('unmaximize', pushMaximized);
+  // INITIAL SEED is pull-based, NOT this push. The renderer queries the
+  // authoritative state via the WINDOW_IS_MAXIMIZED invoke inside its mount
+  // effect (TitleBar WindowControls), which cannot be missed. We STILL emit one
+  // best-effort push on EACH did-finish-load (idempotent boolean) as a belt-and-
+  // braces backstop for the live toggle subscription — but correctness no longer
+  // DEPENDS on the renderer's onMaximizeChange listener being attached before
+  // this fires, so an in-app reload while maximized seeds correctly regardless.
+  win.webContents.on('did-finish-load', pushMaximized);
   services.ipc.attachRenderer((channel, payload) => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   });
