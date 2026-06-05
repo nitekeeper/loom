@@ -65,6 +65,38 @@ async function isMaximized(app: ElectronApplication): Promise<boolean> {
   });
 }
 
+/** The live BrowserWindow.getBounds() of the first window, read in MAIN. */
+async function getBounds(
+  app: ElectronApplication,
+): Promise<{ x: number; y: number; width: number; height: number }> {
+  return app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    const b = win ? win.getBounds() : { x: 0, y: 0, width: 0, height: 0 };
+    return { x: b.x, y: b.y, width: b.width, height: b.height };
+  });
+}
+
+/** Drag a Linux frameless edge/corner resize handle by (dx, dy) screen px using
+ *  real mouse moves with the button held — the same pointer path the handle's
+ *  pointerdown/move/up wiring services. Returns once the button is released. */
+async function dragHandle(
+  page: Page,
+  dirClass: string,
+  dx: number,
+  dy: number,
+): Promise<void> {
+  const handle = page.locator(`.win-resize .win-resize-${dirClass}`);
+  const box = await handle.boundingBox();
+  if (!box) throw new Error(`resize handle .win-resize-${dirClass} has no box`);
+  const startX = box.x + box.width / 2;
+  const startY = box.y + box.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  // Move in a few steps so the pointermove handler fires + rAF flushes setBounds.
+  await page.mouse.move(startX + dx, startY + dy, { steps: 8 });
+  await page.mouse.up();
+}
+
 /** The live BrowserWindow.isMinimized() of the first window, read in MAIN. */
 async function isMinimized(app: ElectronApplication): Promise<boolean> {
   return app.evaluate(({ BrowserWindow }) => {
@@ -213,6 +245,101 @@ test('5: a renderer reloaded while maximized seeds the Restore label (pull, not 
     await expect(page.getByRole('button', { name: 'Maximize' })).toHaveCount(0);
 
     // Restore in MAIN so teardown leaves a normal window.
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.unmaximize();
+    });
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * 6. Dragging the SE corner resize handle GROWS the window            *
+ * ------------------------------------------------------------------ *
+ * The Linux frameless edge-resize handles (WindowResizeHandles.tsx, rendered on
+ * the harness-default linux platform when NOT maximized) drive
+ * window.loom.windowControls.{getBounds,setBounds} through the sender-scoped
+ * WINDOW_GET_BOUNDS/WINDOW_SET_BOUNDS handlers + the PURE computeResizeBounds
+ * geometry. Dragging the SE corner out by (+dx, +dy) must GROW width AND height
+ * (the top-left corner stays put). If the handle render gate, the IPC wiring, or
+ * the geometry regressed, the bounds won't grow.
+ */
+test('6: dragging the SE corner handle grows the window width + height', async () => {
+  const dir = makeFixtureDir();
+  const { app, page } = await launch(dir);
+  try {
+    const before = await getBounds(app);
+    await dragHandle(page, 'se', 120, 90);
+    await expect
+      .poll(async () => (await getBounds(app)).width, { timeout: 10_000 })
+      .toBeGreaterThan(before.width);
+    const after = await getBounds(app);
+    expect(after.height).toBeGreaterThan(before.height);
+    // The top-left corner (the anchor for an SE drag) must not move.
+    expect(after.x).toBe(before.x);
+    expect(after.y).toBe(before.y);
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * 7. Dragging the W edge handle moves x while the right edge stays put *
+ * ------------------------------------------------------------------ *
+ * A west-edge drag MOVES x and shrinks width by the same amount, so the RIGHT
+ * edge (x + width) is fixed (the move-and-shrink rule pinned in the unit suite).
+ * Dragging the W handle inward (+dx, toward the window center) must increase x
+ * while keeping x + width ≈ the original right edge.
+ */
+test('7: dragging the W edge handle moves x and keeps the right edge fixed', async () => {
+  const dir = makeFixtureDir();
+  const { app, page } = await launch(dir);
+  try {
+    const before = await getBounds(app);
+    const rightBefore = before.x + before.width;
+    await dragHandle(page, 'w', 80, 0);
+    await expect
+      .poll(async () => (await getBounds(app)).x, { timeout: 10_000 })
+      .toBeGreaterThan(before.x);
+    const after = await getBounds(app);
+    // The right edge stays put (within a 2px tolerance for HiDPI/step rounding).
+    expect(Math.abs(after.x + after.width - rightBefore)).toBeLessThanOrEqual(2);
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * 8. The TOP handles (n/ne/nw) are inset BELOW the 40px titlebar so   *
+ *    they never overlap the min/max/close controls or the drag region *
+ * ------------------------------------------------------------------ *
+ * Regression guard for the handle-over-controls overlap: the n edge and the
+ * ne/nw corners are CSS-inset to top:40px (the bottom of the titlebar). If a
+ * future change drops them back to top:0 they would shadow the top sliver of the
+ * close/maximize buttons and steal the titlebar's drag/double-click region. Read
+ * each top handle's bounding box and assert it starts at or below the 40px bar;
+ * also assert the titlebar controls remain hittable (a click on Maximize toggles
+ * isMaximized()), proving the handles don't intercept the control's pointerdown.
+ */
+test('8: the n/ne/nw handles start below the 40px titlebar and never shadow the controls', async () => {
+  const dir = makeFixtureDir();
+  const { app, page } = await launch(dir);
+  try {
+    for (const dirClass of ['n', 'ne', 'nw']) {
+      const box = await page.locator(`.win-resize .win-resize-${dirClass}`).boundingBox();
+      if (!box) throw new Error(`top handle .win-resize-${dirClass} has no box`);
+      // The titlebar is 40px tall; the top handles must not intrude into it (a
+      // small sub-px tolerance for fractional DPR rounding).
+      expect(box.y).toBeGreaterThanOrEqual(39.5);
+    }
+    // The controls are still fully clickable (no handle intercepts the pointerdown):
+    // clicking Maximize through the area the ne corner used to cover must toggle.
+    expect(await isMaximized(app)).toBe(false);
+    await page.getByRole('button', { name: 'Maximize' }).click();
+    await expect.poll(() => isMaximized(app), { timeout: 10_000 }).toBe(true);
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.unmaximize();
     });

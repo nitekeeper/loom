@@ -305,6 +305,14 @@ html[data-platform='darwin'] .win-controls { display: none; }
      window edge, so the ~4px ring still clears the clip. Do NOT widen this to
      -10px/-14px without re-checking the focus ring at an exact-fit width. */
   margin-right: -6px;
+  /* Lift the min/max/close cluster into its OWN stacking context ABOVE the Linux
+     edge-resize handle group (.win-resize, z-index:40) so a pointerdown anywhere
+     on the controls actuates the button, never a resize handle. The top handles
+     are already inset below the 40px bar, so this is belt-and-braces for the 6px
+     window padding above/beside the controls; together they fully resolve the
+     handle-over-controls overlap the reviewers flagged. */
+  position: relative;
+  z-index: 45;
 }
 .win-ctl {
   width: 34px;
@@ -494,6 +502,73 @@ html[data-platform='darwin'] .win-controls { display: none; }
    live resize stays crisp and pointerless (FR-54 / reduced-motion safe). */
 .win.dragging { user-select: none; cursor: col-resize; }
 .win.dragging .body { transition: none; }
+
+/* ============================================================
+   Linux frameless edge-resize handles (WindowResizeHandles.tsx)
+   ------------------------------------------------------------
+   A frameless window (frame:false, win32/linux) loses the native resize
+   border. Windows keeps invisible edge regions so resizing still works; Linux
+   often does NOT, so we draw our OWN 8 invisible handles on the window edges +
+   corners. The component renders these ONLY on linux + when NOT maximized; this
+   CSS adds a belt-and-braces gate (below) so they can never show elsewhere.
+
+   The handles are inert transparent divs (Law 1: no content sink) with the
+   correct *-resize cursor + -webkit-app-region:no-drag (so they aren't swallowed
+   by any drag region). Edge thickness ~6px; corner hit area ~12px. Corners are
+   layered ABOVE the edges (z-index) so a corner drag wins in the overlap. The
+   whole group sits ABOVE the pane splitters (z-index:5) but BELOW the modal
+   backdrops (.sc-backdrop z-index:50).
+
+   TITLEBAR vs HANDLES (the top 40px): the top edge/corner handles (n/ne/nw) are
+   INSET to start at top:40px — the bottom of the titlebar — so the full 40px bar
+   stays the window DRAG + double-click-maximize region and the top handles never
+   steal pointer events from the min/max/close buttons. As a second line of
+   defense the .win-controls cluster is also lifted into its own stacking context
+   ABOVE the handle group (z-index:45 > 40, see the .win-controls rule), so even
+   the 6px window padding above/left of the controls cannot shadow a button.
+   ============================================================ */
+.win-resize {
+  position: absolute;
+  inset: 0;
+  /* The container itself is click-through; only the handle children below catch
+     pointer events in the thin border zone, so the content/panes are untouched
+     except in the ~6-12px edge band. */
+  pointer-events: none;
+  z-index: 40;
+}
+.win-resize-handle {
+  position: absolute;
+  pointer-events: auto;
+  /* Opt out of any -webkit-app-region drag region (the titlebar) so a handle
+     that overlaps it still resizes instead of dragging the window. */
+  -webkit-app-region: no-drag;
+  background: transparent;
+  touch-action: none;
+}
+/* Edges (6px thick) — corners (below) trim their ends via their own placement.
+   The n edge starts at top:40px (below the titlebar) so the bar keeps its full
+   drag/double-click region; the e/w side edges start at top:40px too so they
+   never overlap the titlebar controls' top sliver. The s edge spans the bottom. */
+.win-resize-n { top: 40px; left: 0; right: 0; height: 6px; cursor: ns-resize; }
+.win-resize-s { bottom: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; }
+.win-resize-e { top: 40px; right: 0; bottom: 0; width: 6px; cursor: ew-resize; }
+.win-resize-w { top: 40px; left: 0; bottom: 0; width: 6px; cursor: ew-resize; }
+/* Corners (12px square) — layered above the edges so a corner drag wins. The TOP
+   corners (ne/nw) are inset to top:40px so they sit under the titlebar and never
+   shadow the close/maximize buttons; the BOTTOM corners (se/sw) sit on the bottom
+   edge as usual. */
+.win-resize-handle.win-resize-ne,
+.win-resize-handle.win-resize-nw,
+.win-resize-handle.win-resize-se,
+.win-resize-handle.win-resize-sw { width: 12px; height: 12px; z-index: 1; }
+.win-resize-ne { top: 40px; right: 0; cursor: nesw-resize; }
+.win-resize-nw { top: 40px; left: 0; cursor: nwse-resize; }
+.win-resize-se { bottom: 0; right: 0; cursor: nwse-resize; }
+.win-resize-sw { bottom: 0; left: 0; cursor: nesw-resize; }
+/* Belt-and-braces: the component already gates render to linux + not-maximized,
+   but ALSO hide the handles via CSS on any non-linux platform so they can never
+   appear on win32/darwin even if a render gate ever regressed. */
+html:not([data-platform='linux']) .win-resize { display: none; }
 
 .pane { display: flex; flex-direction: column; min-height: 0; }
 .pane.explorer { border-right: 1px solid var(--border-soft); background: var(--panel); }

@@ -32,6 +32,7 @@ import type {
   SearchResults,
   SessionCounters,
   Theme,
+  WindowBounds,
 } from '../shared/types.js';
 
 /* ------------------------------------------------------------------ */
@@ -56,6 +57,8 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.WINDOW_TOGGLE_MAXIMIZE,
   IPC.WINDOW_CLOSE,
   IPC.WINDOW_IS_MAXIMIZED,
+  IPC.WINDOW_GET_BOUNDS,
+  IPC.WINDOW_SET_BOUNDS,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
@@ -176,6 +179,17 @@ export function createBridge(): LoomBridge {
       },
       onMaximizeChange(cb: (maximized: boolean) => void): () => void {
         return subscribe<boolean>(IPC.WINDOW_MAXIMIZED, cb);
+      },
+      getBounds(): Promise<WindowBounds> {
+        // Read the SENDER window's live screen rectangle at resize-drag start.
+        // No args; main resolves the target from the sender (own window only).
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_GET_BOUNDS));
+      },
+      setBounds(b: WindowBounds): Promise<void> {
+        // The bounds are forwarded as-is; main is the authority — it RE-VALIDATES
+        // x/y/width/height as finite integers and CLAMPS the size before applying
+        // (never trust the renderer; mirror of openExternal/copyToClipboard).
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_SET_BOUNDS), b);
       },
     },
   };

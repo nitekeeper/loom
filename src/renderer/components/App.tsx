@@ -28,6 +28,7 @@ import { decideEscapeClose } from '../lib/closefile.js';
 import { eventToCombo, isReserved, resolveBindings } from '../lib/keybindings.js';
 import type { CommandId } from '../lib/keybindings.js';
 import { TitleBar } from './TitleBar.js';
+import { WindowResizeHandles } from './WindowResizeHandles.js';
 import { StatusBar } from './StatusBar.js';
 import { Explorer } from './Explorer.js';
 import { SearchView } from './SearchView.js';
@@ -1185,6 +1186,11 @@ export function App(): JSX.Element {
 
   return (
     <div className="win">
+      {/* Linux frameless edge-resize handles — 8 invisible border affordances so
+          a Linux user can free-resize a window with no native resize border. The
+          component itself gates to linux + not-maximized (renders null
+          otherwise); the loading shell above needs none. */}
+      <WindowResizeHandles />
       <TitleBar rootName={vm.rootName} />
       {/* Visually-hidden polite live region: announces pane collapse/expand to
           assistive tech regardless of focus location (SC 4.1.3 / A11Y-CHAT-02).

@@ -9,11 +9,12 @@
  * ============================================================ */
 import { readFileSync, writeFileSync, statSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron';
 // Same build-time-inlined app version the MCP server advertises (esbuild
 // inlines package.json), so the discovery file can never drift from a literal.
 import { version as LOOM_VERSION } from '../../package.json';
 import { DEFAULT_MAX_MESSAGES, IPC, MAX_BODY_LENGTH } from '../shared/types.js';
+import type { WindowBounds } from '../shared/types.js';
 import { safeExternalUrl } from '../shared/url.js';
 import { MCP_HOST, MCP_PATH } from './mcp.js';
 import { createDb } from './db.js';
@@ -31,6 +32,24 @@ import { createWsFeed, wsEnabled } from './ws.js';
  *  WSLg-composited hidden window; see runCapture + applyWslSwitches). */
 const CAPTURE_WIDTH = 1440;
 const CAPTURE_HEIGHT = 900;
+
+/** Minimum main-window size (DIP). A hard floor enforced BOTH by the OS via
+ *  win.setMinimumSize (so the native/WM resize and the Linux custom edge handles
+ *  can never shrink below it) AND re-applied when clamping a WINDOW_SET_BOUNDS
+ *  payload. Sized so the 3-pane layout stays usable. NOTE the three pane minimums
+ *  (Explorer 180 + Chat 300 + Viewer 320 — App.tsx) sum to 800, which is ABOVE
+ *  this 720 floor: that is intentional. At 720 the user keeps the VIEWER + ONE
+ *  side pane at-or-above its min (e.g. Explorer 180 + Viewer 540, or Chat 300 +
+ *  Viewer 420); with BOTH side panes open the Viewer would be squeezed below its
+ *  320 (the layout floors each side pane and lets the Viewer absorb the deficit
+ *  under `overflow:hidden`, so nothing inverts or overflows — the user just
+ *  collapses one side pane to restore the Viewer's room). 480 keeps the 40px
+ *  titlebar + status bar + content readable. */
+const MIN_W = 720;
+const MIN_H = 480;
+/** Sane upper bound for a WINDOW_SET_BOUNDS width/height (DIP). Guards against a
+ *  malformed/hostile renderer payload requesting an absurd surface. */
+const MAX_WINDOW_DIM = 100_000;
 /** Settle delay after did-finish-load before we capture. */
 const CAPTURE_SETTLE_MS = 1500;
 /** Hard ceiling: a capture that hangs must still exit the process. */
@@ -516,6 +535,108 @@ function registerWindowControlHandlers(): void {
   // renderer's onMaximizeChange listener attaches, and Electron does not replay
   // it). Sender-scoped, no untrusted args; false when the window is unresolved.
   ipcMain.handle(IPC.WINDOW_IS_MAXIMIZED, (evt) => senderWindow(evt)?.isMaximized() ?? false);
+  // Live screen rectangle of the SENDER window — the Linux frameless edge-resize
+  // handles read this at drag start to anchor the geometry. Sender-scoped, no
+  // untrusted args; a zero rect when the window is unresolved (the renderer
+  // guards against a degenerate start anyway).
+  ipcMain.handle(IPC.WINDOW_GET_BOUNDS, (evt): WindowBounds => {
+    const win = senderWindow(evt);
+    if (!win || win.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
+    const b = win.getBounds();
+    return { x: b.x, y: b.y, width: b.width, height: b.height };
+  });
+  // Apply a resize during a Linux frameless edge-drag. RIGOROUSLY validates the
+  // caller-supplied payload (the ONLY WINDOW_* handler that takes args, so it is
+  // the only one that must distrust input): every field must be a FINITE integer
+  // (rejects NaN/Infinity/non-number/missing), and width/height are CLAMPED to
+  // [MIN_W..MAX] / [MIN_H..MAX] so a hostile renderer can neither collapse the
+  // window below the usable floor nor request an absurd surface. Sender-scoped
+  // (own window only); an invalid payload or an unresolved/destroyed sender is a
+  // silent no-op (never trust the renderer; mirror of OPEN_EXTERNAL/clipboard).
+  ipcMain.handle(IPC.WINDOW_SET_BOUNDS, (evt, payload: unknown) => {
+    const win = senderWindow(evt);
+    if (!win || win.isDestroyed()) return;
+    const bounds = validateBounds(payload);
+    if (bounds === null) return;
+    win.setBounds(bounds);
+  });
+}
+
+/** True for a finite integer (rejects NaN, ±Infinity, non-numbers, floats). */
+function isFiniteInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v);
+}
+
+/** Clamp `v` into [lo, hi]. */
+function clampDim(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+/** Soft-clamp the window ORIGIN (x/y) so a malformed/hostile WINDOW_SET_BOUNDS
+ *  payload can never park the frameless window unreachably offscreen (a lost-
+ *  window soft-DoS — there is no native titlebar to drag it back). The allowed
+ *  envelope is the bounding box of every display's workArea, GROWN by the window
+ *  size minus a small on-screen MARGIN, so:
+ *   - legitimate multi-monitor negative coords and overscan still pass, and
+ *   - the window may hang mostly off an edge, but at least a MARGIN-wide strip
+ *     always stays on some display (grabbable / reachable via the WM).
+ *  Falls back to the ±MAX_WINDOW_DIM bound if the display list can't be read
+ *  (e.g. screen not ready), so x/y are never left fully unbounded. */
+const OFFSCREEN_MARGIN = 48;
+function clampOrigin(x: number, y: number, width: number, height: number): { x: number; y: number } {
+  let left = -MAX_WINDOW_DIM;
+  let top = -MAX_WINDOW_DIM;
+  let right = MAX_WINDOW_DIM;
+  let bottom = MAX_WINDOW_DIM;
+  try {
+    const displays = screen.getAllDisplays();
+    if (displays.length > 0) {
+      // Union bounding box of all displays' work areas.
+      let uL = Infinity;
+      let uT = Infinity;
+      let uR = -Infinity;
+      let uB = -Infinity;
+      for (const d of displays) {
+        const w = d.workArea;
+        uL = Math.min(uL, w.x);
+        uT = Math.min(uT, w.y);
+        uR = Math.max(uR, w.x + w.width);
+        uB = Math.max(uB, w.y + w.height);
+      }
+      // Allow the window to slide off until only MARGIN px remain on a display:
+      //   x in [uL - width + MARGIN, uR - MARGIN]
+      //   y in [uT - height + MARGIN, uB - MARGIN]
+      left = uL - width + OFFSCREEN_MARGIN;
+      top = uT - height + OFFSCREEN_MARGIN;
+      right = uR - OFFSCREEN_MARGIN;
+      bottom = uB - OFFSCREEN_MARGIN;
+      // Degenerate guard: a window wider/taller than the whole desktop would make
+      // left > right; keep the origin pinned at the union's top-left in that case.
+      if (left > right) left = right = uL;
+      if (top > bottom) top = bottom = uT;
+    }
+  } catch {
+    /* screen unavailable (not ready): keep the generous ±MAX_WINDOW_DIM bound. */
+  }
+  return { x: clampDim(x, left, right), y: clampDim(y, top, bottom) };
+}
+
+/** Validate + CLAMP a caller-supplied WINDOW_SET_BOUNDS payload, or null when it
+ *  is not a well-formed bounds object. x/y must be finite integers (they may be
+ *  negative — multi-monitor layouts put windows at negative screen coords); the
+ *  SIZE is clamped to [MIN..MAX] and the ORIGIN is soft-clamped to keep a
+ *  grabbable strip on a display (clampOrigin), so a renderer can drive neither a
+ *  degenerate size NOR an unrecoverable-offscreen position. */
+function validateBounds(payload: unknown): WindowBounds | null {
+  if (payload === null || typeof payload !== 'object') return null;
+  const { x, y, width, height } = payload as Record<string, unknown>;
+  if (!isFiniteInt(x) || !isFiniteInt(y) || !isFiniteInt(width) || !isFiniteInt(height)) {
+    return null;
+  }
+  const w = clampDim(width, MIN_W, MAX_WINDOW_DIM);
+  const h = clampDim(height, MIN_H, MAX_WINDOW_DIM);
+  const origin = clampOrigin(x, y, w, h);
+  return { x: origin.x, y: origin.y, width: w, height: h };
 }
 
 /** Create the normal, visible application window. */
@@ -528,6 +649,11 @@ function createMainWindow(services: Services): BrowserWindow {
     ...mainWindowChrome(),
     webPreferences: hardenedWebPreferences(),
   });
+  // Hard minimum size (DIP), enforced by the OS/Electron regardless of platform.
+  // On Linux the frameless window has no native resize border, so we also draw
+  // custom edge handles (WindowResizeHandles) that drive WINDOW_SET_BOUNDS — both
+  // honor this same floor, so the 3-pane layout can never be shrunk into collapse.
+  win.setMinimumSize(MIN_W, MIN_H);
   // The interactive window honors the layout/boot hints (pane sizes/collapse +
   // the .md reading-column width mode) from argv, mirroring the capture path's
   // forwarding. The renderer reads these from location.search regardless of
