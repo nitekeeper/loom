@@ -41,12 +41,13 @@ export interface StatusBarProps {
   chatToggleRef?: Ref<HTMLButtonElement>;
   onTogglePause(): void;
   onToggleTheme(): void;
-  /** Open the Keyboard Shortcuts panel (also bound to Ctrl/Cmd+Comma). */
-  onOpenShortcuts(): void;
+  /** Open the Settings panel. (The Keyboard Shortcuts panel has its own fixed
+   *  Ctrl/Cmd+Comma opener and is reachable from inside Settings.) */
+  onOpenSettings(): void;
   /** Ref to the gear <button> so App can restore focus when the panel closes. */
-  shortcutsButtonRef?: Ref<HTMLButtonElement>;
-  /** True while the Shortcuts panel is open (drives the gear's expanded cue). */
-  shortcutsOpen: boolean;
+  settingsButtonRef?: Ref<HTMLButtonElement>;
+  /** True while the Settings panel is open (drives the gear's expanded cue). */
+  settingsOpen: boolean;
 }
 
 /** Sidebar/panel glyph: a framed rectangle with a highlighted side column,
@@ -165,8 +166,8 @@ function MoonIcon(): JSX.Element {
 }
 
 /** Gear/settings glyph — the conventional "settings" affordance, here the
- *  entry point to the Keyboard Shortcuts panel. Decorative; the accessible
- *  name comes from the button's aria-label. */
+ *  entry point to the Settings panel. Decorative; the accessible name comes
+ *  from the button's aria-label. */
 function GearIcon(): JSX.Element {
   return (
     <svg
@@ -221,9 +222,9 @@ export function StatusBar({
   chatToggleRef,
   onTogglePause,
   onToggleTheme,
-  onOpenShortcuts,
-  shortcutsButtonRef,
-  shortcutsOpen,
+  onOpenSettings,
+  settingsButtonRef,
+  settingsOpen,
 }: StatusBarProps): JSX.Element {
   const paused = liveState === 'PAUSED';
   // Pill carries the .paused look for both PAUSED and CAUGHT_UP (steady dot);
@@ -342,22 +343,21 @@ export function StatusBar({
 
       <span className="stat-sep" aria-hidden="true" />
 
-      {/* Keyboard Shortcuts opener — a settings gear. aria-haspopup="dialog"
-          signals it opens a modal; aria-expanded mirrors the panel's open
-          state. Also reachable via the fixed Ctrl/Cmd+Comma (noted in the
-          tooltip). The ref lets App return focus here when the panel closes. */}
+      {/* Settings opener — a settings gear. aria-haspopup="dialog" signals it
+          opens a modal; aria-expanded mirrors the Settings panel's open state.
+          The ref lets App return focus here when the panel closes. The Keyboard
+          Shortcuts panel keeps its OWN fixed Ctrl/Cmd+Comma opener (and is also
+          reachable from inside Settings), so this gear carries NO
+          aria-keyshortcuts — that combo opens Shortcuts, not Settings. */}
       <button
         type="button"
         className="iconbtn"
-        ref={shortcutsButtonRef}
-        onClick={onOpenShortcuts}
+        ref={settingsButtonRef}
+        onClick={onOpenSettings}
         aria-haspopup="dialog"
-        aria-expanded={shortcutsOpen}
-        aria-label="Keyboard shortcuts"
-        // Expose the fixed opener combo to AT (discoverable beyond the
-        // hover-only tooltip; complements the in-panel reference row, UX-04).
-        aria-keyshortcuts="Control+, Meta+,"
-        title="Keyboard shortcuts (Ctrl/Cmd+,)"
+        aria-expanded={settingsOpen}
+        aria-label="Settings"
+        title="Settings"
       >
         <GearIcon />
       </button>

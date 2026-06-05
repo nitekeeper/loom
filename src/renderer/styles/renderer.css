@@ -797,7 +797,9 @@ mark.search-hit {
    the .fold-all-btn affordances (focus ring + hover) with a leading icon. It
    sits before the render-tag (margin-left:auto), so it stays left-adjacent to
    the breadcrumb while the badge + close push to the right edge. The transient
-   .copied state flips to a confirming accent/green so the success is visible. */
+   .copied state flips to a confirming accent/green so the success is visible.
+   The reading-column WIDTH control now lives in the Settings panel (.set-radio),
+   not the Viewer head. */
 .copy-rendered-btn {
   display: inline-flex; align-items: center; gap: 6px;
   font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
@@ -821,7 +823,8 @@ mark.search-hit {
 /* markdown view */
 /* A11Y-SEARCH-01 / UX-SEARCH-01: a passthrough wrapper so the reveal logic has a
    stable scroll/flash host. It must not constrain width — the inner .md keeps
-   its centered 760px measure (margin-inline:auto) below. */
+   its centered 792px measure (margin-inline:auto) below, or grows to full width
+   when the Settings "Reading width" control selects it (data-mdwidth="full"). */
 .md-scroll { display: block; }
 /* The block revealed by opening a search result in a RENDERED markdown file:
    the SAME brief accent flash that decays as the SOURCE (CodeView) reveal, so a
@@ -839,13 +842,31 @@ mark.search-hit {
   box-shadow: -3px 0 0 0 var(--accent);
   scroll-margin: 80px;
 }
-/* UX-CHAT-02: center the 760px reading column in the available Viewer width so
-   that when the Chat (and/or Explorer) is collapsed and the Viewer grows wide,
-   the document does not hard-anchor left with a large empty band on the right.
-   margin-inline:auto keeps the comfortable measure while balancing the layout;
-   at the normal 3-pane width (Viewer barely wider than 760px) the centering is
-   negligible, so it does not regress the default reading position. */
-.md { padding: 20px 30px 40px; max-width: 760px; margin-inline: auto; font-size: 14.5px; line-height: 1.72; color: var(--text); }
+/* UX-CHAT-02: center the predefined reading column (792px measure) in the
+   available Viewer width so that when the Chat (and/or Explorer) is collapsed
+   and the Viewer grows wide, the document does not hard-anchor left with a large
+   empty band on the right. margin-inline:auto keeps the comfortable measure
+   while balancing the layout; at the normal 3-pane width the centering is
+   negligible, so it does not regress the default reading position. The
+   Settings panel's "Reading width" control (RENDERED .md applies regardless of
+   file) can switch this column to full width — see the data-mdwidth="full"
+   override below, which drops max-width but KEEPS the side padding so text never
+   glues to the pane edges.
+   NOTE on 792px: at the DEFAULT 3-pane layout (1440px window, Explorer 248px +
+   Chat 400px) the Viewer pane is ~792px — i.e. the same as the predefined
+   measure — so the column is capped at the pane and the fit↔full choice has no
+   visible effect UNTIL the user frees horizontal space (collapse/narrow Chat or
+   Explorer). 792px is the predefined "Fixed" measure (a comfortably wide reader
+   is the default once space is available); Full width then drops the cap on
+   demand. */
+.md { padding: 20px 30px 40px; max-width: 792px; margin-inline: auto; font-size: 14.5px; line-height: 1.72; color: var(--text); }
+/* Full-width reading column: a later, higher-specificity rule (the attribute
+   selector adds specificity over the bare .md above) drops the predefined
+   measure so the column fills the Viewer. margin-inline:auto is now a no-op
+   (the element already spans the pane); the padding stays for edge breathing
+   room. SOURCE/code view never carries data-mdwidth="full" content and is
+   unaffected. */
+.viewer[data-mdwidth="full"] .md { max-width: none; }
 .md h1 { font-size: 26px; font-weight: 700; letter-spacing: -.02em; margin: 6px 0 14px; }
 .md h2 { font-size: 19px; font-weight: 700; letter-spacing: -.01em; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
 .md h3 { font-size: 15.5px; font-weight: 700; margin: 20px 0 8px; }
@@ -1343,6 +1364,96 @@ mark.search-hit {
 }
 .sc-reset-q { font-size: 12px; color: var(--text); }
 
+/* ============================================================
+   Settings panel body (FR-54 / WCAG 2.2 AA)
+   ------------------------------------------------------------
+   Reuses the shared modal shell (.sc-backdrop / .sc-dialog / .sc-head /
+   .sc-foot) for visual + a11y parity with the Keyboard Shortcuts panel; only
+   the BODY is bespoke. Three grouped sections (Viewer / Appearance / Keyboard
+   Shortcuts), each a labelled block with one real control. The "Reading width"
+   control is a native radio group so the platform handles roving focus +
+   arrow-key selection for free; native radios paint the accent via
+   accent-color, themed in dark + light. Every control reuses the shared
+   :focus-visible ring; the dialog's sc-pop is pinned by the global
+   prefers-reduced-motion override.
+   ============================================================ */
+.set-body {
+  padding: 8px 16px 12px;
+  overflow-y: auto;
+  flex: 1;
+}
+.set-section {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-soft);
+}
+.set-section:last-child { border-bottom: 0; }
+.set-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 0 8px;
+}
+/* The radio group is a real <fieldset>; strip its native chrome so it reads as
+   a labelled cluster, not a framed box. The <legend> carries the accessible
+   group name ("Reading width"). */
+.set-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+.set-legend {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+  padding: 0;
+}
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+/* A label wrapping a native radio + its visible text — the whole control is the
+   click target, and the text IS the radio's accessible name. */
+.set-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.set-radio input[type="radio"] {
+  /* Native radio, themed to the accent in both palettes. */
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+}
+.set-radio input[type="radio"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* A right-aligned hint (e.g. the fixed Ctrl/Cmd+, combo) sits opposite the
+   section's control, mirroring the Shortcuts chip layout. */
+.set-section-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.set-hint {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
 /* Forced-colors: keep the dialog boundary + controls perceivable. */
 @media (forced-colors: active) {
   .sc-dialog { border-color: CanvasText; }
@@ -1353,6 +1464,9 @@ mark.search-hit {
   .sc-rec { color: Highlight; }
   .sc-rec-dot { background: Highlight; }
   .sc-btn-danger { border: 1px solid ButtonText; }
+  /* Settings sections keep a visible divider; native radios already adopt
+     system colors in forced-colors mode, so they need no override. */
+  .set-section { border-bottom-color: CanvasText; }
 }
 
 @media (max-width: 1080px) {

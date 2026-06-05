@@ -55,6 +55,10 @@ interface CaptureArgs {
   /** Capture-only flag to start a SOURCE file with all top-level folds
    *  collapsed (so a headless screenshot can show the folded state). */
   foldAll: boolean;
+  /** Capture-only RENDERED-markdown reading-column width mode override
+   *  ('full' | 'fit'), or null to keep localStorage/default. Lets a headless
+   *  screenshot render either the predefined 792px measure or full width. */
+  mdWidth: string | null;
   /** Capture-only flag to open the Keyboard Shortcuts panel on boot (so a
    *  headless screenshot can prove the modal). */
   shortcuts: boolean;
@@ -96,6 +100,7 @@ function parseCapture(argv: string[]): CaptureArgs | null {
     explorerHidden: argv.includes('--explorer-hidden'),
     chatHidden: argv.includes('--chat-hidden'),
     foldAll: argv.includes('--fold-all'),
+    mdWidth: flagValue(argv, '--md-width'),
     shortcuts: argv.includes('--shortcuts'),
     search: flagValue(argv, '--search'),
     searchOpen: argv.includes('--search-open'),
@@ -103,11 +108,52 @@ function parseCapture(argv: string[]): CaptureArgs | null {
   };
 }
 
-/** Build the file:// URL for index.html, carrying nav selectors as a query. */
-function indexUrl(capture: CaptureArgs | null): string {
+/** The layout/boot hints that may be carried into the index.html query on the
+ *  NORMAL (interactive) launch path too — NOT just under --capture. These are
+ *  the read-only, idempotent pane/measure overrides the renderer already reads
+ *  from `location.search` (App.tsx readChat / readExplorer hints, Viewer's
+ *  parseMdWidthHint). They are a structural SUBSET of CaptureArgs, so the full
+ *  capture struct also satisfies this shape and flows through indexUrl
+ *  unchanged. Capture-staging behaviors (--select/--search/--shortcuts/
+ *  --fold-all/--replay) are deliberately NOT in this set: they seed/act on
+ *  content and are reserved for the capture path. */
+interface LayoutHints {
+  /** Chat-pane width override (px), or null. */
+  chatw: string | null;
+  /** Explorer-pane width override (px), or null. */
+  explorerw: string | null;
+  /** Start with the Explorer collapsed. */
+  explorerHidden: boolean;
+  /** Start with the Chat collapsed. */
+  chatHidden: boolean;
+  /** RENDERED-markdown reading-column width mode ('full'|'fit'), or null. */
+  mdWidth: string | null;
+}
+
+/** Parse ONLY the layout/boot hints (LayoutHints) from argv, with NO --capture
+ *  requirement. Lets the interactive launch path honor the same pane/measure
+ *  overrides the capture path does (and the renderer already reads) — e.g.
+ *  `Loom <folder> --md-width full --chat-hidden`. Mirrors parseCapture's reads
+ *  for these fields exactly (incl. the legacy `--chatw` alias). */
+function parseLayoutHints(argv: string[]): LayoutHints {
+  return {
+    chatw: flagValue(argv, '--chat-w') ?? flagValue(argv, '--chatw'),
+    explorerw: flagValue(argv, '--explorer-w'),
+    explorerHidden: argv.includes('--explorer-hidden'),
+    chatHidden: argv.includes('--chat-hidden'),
+    mdWidth: flagValue(argv, '--md-width'),
+  };
+}
+
+/** Build the file:// URL for index.html, carrying nav/layout hints as a query.
+ *  Accepts the full CaptureArgs (capture path) OR the LayoutHints subset (the
+ *  normal launch path) OR null (no hints). Each field is forwarded only when
+ *  present, so the LayoutHints subset simply omits the capture-only params. */
+function indexUrl(hints: (CaptureArgs | LayoutHints) | null): string {
   const file = path.join(__dirname, 'index.html');
   const base = `file://${file}`;
-  if (!capture) return base;
+  if (!hints) return base;
+  const capture: Partial<CaptureArgs> = hints;
   const params = new URLSearchParams();
   if (capture.select) params.set('select', capture.select);
   if (capture.channel) params.set('channel', capture.channel);
@@ -118,6 +164,11 @@ function indexUrl(capture: CaptureArgs | null): string {
   if (capture.explorerHidden) params.set('explorerhidden', '1');
   if (capture.chatHidden) params.set('chathidden', '1');
   if (capture.foldAll) params.set('foldall', '1');
+  // Only the closed 'full'|'fit' set is forwarded; the renderer (parseMdWidthHint)
+  // also re-validates, so an unknown value is ignored either way.
+  if (capture.mdWidth === 'full' || capture.mdWidth === 'fit') {
+    params.set('mdwidth', capture.mdWidth);
+  }
   if (capture.shortcuts) params.set('shortcuts', '1');
   // URLSearchParams.set url-encodes the value, so a query with spaces/special
   // chars is carried safely (the renderer decodes it via URLSearchParams.get).
@@ -440,7 +491,12 @@ function createMainWindow(services: Services): BrowserWindow {
     ...mainWindowChrome(),
     webPreferences: hardenedWebPreferences(),
   });
-  void win.loadURL(indexUrl(null));
+  // The interactive window honors the layout/boot hints (pane sizes/collapse +
+  // the .md reading-column width mode) from argv, mirroring the capture path's
+  // forwarding. The renderer reads these from location.search regardless of
+  // launch path; absent flags forward nothing, so a plain `Loom <folder>` is
+  // unchanged (indexUrl emits no query and persisted localStorage wins).
+  void win.loadURL(indexUrl(parseLayoutHints(process.argv)));
   installNavGuard(win);
   services.ipc.attachRenderer((channel, payload) => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
@@ -658,6 +714,7 @@ const VALUE_FLAGS = new Set([
   '--chat-w',
   '--chatw',
   '--explorer-w',
+  '--md-width',
   '--search',
 ]);
 

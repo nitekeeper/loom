@@ -34,6 +34,9 @@ import { SearchView } from './SearchView.js';
 import { Viewer } from './Viewer.js';
 import { Chat } from './Chat.js';
 import { ShortcutsPanel } from './ShortcutsPanel.js';
+import { SettingsPanel } from './SettingsPanel.js';
+import { readInitialMdWidth, persistMdWidth } from '../lib/md-width.js';
+import type { WidthMode } from '../lib/md-width.js';
 import { installGlobalAnchorGuard } from '../lib/anchor-guard.js';
 
 /** Subscribe a React component to the store via useSyncExternalStore. */
@@ -638,14 +641,34 @@ export function App(): JSX.Element {
   // not a status message. Both the Explorer and Chat toggles write here.
   const [statusMessage, setStatusMessage] = useState('');
 
-  // Keyboard Shortcuts panel open state. App owns it; the StatusBar gear, the
-  // fixed Ctrl/Cmd+Comma opener, and the `?shortcuts` capture hint all set it.
+  // Keyboard Shortcuts panel open state. App owns it; the fixed Ctrl/Cmd+Comma
+  // opener, the Settings "Open Keyboard Shortcuts" button, and the `?shortcuts`
+  // capture hint all set it.
   const [shortcutsOpen, setShortcutsOpen] = useState<boolean>(() =>
     readShortcutsHint(),
   );
   // The control that opened the panel — focus returns here on close (SC 2.4.3).
   const shortcutsOpenerRef = useRef<HTMLElement | null>(null);
+  // The StatusBar gear button — opens Settings (NOT Shortcuts) and is the focus
+  // fallback when either panel closes.
   const gearButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Settings panel open state (mirrors the shortcuts pattern). App owns it; the
+  // StatusBar gear opens it. No capture hint — Settings is gear-only.
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  // The control that opened Settings — focus returns here on close (SC 2.4.3).
+  const settingsOpenerRef = useRef<HTMLElement | null>(null);
+
+  // RENDERED-markdown reading-column width mode, LIFTED to App so the Settings
+  // panel (a sibling of the Viewer) can drive it. Lazy init reads the capture
+  // hint > localStorage > default ('fit') once, pre-paint (md-width.ts). The
+  // setter persists across files + restarts; the Viewer applies it as
+  // data-mdwidth on its <section>.
+  const [mdWidth, setMdWidth] = useState<WidthMode>(() => readInitialMdWidth());
+  const setMdWidthMode = useCallback((mode: WidthMode): void => {
+    setMdWidth(mode);
+    persistMdWidth(mode);
+  }, []);
 
   // Fold-command signal lifted to the Viewer/CodeView (foldAll / unfoldAll
   // shortcuts). An incrementing nonce so each press fires exactly once; the
@@ -790,6 +813,20 @@ export function App(): JSX.Element {
   const closeShortcuts = useCallback((): void => {
     setShortcutsOpen(false);
     const opener = shortcutsOpenerRef.current ?? gearButtonRef.current;
+    requestAnimationFrame(() => opener?.focus());
+  }, []);
+
+  // Open Settings, remembering the opener so focus returns to it on close
+  // (mirrors openShortcuts). The gear passes itself.
+  const openSettings = useCallback((opener: HTMLElement | null): void => {
+    settingsOpenerRef.current = opener;
+    setSettingsOpen(true);
+  }, []);
+  // Close Settings and restore focus to the opener (fall back to the gear),
+  // mirroring closeShortcuts.
+  const closeSettings = useCallback((): void => {
+    setSettingsOpen(false);
+    const opener = settingsOpenerRef.current ?? gearButtonRef.current;
     requestAnimationFrame(() => opener?.focus());
   }, []);
 
@@ -1043,8 +1080,9 @@ export function App(): JSX.Element {
    * ============================================================ */
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      // Suspend entirely while the Shortcuts panel owns the keyboard.
-      if (shortcutsOpen) return;
+      // Suspend entirely while a modal panel (Shortcuts or Settings) owns the
+      // keyboard — each handles its own keys (focus trap + Escape-to-close).
+      if (shortcutsOpen || settingsOpen) return;
 
       const combo = eventToCombo(e);
 
@@ -1123,6 +1161,7 @@ export function App(): JSX.Element {
     return () => document.removeEventListener('keydown', onKey);
   }, [
     shortcutsOpen,
+    settingsOpen,
     vm?.keybindings,
     vm?.theme,
     store,
@@ -1168,9 +1207,9 @@ export function App(): JSX.Element {
         onToggleTheme={() =>
           void store.setTheme(vm.theme === 'dark' ? 'light' : 'dark')
         }
-        onOpenShortcuts={() => openShortcuts(gearButtonRef.current)}
-        shortcutsButtonRef={gearButtonRef}
-        shortcutsOpen={shortcutsOpen}
+        onOpenSettings={() => openSettings(gearButtonRef.current)}
+        settingsButtonRef={gearButtonRef}
+        settingsOpen={settingsOpen}
       />
       <div
         ref={bodyRef}
@@ -1258,6 +1297,7 @@ export function App(): JSX.Element {
           foldCommand={foldCommand}
           copyCommand={copyCommand}
           targetLine={targetLine}
+          mdWidth={mdWidth}
         />
         {!explorerHidden && (
           <Splitter
@@ -1295,6 +1335,27 @@ export function App(): JSX.Element {
           />
         )}
       </div>
+      {settingsOpen && (
+        <SettingsPanel
+          mdWidth={mdWidth}
+          onMdWidthChange={setMdWidthMode}
+          theme={vm.theme}
+          // The radio's VALUE drives the store directly (not a binary toggle),
+          // so the controlled checked state stays authoritative and the control
+          // scales past two themes. (SettingsPanel's selectTheme already guards
+          // a same-value re-click, so this only fires on a real change.)
+          onSelectTheme={(next) => void store.setTheme(next)}
+          // Hand off to the Keyboard Shortcuts panel: close Settings first
+          // (without stealing focus back to the gear), then open Shortcuts with
+          // the gear as the opener so closing Shortcuts returns focus there.
+          onOpenShortcuts={() => {
+            setSettingsOpen(false);
+            settingsOpenerRef.current = null;
+            openShortcuts(gearButtonRef.current);
+          }}
+          onClose={closeSettings}
+        />
+      )}
       {shortcutsOpen && (
         <ShortcutsPanel
           bindings={vm.keybindings}
