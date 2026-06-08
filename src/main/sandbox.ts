@@ -59,6 +59,10 @@ export interface Sandbox {
  *  Larger text files are reported via metadata only (text=null). */
 const MAX_TEXT_BYTES = 2 * 1024 * 1024;
 
+/** Hard ceiling on image/SVG bytes encoded as base64 for the Viewer (10 MB).
+ *  Larger images are reported via metadata only (imageData=null). */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
 /** Heavy VCS / dependency / internal dirs the SEARCH walk skips (so content
  *  search doesn't crawl git's binary object store or dep trees). The explorer
  *  TREE does NOT skip these — it shows everything (see classifyEntries). */
@@ -89,6 +93,24 @@ function humanSize(bytes: number): string {
   const unit = units[unitIdx] ?? 'KB';
   const rounded = value >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
   return `${rounded} ${unit}`;
+}
+
+/** Map a filename's extension to its MIME type for base64 data URIs. */
+function mimeFor(name: string): string {
+  const ext = extensionOf(name);
+  const map: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    ico: 'image/x-icon',
+    avif: 'image/avif',
+    tiff: 'image/tiff',
+    svg: 'image/svg+xml',
+  };
+  return map[ext] ?? 'application/octet-stream';
 }
 
 /** Human-readable type label from extension + kind (e.g. "PNG image"). */
@@ -500,7 +522,17 @@ export function createSandbox(rootArg: string): Sandbox {
       }
     }
 
-    return { path: relPosix, dispatch, meta, text };
+    let imageData: string | null = null;
+    if ((dispatch.kind === 'image' || dispatch.kind === 'svg') && st.size <= MAX_IMAGE_BYTES) {
+      try {
+        const buf = readFileSync(abs);
+        imageData = `data:${mimeFor(name)};base64,${buf.toString('base64')}`;
+      } catch {
+        imageData = null;
+      }
+    }
+
+    return { path: relPosix, dispatch, meta, text, imageData };
   }
 
   return {
