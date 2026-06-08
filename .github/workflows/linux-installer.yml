@@ -53,6 +53,7 @@ jobs:
         run: npx electron-builder --config electron-builder.config.cjs --linux deb --publish never
 
       - name: Upload installer artifacts
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: loom-linux-installer
