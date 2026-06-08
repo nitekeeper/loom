@@ -688,35 +688,44 @@ function createMainWindow(services: Services): BrowserWindow {
   // fullscreen. Override with the correct display geometry after the WM fires,
   // and restore the pre-state bounds on exit.
   if (process.platform === 'linux') {
+    // setBounds() is deferred via setImmediate on all four handlers to avoid
+    // racing with the WM's synchronous maximize/fullscreen operation. Calling
+    // setBounds() synchronously inside the maximize event conflicts with some
+    // WMs (fluxbox, Mutter) and crashes the renderer context; the deferred
+    // call runs on the next event-loop tick after the WM has settled.
     win.on('maximize', () => {
-      if (win.isDestroyed()) return;
-      win.setBounds(linuxMaximizeBounds(win.getBounds(), screen.getAllDisplays()));
+      setImmediate(() => {
+        if (win.isDestroyed()) return;
+        win.setBounds(linuxMaximizeBounds(win.getBounds(), screen.getAllDisplays()));
+      });
     });
     win.on('unmaximize', () => {
-      if (win.isDestroyed()) return;
       const prev = preMaximizeBoundsMap.get(win);
-      if (prev) {
-        win.setBounds(prev);
-        preMaximizeBoundsMap.delete(win);
-      }
+      if (prev) preMaximizeBoundsMap.delete(win);
+      setImmediate(() => {
+        if (win.isDestroyed()) return;
+        if (prev) win.setBounds(prev);
+      });
     });
     win.on('enter-full-screen', () => {
-      if (win.isDestroyed()) return;
       const cur = win.getBounds();
       preFullscreenBoundsMap.set(win, cur);
       // For true fullscreen, target the full display bounds (not workArea) so
       // the window reaches the physical screen edges including the taskbar area.
       const displays = screen.getAllDisplays();
       const nearest = linuxMaximizeBounds(cur, displays.map(d => ({ bounds: d.bounds, workArea: d.bounds })));
-      win.setBounds(nearest);
+      setImmediate(() => {
+        if (win.isDestroyed()) return;
+        win.setBounds(nearest);
+      });
     });
     win.on('leave-full-screen', () => {
-      if (win.isDestroyed()) return;
       const prev = preFullscreenBoundsMap.get(win);
-      if (prev) {
-        win.setBounds(prev);
-        preFullscreenBoundsMap.delete(win);
-      }
+      if (prev) preFullscreenBoundsMap.delete(win);
+      setImmediate(() => {
+        if (win.isDestroyed()) return;
+        if (prev) win.setBounds(prev);
+      });
     });
   }
   const pushMaximized = (): void => {
