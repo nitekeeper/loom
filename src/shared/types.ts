@@ -304,6 +304,9 @@ export interface FileContent {
   meta: FileMeta;
   /** UTF-8 text for md/code/svg/html; null for image/binary (never decoded). */
   text: string | null;
+  /** Base64 data URI (e.g. `data:image/png;base64,…`) when the file is a
+   *  raster image or SVG and fits within the 10 MB image size cap; null otherwise. */
+  imageData?: string | null;
 }
 
 /* ------------------------------------------------------------------ */
