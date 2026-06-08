@@ -33,3 +33,23 @@ export function linuxMaximizeBounds(
 
   return nearest.workArea;
 }
+
+export interface WslMaximizeDecision {
+  bounds: Rect;
+  isMaximized: boolean;
+}
+
+/** Compute the target bounds and resulting maximize state for a manual
+ *  toggle on WSL2/WSLg — bypasses win.maximize() entirely to avoid Mutter's
+ *  frame-decoration offset applied to frameless windows on maximize. */
+export function computeWslToggleMaximize(
+  isManualMaximized: boolean,
+  currentBounds: Rect,
+  preMaxBounds: Rect | null,
+  displays: ReadonlyArray<DisplayInfo>,
+): WslMaximizeDecision {
+  if (isManualMaximized) {
+    return { bounds: preMaxBounds ?? currentBounds, isMaximized: false };
+  }
+  return { bounds: linuxMaximizeBounds(currentBounds, displays), isMaximized: true };
+}

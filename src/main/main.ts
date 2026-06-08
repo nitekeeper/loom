@@ -27,7 +27,7 @@ import { createWatcher } from './watcher.js';
 import { createConfigStore } from './config.js';
 import { createIpcWiring } from './ipc.js';
 import { createWsFeed, wsEnabled } from './ws.js';
-import { linuxMaximizeBounds } from './linux-maximize.js';
+import { linuxMaximizeBounds, computeWslToggleMaximize } from './linux-maximize.js';
 
 /** Capture window dimensions (FR — headless screenshots via a normal,
  *  WSLg-composited hidden window; see runCapture + applyWslSwitches). */
@@ -63,6 +63,10 @@ const CAPTURE_TIMEOUT_MS = 30_000;
 // bounds on enter-full-screen (before correction) for leave-full-screen restore.
 const preMaximizeBoundsMap = new WeakMap<BrowserWindow, Electron.Rectangle>();
 const preFullscreenBoundsMap = new WeakMap<BrowserWindow, Electron.Rectangle>();
+// WSL2 manual maximize state — tracks whether the window is in our "fake
+// maximized" state (setBounds to workArea without calling win.maximize()).
+// win.isMaximized() always returns false on WSL2 path, so we maintain this.
+const manualMaximizedMap = new WeakMap<BrowserWindow, boolean>();
 
 /** Parsed --capture invocation. */
 interface CaptureArgs {
@@ -229,6 +233,14 @@ function isWsl(): boolean {
   } catch {
     return false;
   }
+}
+
+/** True when the window is either WM-maximized (non-WSL) or manually
+ *  maximized via setBounds (WSL2, where win.maximize() causes a Mutter
+ *  frame-offset bug — see computeWslToggleMaximize). */
+function isEffectivelyMaximized(win: BrowserWindow): boolean {
+  if (isWsl()) return manualMaximizedMap.get(win) ?? false;
+  return win.isMaximized();
 }
 
 /** Apply WSL/WSLg-required GPU + OS-sandbox switches (must run pre-ready).
@@ -532,6 +544,20 @@ function registerWindowControlHandlers(): void {
   ipcMain.handle(IPC.WINDOW_TOGGLE_MAXIMIZE, (evt) => {
     const win = senderWindow(evt);
     if (!win) return;
+    if (isWsl()) {
+      // WSL2/WSLg: bypass win.maximize() — Mutter applies a ~1cm decoration
+      // offset to frameless windows on maximize that overrides any post-maximize
+      // setBounds() correction. Use manual setBounds to workArea instead.
+      const cur = win.getBounds();
+      const isManual = manualMaximizedMap.get(win) ?? false;
+      const decision = computeWslToggleMaximize(isManual, cur, preMaximizeBoundsMap.get(win) ?? null, screen.getAllDisplays());
+      if (!isManual) preMaximizeBoundsMap.set(win, cur);
+      else preMaximizeBoundsMap.delete(win);
+      manualMaximizedMap.set(win, decision.isMaximized);
+      win.setBounds(decision.bounds);
+      if (!win.isDestroyed()) win.webContents.send(IPC.WINDOW_MAXIMIZED, decision.isMaximized);
+      return;
+    }
     if (win.isMaximized()) {
       win.unmaximize();
     } else {
@@ -549,7 +575,11 @@ function registerWindowControlHandlers(): void {
   // WINDOW_MAXIMIZED push (which is sent on did-finish-load — BEFORE the
   // renderer's onMaximizeChange listener attaches, and Electron does not replay
   // it). Sender-scoped, no untrusted args; false when the window is unresolved.
-  ipcMain.handle(IPC.WINDOW_IS_MAXIMIZED, (evt) => senderWindow(evt)?.isMaximized() ?? false);
+  ipcMain.handle(IPC.WINDOW_IS_MAXIMIZED, (evt) => {
+    const win = senderWindow(evt);
+    if (!win) return false;
+    return isEffectivelyMaximized(win);
+  });
   // Live screen rectangle of the SENDER window — the Linux frameless edge-resize
   // handles read this at drag start to anchor the geometry. Sender-scoped, no
   // untrusted args; a zero rect when the window is unresolved (the renderer
@@ -687,12 +717,12 @@ function createMainWindow(services: Services): BrowserWindow {
   // frame-decoration offset to frameless windows when maximizing or entering
   // fullscreen. Override with the correct display geometry after the WM fires,
   // and restore the pre-state bounds on exit.
-  if (process.platform === 'linux') {
-    // setBounds() is deferred via setImmediate on all four handlers to avoid
-    // racing with the WM's synchronous maximize/fullscreen operation. Calling
-    // setBounds() synchronously inside the maximize event conflicts with some
-    // WMs (fluxbox, Mutter) and crashes the renderer context; the deferred
-    // call runs on the next event-loop tick after the WM has settled.
+  if (process.platform === 'linux' && !isWsl()) {
+    // Non-WSL Linux: setBounds() is deferred via setImmediate on all four
+    // handlers to avoid racing with the WM's synchronous maximize/fullscreen
+    // operation. On WSL2 this block is skipped — the WINDOW_TOGGLE_MAXIMIZE
+    // IPC handler uses manual setBounds (computeWslToggleMaximize) instead of
+    // win.maximize(), so these WM events never fire on WSLg.
     win.on('maximize', () => {
       setImmediate(() => {
         if (win.isDestroyed()) return;
@@ -710,8 +740,6 @@ function createMainWindow(services: Services): BrowserWindow {
     win.on('enter-full-screen', () => {
       const cur = win.getBounds();
       preFullscreenBoundsMap.set(win, cur);
-      // For true fullscreen, target the full display bounds (not workArea) so
-      // the window reaches the physical screen edges including the taskbar area.
       const displays = screen.getAllDisplays();
       const nearest = linuxMaximizeBounds(cur, displays.map(d => ({ bounds: d.bounds, workArea: d.bounds })));
       setImmediate(() => {
@@ -729,7 +757,7 @@ function createMainWindow(services: Services): BrowserWindow {
     });
   }
   const pushMaximized = (): void => {
-    if (!win.isDestroyed()) win.webContents.send(IPC.WINDOW_MAXIMIZED, win.isMaximized());
+    if (!win.isDestroyed()) win.webContents.send(IPC.WINDOW_MAXIMIZED, isEffectivelyMaximized(win));
   };
   win.on('maximize', pushMaximized);
   win.on('unmaximize', pushMaximized);

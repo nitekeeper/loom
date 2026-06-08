@@ -53,3 +53,26 @@ test('LINUX-MAXIMIZE: empty display list returns winBounds unchanged', async () 
   const result = linuxMaximizeBounds(win, []);
   assert.deepEqual(result, { x: 100, y: 100, width: 800, height: 600 });
 });
+
+test('WSL2-MAXIMIZE-REGRESSION: manual maximize targets workArea (bypass WM)', async () => {
+  const { computeWslToggleMaximize } = await kit();
+  const win = { x: 50, y: 50, width: 800, height: 600 };
+  const displays = [
+    { bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } },
+  ];
+  const decision = computeWslToggleMaximize(false, win, null, displays);
+  assert.equal(decision.isMaximized, true);
+  assert.deepEqual(decision.bounds, { x: 0, y: 0, width: 1920, height: 1040 });
+});
+
+test('WSL2-MAXIMIZE-REGRESSION: manual restore returns pre-maximize bounds', async () => {
+  const { computeWslToggleMaximize } = await kit();
+  const preBounds = { x: 100, y: 80, width: 1200, height: 800 };
+  const currentBounds = { x: 0, y: 0, width: 1920, height: 1040 };
+  const displays = [
+    { bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } },
+  ];
+  const decision = computeWslToggleMaximize(true, currentBounds, preBounds, displays);
+  assert.equal(decision.isMaximized, false);
+  assert.deepEqual(decision.bounds, preBounds);
+});

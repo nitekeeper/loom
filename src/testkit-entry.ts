@@ -199,5 +199,5 @@ export type {
 // Re-exported so the node --test suite can pin the display-selection logic
 // (nearest display by center distance, workArea return, empty-list fallback)
 // without Electron.
-export { linuxMaximizeBounds } from './main/linux-maximize.js';
-export type { DisplayInfo } from './main/linux-maximize.js';
+export { linuxMaximizeBounds, computeWslToggleMaximize } from './main/linux-maximize.js';
+export type { DisplayInfo, WslMaximizeDecision } from './main/linux-maximize.js';
