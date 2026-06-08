@@ -101,7 +101,9 @@ jobs:
 
       - name: Upload Playwright report
         # Always upload so a failing run still yields the HTML report for triage.
+        # continue-on-error: storage quota hits must not fail a green test run.
         if: ${{ !cancelled() }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
