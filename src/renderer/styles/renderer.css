@@ -1136,6 +1136,19 @@ mark.search-hit {
 }
 .imgprev .ph { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
 
+.img-preview {
+  max-width: 100%;
+  max-height: 70vh;
+  display: block;
+  margin: auto;
+  object-fit: contain;
+}
+
+.svg-preview-wrap {
+  padding: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
 /* no-preview placeholder */
 .noprev { display: grid; place-items: center; height: 100%; padding: 30px; }
 .noprev-card {

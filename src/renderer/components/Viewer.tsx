@@ -836,7 +836,7 @@ function ViewerContent({
       />
     );
   } else if (renderState === 'SOURCE') {
-    body = (
+    const codeView = (
       <CodeView
         code={text ?? ''}
         path={path}
@@ -846,9 +846,28 @@ function ViewerContent({
         targetLine={targetLine}
       />
     );
+    body = dispatch.kind === 'svg' && content.imageData ? (
+      <>
+        <div className="svg-preview-wrap">
+          <img
+            src={content.imageData}
+            alt={`${fileName} preview`}
+            className="img-preview"
+          />
+        </div>
+        {codeView}
+      </>
+    ) : codeView;
   } else if (renderState === 'PREVIEW') {
-    // Safe placeholder — NEVER a decoded image (FR-10, AC-19).
-    body = (
+    body = content.imageData ? (
+      <div className="imgwrap">
+        <img
+          src={content.imageData}
+          alt={fileName}
+          className="img-preview"
+        />
+      </div>
+    ) : (
       <div className="imgwrap">
         <div className="imgprev" role="img" aria-label={`${meta.type} safe preview placeholder`}>
           <span className="ph">{meta.type} · safe preview</span>
