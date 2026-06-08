@@ -534,12 +534,48 @@ export const IPC = {
    *  (mirror of OPEN_EXTERNAL: never trust the renderer). Invalid input is a
    *  silent no-op. */
   COPY_TO_CLIPBOARD: 'loom:clipboard:write',
+  /** invoke(): void — minimize the SENDER's window (custom frameless chrome on
+   *  win32/linux). Takes NO args; main resolves the target window from the
+   *  sender (never a caller-supplied id) so the renderer cannot act on another
+   *  window. A no-op no-arg control: widens no privilege. */
+  WINDOW_MINIMIZE: 'loom:window:minimize',
+  /** invoke(): void — toggle maximize/restore on the SENDER's window. main
+   *  reads the live isMaximized() and flips it; takes NO args. */
+  WINDOW_TOGGLE_MAXIMIZE: 'loom:window:toggle-maximize',
+  /** invoke(): void — close the SENDER's window. Takes NO args; resolves the
+   *  target from the sender. */
+  WINDOW_CLOSE: 'loom:window:close',
+  /** invoke(): boolean — the AUTHORITATIVE maximize state of the SENDER's
+   *  window, read synchronously in main via isMaximized(). Takes NO args;
+   *  resolves the target from the sender. The renderer calls this ONCE on mount
+   *  to seed its maximize<->restore glyph deterministically, closing the
+   *  fire-and-forget did-finish-load push race (the WINDOW_MAXIMIZED push is
+   *  sent before the renderer's listener attaches, and Electron does not replay
+   *  it). Returns false when the sender window can't be resolved. */
+  WINDOW_IS_MAXIMIZED: 'loom:window:is-maximized',
+  /** invoke(): WindowBounds — the SENDER window's live screen rectangle (DIP),
+   *  read in main via win.getBounds(). Takes NO args; resolves the target from
+   *  the sender. The Linux frameless edge-resize handles read this at drag start
+   *  to anchor the geometry (computeResizeBounds). Returns a zero rect when the
+   *  sender window can't be resolved. */
+  WINDOW_GET_BOUNDS: 'loom:window:get-bounds',
+  /** invoke(b: WindowBounds): void — set the SENDER window's screen rectangle
+   *  (DIP) during a Linux frameless edge-resize drag. Resolves the target from
+   *  the sender (never a caller-supplied id). main RIGOROUSLY VALIDATES the
+   *  payload (x/y/width/height all finite integers) and CLAMPS width/height to
+   *  the window minimum + a sane maximum before applying; invalid input or an
+   *  unresolved sender is a silent no-op (never trust the renderer). */
+  WINDOW_SET_BOUNDS: 'loom:window:set-bounds',
   /** send(LoomEvent) main->renderer — the live event feed. */
   EVENT: 'loom:event',
   /** send(SessionCounters) main->renderer — telemetry tick. */
   COUNTERS: 'loom:counters',
   /** send(LiveState) main->renderer — live state machine changed. */
   LIVE_STATE: 'loom:live:state',
+  /** send(maximized: boolean) main->renderer — the window's maximize state
+   *  changed (or the initial state at load). Drives the custom title-bar
+   *  maximize<->restore glyph + aria-label flip (frameless win32/linux). */
+  WINDOW_MAXIMIZED: 'loom:window:maximized',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -584,6 +620,52 @@ export interface LoomBridge {
   onCounters(handler: (c: SessionCounters) => void): () => void;
   /** Subscribe to live-state-machine changes. Returns an unsubscribe fn. */
   onLiveState(handler: (s: LiveState) => void): () => void;
+  /** Frameless custom-chrome window controls (win32/linux; on darwin the native
+   *  inset traffic-lights are used instead and the renderer renders no controls).
+   *  Each action takes NO untrusted input and acts ONLY on the SENDER window —
+   *  main resolves the target from the IPC sender, never a caller-supplied id.
+   *  Named "windowControls" (not "window") to avoid confusion with the global. */
+  windowControls: WindowControls;
+}
+
+/** A window's screen rectangle (DIP), mirroring Electron's BrowserWindow
+ *  getBounds()/setBounds() shape. Carried over WINDOW_GET_BOUNDS /
+ *  WINDOW_SET_BOUNDS for the Linux frameless edge-resize handles. The pure
+ *  resize geometry (renderer/lib/window-resize.ts) operates on this same shape. */
+export interface WindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The minimal frameless-chrome control surface (see LoomBridge.windowControls).
+ *  Mirrors the three no-arg WINDOW_* invokes + the WINDOW_MAXIMIZED push, plus
+ *  the get/set-bounds pair the Linux edge-resize handles drive. */
+export interface WindowControls {
+  /** Minimize the SENDER's window. */
+  minimize(): Promise<void>;
+  /** Toggle maximize/restore on the SENDER's window. */
+  toggleMaximize(): Promise<void>;
+  /** Close the SENDER's window. */
+  close(): Promise<void>;
+  /** Read the AUTHORITATIVE maximize state of the SENDER's window on demand.
+   *  The renderer calls this once on mount to SEED its glyph deterministically
+   *  instead of relying on the fire-and-forget initial WINDOW_MAXIMIZED push
+   *  (which can race past a not-yet-attached listener — e.g. an in-app reload
+   *  while maximized). Resolves false when the sender window is unresolved. */
+  isMaximized(): Promise<boolean>;
+  /** Subscribe to maximize-state changes (and the initial state on load) so the
+   *  title bar can flip its maximize<->restore glyph + label. Returns an
+   *  unsubscribe fn; the renderer never sees the IpcRendererEvent. */
+  onMaximizeChange(cb: (maximized: boolean) => void): () => void;
+  /** Read the SENDER window's live screen rectangle (DIP). The Linux frameless
+   *  edge-resize handles call this at drag start to anchor the geometry. */
+  getBounds(): Promise<WindowBounds>;
+  /** Set the SENDER window's screen rectangle (DIP) during a Linux frameless
+   *  edge-resize drag. main re-validates + clamps the payload; an invalid shape
+   *  or an unresolved sender window is a silent no-op. */
+  setBounds(b: WindowBounds): Promise<void>;
 }
 
 declare global {

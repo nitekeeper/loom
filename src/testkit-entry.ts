@@ -130,6 +130,28 @@ export { insertNode, removeNode, makeNode } from './renderer/lib/filetree.js';
 export { decideEscapeClose } from './renderer/lib/closefile.js';
 export type { EscapeCloseAction, EscapeCloseFacts } from './renderer/lib/closefile.js';
 
+// Pure RENDERED-markdown width-mode resolution (the Viewer's 792px "fit" vs
+// "full" reading column). Re-exported so the node --test suite can pin the
+// hint parse, stored coercion, and the hint>stored>default precedence without
+// a DOM/localStorage. The impure wrappers (readInitialMdWidth/persistMdWidth)
+// stay in the renderer; only the PURE decision fns + type + key surface here.
+export {
+  parseMdWidthHint,
+  coerceStoredMdWidth,
+  resolveInitialMdWidth,
+  MD_WIDTH_KEY,
+  MD_WIDTH_DEFAULT,
+} from './renderer/lib/md-width.js';
+export type { WidthMode } from './renderer/lib/md-width.js';
+
+// Pure frameless edge-resize geometry (Linux-only handles). Re-exported so the
+// node --test suite can pin the resize math (grow/move-shrink per edge, the
+// min-clamp that keeps the opposite edge fixed without inverting, corner
+// combining, integer rounding) without a DOM. The impure drag wiring stays in
+// WindowResizeHandles.tsx; only the pure decision fn + types surface here.
+export { computeResizeBounds } from './renderer/lib/window-resize.js';
+export type { WindowBounds, ResizeDir, MinSize } from './renderer/lib/window-resize.js';
+
 // Pure keyboard-shortcut core (FR-54). Re-exported so the acceptance suite can
 // pin combo normalization (modifier order, meta==ctrl, Escape, shift+letter),
 // override resolution, conflict detection, and binding validation without a
@@ -172,3 +194,10 @@ export type {
   FileKind,
   RenderState,
 } from './shared/types.js';
+
+// Pure Linux maximize bounds correction (frameless WM frame-offset fix).
+// Re-exported so the node --test suite can pin the display-selection logic
+// (nearest display by center distance, workArea return, empty-list fallback)
+// without Electron.
+export { linuxMaximizeBounds } from './main/linux-maximize.js';
+export type { DisplayInfo } from './main/linux-maximize.js';

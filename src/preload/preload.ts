@@ -12,9 +12,12 @@
  *
  * Threat model: the renderer runs agent-authored, attacker-influenced
  * content (file bodies, chat bodies). It MUST NOT be able to reach any
- * channel other than the 8 frozen IPC constants, and MUST NOT be able
+ * channel other than the frozen IPC constants enumerated in the
+ * INVOKE_CHANNELS / PUSH_CHANNELS allow-lists below, and MUST NOT be able
  * to send on a push-only channel. Every method below is hard-pinned to
- * a single constant; there is no caller-supplied channel string.
+ * a single constant; there is no caller-supplied channel string. (No
+ * literal channel COUNT is stated here on purpose — it would silently
+ * drift from the sets as channels are added.)
  * ============================================================ */
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import { IPC } from '../shared/types.js';
@@ -29,6 +32,7 @@ import type {
   SearchResults,
   SessionCounters,
   Theme,
+  WindowBounds,
 } from '../shared/types.js';
 
 /* ------------------------------------------------------------------ */
@@ -49,12 +53,19 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.SET_LIVE_STATE,
   IPC.OPEN_EXTERNAL,
   IPC.COPY_TO_CLIPBOARD,
+  IPC.WINDOW_MINIMIZE,
+  IPC.WINDOW_TOGGLE_MAXIMIZE,
+  IPC.WINDOW_CLOSE,
+  IPC.WINDOW_IS_MAXIMIZED,
+  IPC.WINDOW_GET_BOUNDS,
+  IPC.WINDOW_SET_BOUNDS,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
   IPC.EVENT,
   IPC.COUNTERS,
   IPC.LIVE_STATE,
+  IPC.WINDOW_MAXIMIZED,
 ]);
 
 /** Assert a channel is the expected, allow-listed constant before use.
@@ -143,6 +154,43 @@ export function createBridge(): LoomBridge {
     },
     onLiveState(handler: (s: LiveState) => void): () => void {
       return subscribe<LiveState>(IPC.LIVE_STATE, handler);
+    },
+    // Frameless custom-chrome window controls (win32/linux). Each method hard-
+    // pins its single IPC.* constant via assertInvoke and sends NO arguments —
+    // main resolves the target window from the SENDER, so a renderer cannot act
+    // on any window but its own. onMaximizeChange reuses the same subscribe()
+    // helper (assertPush) every other push uses, so the renderer never receives
+    // the IpcRendererEvent — only the boolean payload.
+    windowControls: {
+      minimize(): Promise<void> {
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_MINIMIZE));
+      },
+      toggleMaximize(): Promise<void> {
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_TOGGLE_MAXIMIZE));
+      },
+      close(): Promise<void> {
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_CLOSE));
+      },
+      isMaximized(): Promise<boolean> {
+        // Pull the authoritative state on mount so the renderer seeds its glyph
+        // deterministically instead of relying on the fire-and-forget initial
+        // WINDOW_MAXIMIZED push (which can race past a not-yet-attached listener).
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_IS_MAXIMIZED));
+      },
+      onMaximizeChange(cb: (maximized: boolean) => void): () => void {
+        return subscribe<boolean>(IPC.WINDOW_MAXIMIZED, cb);
+      },
+      getBounds(): Promise<WindowBounds> {
+        // Read the SENDER window's live screen rectangle at resize-drag start.
+        // No args; main resolves the target from the sender (own window only).
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_GET_BOUNDS));
+      },
+      setBounds(b: WindowBounds): Promise<void> {
+        // The bounds are forwarded as-is; main is the authority — it RE-VALIDATES
+        // x/y/width/height as finite integers and CLAMPS the size before applying
+        // (never trust the renderer; mirror of openExternal/copyToClipboard).
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_SET_BOUNDS), b);
+      },
     },
   };
 }

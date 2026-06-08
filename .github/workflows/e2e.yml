@@ -58,6 +58,17 @@ jobs:
       - name: Install dependencies (npm ci)
         run: npm ci
 
+      - name: Install a lightweight window manager (fluxbox)
+        # window-controls.e2e.ts tests 2/3/4 (minimize / maximize / double-click
+        # maximize) assert against the REAL BrowserWindow.isMinimized() /
+        # isMaximized(). Those are WINDOW-MANAGER-dependent on Linux: under bare
+        # xvfb (no WM) the maximize/minimize/restore semantics are not honored, so
+        # the state can fail to flip and the polled assertions go flaky. fluxbox is
+        # a tiny EWMH-compliant WM that implements those window operations, so the
+        # state transitions are real and deterministic. It is started alongside the
+        # virtual X server in the run step below.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fluxbox
+
       - name: Type-check e2e spec + Playwright config (display-free, fail fast)
         # The base `npm run typecheck` scopes tsc to src/** and excludes test/,
         # so it never sees the e2e spec or playwright.config.ts. This step
@@ -72,14 +83,27 @@ jobs:
         # message, but building here keeps the failure mode obvious.
         run: npm run build
 
-      - name: Run Playwright Electron e2e (under xvfb)
+      - name: Run Playwright Electron e2e (under xvfb + fluxbox)
         # xvfb-run -a provides the virtual display Electron requires on a
-        # headless runner; -a picks a free display number automatically.
-        run: xvfb-run -a npm run test:e2e
+        # headless runner; -a picks a free display number automatically. We then
+        # start fluxbox on that SAME display (the DISPLAY env xvfb-run exports
+        # inside its shell) so a real window manager honors minimize / maximize /
+        # restore — otherwise those BrowserWindow state transitions are flaky
+        # under bare xvfb (see window-controls.e2e.ts tests 2/3/4). fluxbox is
+        # backgrounded and given a moment to claim the root window before the
+        # suite launches Electron.
+        run: |
+          xvfb-run -a bash -c '
+            fluxbox >/dev/null 2>&1 &
+            sleep 2
+            npm run test:e2e
+          '
 
       - name: Upload Playwright report
         # Always upload so a failing run still yields the HTML report for triage.
+        # continue-on-error: storage quota hits must not fail a green test run.
         if: ${{ !cancelled() }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report

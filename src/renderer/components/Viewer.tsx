@@ -24,6 +24,7 @@ import { highlightCode } from '../lib/highlight.js';
 import { computeFoldRanges } from '../lib/fold.js';
 import type { FoldRange } from '../lib/fold.js';
 import { serializeRenderedForCopy } from '../lib/copy-serialize.js';
+import type { WidthMode } from '../lib/md-width.js';
 
 /** Close (×) glyph for the Viewer-head close control. Decorative — the
  *  accessible name comes from the button's aria-label (FR-54, FR-42). */
@@ -675,7 +676,7 @@ function Breadcrumb({ path }: { path: string }): JSX.Element {
   );
 }
 
-export function Viewer({ content, onClose, foldCommand, copyCommand, targetLine }: ViewerProps): JSX.Element {
+export function Viewer({ content, onClose, foldCommand, copyCommand, targetLine, mdWidth }: ViewerProps): JSX.Element {
   // Empty state — reinforce the principle (FR-42).
   if (content === null) {
     return (
@@ -683,7 +684,9 @@ export function Viewer({ content, onClose, foldCommand, copyCommand, targetLine 
       // reader user navigating by region can locate it, and give the empty
       // state a real heading so the "no file selected" condition is
       // programmatically conveyed — not styled text alone.
-      <section className="pane viewer" aria-label="File viewer">
+      // data-mdwidth is applied here too (as on the populated branch) so the
+      // CSS measure is governed consistently regardless of which branch renders.
+      <section className="pane viewer" aria-label="File viewer" data-mdwidth={mdWidth}>
         <div className="viewer-head">
           <span className="crumb">no file selected</span>
           {/* UX-04: a muted right-aligned ghost chip (styled like
@@ -713,6 +716,7 @@ export function Viewer({ content, onClose, foldCommand, copyCommand, targetLine 
       foldCommand={foldCommand}
       copyCommand={copyCommand}
       targetLine={targetLine}
+      mdWidth={mdWidth}
     />
   );
 }
@@ -725,12 +729,14 @@ function ViewerContent({
   foldCommand,
   copyCommand,
   targetLine,
+  mdWidth,
 }: {
   content: FileContent;
   onClose(): void;
   foldCommand: { nonce: number; intent: 'fold' | 'unfold' } | null;
   copyCommand: { nonce: number } | null;
   targetLine: { path: string; line: number; nonce: number } | null;
+  mdWidth: WidthMode;
 }): JSX.Element {
   const { dispatch, meta, text, path } = content;
   const { kind, renderState, safetyBanner } = dispatch;
@@ -877,7 +883,7 @@ function ViewerContent({
   return (
     // Same named region as the empty state (A11Y-CLOSE-04) so the Viewer is a
     // consistently locatable landmark whether or not a file is open.
-    <section className="pane viewer" aria-label="File viewer">
+    <section className="pane viewer" aria-label="File viewer" data-mdwidth={mdWidth}>
       <div className="viewer-head">
         <Breadcrumb path={path} />
         {/* Copy rendered — RENDERED (.md) files only. Copies the CLEANED,
@@ -898,6 +904,10 @@ function ViewerContent({
             <span>{copied ? 'Copied' : 'Copy rendered'}</span>
           </button>
         )}
+        {/* The reading-column width control moved to the Settings panel (gear →
+            Settings → Viewer → Reading width). It applies via the data-mdwidth
+            attribute on this <section> (set from the App-lifted mdWidth prop), so
+            no per-file head toggle is needed — the choice is global + persisted. */}
         {/* SC 4.1.3: announce the successful copy politely so the action is
             perceivable to assistive tech regardless of focus location. */}
         <span className="sr-only" role="status" aria-live="polite">
@@ -971,4 +981,9 @@ export interface ViewerProps {
    *  target path + 1-based line). CodeView unfolds any region containing the
    *  line, scrolls it into view, and briefly flashes it. null = no reveal. */
   targetLine: { path: string; line: number; nonce: number } | null;
+  /** RENDERED-markdown reading-column width mode, lifted to App (seeded from
+   *  the capture hint > localStorage > default via md-width.ts and persisted on
+   *  change). Applied as data-mdwidth on the Viewer <section> so the CSS picks
+   *  the predefined 792px measure ('fit') or full Viewer width ('full'). */
+  mdWidth: WidthMode;
 }

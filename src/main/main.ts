@@ -9,11 +9,12 @@
  * ============================================================ */
 import { readFileSync, writeFileSync, statSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron';
 // Same build-time-inlined app version the MCP server advertises (esbuild
 // inlines package.json), so the discovery file can never drift from a literal.
 import { version as LOOM_VERSION } from '../../package.json';
-import { DEFAULT_MAX_MESSAGES, MAX_BODY_LENGTH } from '../shared/types.js';
+import { DEFAULT_MAX_MESSAGES, IPC, MAX_BODY_LENGTH } from '../shared/types.js';
+import type { WindowBounds } from '../shared/types.js';
 import { safeExternalUrl } from '../shared/url.js';
 import { MCP_HOST, MCP_PATH } from './mcp.js';
 import { createDb } from './db.js';
@@ -26,15 +27,42 @@ import { createWatcher } from './watcher.js';
 import { createConfigStore } from './config.js';
 import { createIpcWiring } from './ipc.js';
 import { createWsFeed, wsEnabled } from './ws.js';
+import { linuxMaximizeBounds } from './linux-maximize.js';
 
 /** Capture window dimensions (FR — headless screenshots via a normal,
  *  WSLg-composited hidden window; see runCapture + applyWslSwitches). */
 const CAPTURE_WIDTH = 1440;
 const CAPTURE_HEIGHT = 900;
+
+/** Minimum main-window size (DIP). A hard floor enforced BOTH by the OS via
+ *  win.setMinimumSize (so the native/WM resize and the Linux custom edge handles
+ *  can never shrink below it) AND re-applied when clamping a WINDOW_SET_BOUNDS
+ *  payload. Sized so the 3-pane layout stays usable. NOTE the three pane minimums
+ *  (Explorer 180 + Chat 300 + Viewer 320 — App.tsx) sum to 800, which is ABOVE
+ *  this 720 floor: that is intentional. At 720 the user keeps the VIEWER + ONE
+ *  side pane at-or-above its min (e.g. Explorer 180 + Viewer 540, or Chat 300 +
+ *  Viewer 420); with BOTH side panes open the Viewer would be squeezed below its
+ *  320 (the layout floors each side pane and lets the Viewer absorb the deficit
+ *  under `overflow:hidden`, so nothing inverts or overflows — the user just
+ *  collapses one side pane to restore the Viewer's room). 480 keeps the 40px
+ *  titlebar + status bar + content readable. */
+const MIN_W = 720;
+const MIN_H = 480;
+/** Sane upper bound for a WINDOW_SET_BOUNDS width/height (DIP). Guards against a
+ *  malformed/hostile renderer payload requesting an absurd surface. */
+const MAX_WINDOW_DIM = 100_000;
 /** Settle delay after did-finish-load before we capture. */
 const CAPTURE_SETTLE_MS = 1500;
 /** Hard ceiling: a capture that hangs must still exit the process. */
 const CAPTURE_TIMEOUT_MS = 30_000;
+
+// Per-window pre-maximize / pre-fullscreen bounds (Linux only). WeakMap avoids
+// retaining a closed window. Populated before win.maximize() so the unmaximize
+// handler can restore the exact pre-maximize position even if the WM shifted its
+// own restore point after our setBounds override. The fullscreen map captures
+// bounds on enter-full-screen (before correction) for leave-full-screen restore.
+const preMaximizeBoundsMap = new WeakMap<BrowserWindow, Electron.Rectangle>();
+const preFullscreenBoundsMap = new WeakMap<BrowserWindow, Electron.Rectangle>();
 
 /** Parsed --capture invocation. */
 interface CaptureArgs {
@@ -55,6 +83,10 @@ interface CaptureArgs {
   /** Capture-only flag to start a SOURCE file with all top-level folds
    *  collapsed (so a headless screenshot can show the folded state). */
   foldAll: boolean;
+  /** Capture-only RENDERED-markdown reading-column width mode override
+   *  ('full' | 'fit'), or null to keep localStorage/default. Lets a headless
+   *  screenshot render either the predefined 792px measure or full width. */
+  mdWidth: string | null;
   /** Capture-only flag to open the Keyboard Shortcuts panel on boot (so a
    *  headless screenshot can prove the modal). */
   shortcuts: boolean;
@@ -96,6 +128,7 @@ function parseCapture(argv: string[]): CaptureArgs | null {
     explorerHidden: argv.includes('--explorer-hidden'),
     chatHidden: argv.includes('--chat-hidden'),
     foldAll: argv.includes('--fold-all'),
+    mdWidth: flagValue(argv, '--md-width'),
     shortcuts: argv.includes('--shortcuts'),
     search: flagValue(argv, '--search'),
     searchOpen: argv.includes('--search-open'),
@@ -103,11 +136,52 @@ function parseCapture(argv: string[]): CaptureArgs | null {
   };
 }
 
-/** Build the file:// URL for index.html, carrying nav selectors as a query. */
-function indexUrl(capture: CaptureArgs | null): string {
+/** The layout/boot hints that may be carried into the index.html query on the
+ *  NORMAL (interactive) launch path too — NOT just under --capture. These are
+ *  the read-only, idempotent pane/measure overrides the renderer already reads
+ *  from `location.search` (App.tsx readChat / readExplorer hints, Viewer's
+ *  parseMdWidthHint). They are a structural SUBSET of CaptureArgs, so the full
+ *  capture struct also satisfies this shape and flows through indexUrl
+ *  unchanged. Capture-staging behaviors (--select/--search/--shortcuts/
+ *  --fold-all/--replay) are deliberately NOT in this set: they seed/act on
+ *  content and are reserved for the capture path. */
+interface LayoutHints {
+  /** Chat-pane width override (px), or null. */
+  chatw: string | null;
+  /** Explorer-pane width override (px), or null. */
+  explorerw: string | null;
+  /** Start with the Explorer collapsed. */
+  explorerHidden: boolean;
+  /** Start with the Chat collapsed. */
+  chatHidden: boolean;
+  /** RENDERED-markdown reading-column width mode ('full'|'fit'), or null. */
+  mdWidth: string | null;
+}
+
+/** Parse ONLY the layout/boot hints (LayoutHints) from argv, with NO --capture
+ *  requirement. Lets the interactive launch path honor the same pane/measure
+ *  overrides the capture path does (and the renderer already reads) — e.g.
+ *  `Loom <folder> --md-width full --chat-hidden`. Mirrors parseCapture's reads
+ *  for these fields exactly (incl. the legacy `--chatw` alias). */
+function parseLayoutHints(argv: string[]): LayoutHints {
+  return {
+    chatw: flagValue(argv, '--chat-w') ?? flagValue(argv, '--chatw'),
+    explorerw: flagValue(argv, '--explorer-w'),
+    explorerHidden: argv.includes('--explorer-hidden'),
+    chatHidden: argv.includes('--chat-hidden'),
+    mdWidth: flagValue(argv, '--md-width'),
+  };
+}
+
+/** Build the file:// URL for index.html, carrying nav/layout hints as a query.
+ *  Accepts the full CaptureArgs (capture path) OR the LayoutHints subset (the
+ *  normal launch path) OR null (no hints). Each field is forwarded only when
+ *  present, so the LayoutHints subset simply omits the capture-only params. */
+function indexUrl(hints: (CaptureArgs | LayoutHints) | null): string {
   const file = path.join(__dirname, 'index.html');
   const base = `file://${file}`;
-  if (!capture) return base;
+  if (!hints) return base;
+  const capture: Partial<CaptureArgs> = hints;
   const params = new URLSearchParams();
   if (capture.select) params.set('select', capture.select);
   if (capture.channel) params.set('channel', capture.channel);
@@ -118,6 +192,11 @@ function indexUrl(capture: CaptureArgs | null): string {
   if (capture.explorerHidden) params.set('explorerhidden', '1');
   if (capture.chatHidden) params.set('chathidden', '1');
   if (capture.foldAll) params.set('foldall', '1');
+  // Only the closed 'full'|'fit' set is forwarded; the renderer (parseMdWidthHint)
+  // also re-validates, so an unknown value is ignored either way.
+  if (capture.mdWidth === 'full' || capture.mdWidth === 'fit') {
+    params.set('mdwidth', capture.mdWidth);
+  }
   if (capture.shortcuts) params.set('shortcuts', '1');
   // URLSearchParams.set url-encodes the value, so a query with spaces/special
   // chars is carried safely (the renderer decodes it via URLSearchParams.get).
@@ -415,9 +494,12 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
  *    title bar reserves left padding for the inset lights + becomes a drag
  *    region (see TitleBar.tsx / renderer.css, gated on the mac platform).
  *    trafficLightPosition nudges the lights to sit centered in the 40px bar.
- *  - win32 / linux (+ any other): keep the DEFAULT native frame — the OS
- *    frame draws the controls and handles window dragging. (Fully frameless /
- *    custom controls are intentionally out of scope.)
+ *  - win32 / linux (+ any other): FRAMELESS (`frame: false`) — the native OS
+ *    frame is removed and the renderer's custom title bar draws our own
+ *    minimize / maximize-restore / close controls + handles dragging (the
+ *    titlebar is a -webkit-app-region drag region; the controls are no-drag).
+ *    The window stays `resizable` (Electron keeps invisible edge resize regions
+ *    on Windows; Linux edge-resize is WM-dependent) and keeps backgroundColor.
  *  The hardened webPreferences are IDENTICAL on every platform. */
 function mainWindowChrome(): Electron.BrowserWindowConstructorOptions {
   if (process.platform === 'darwin') {
@@ -427,7 +509,149 @@ function mainWindowChrome(): Electron.BrowserWindowConstructorOptions {
       trafficLightPosition: { x: 14, y: 13 },
     };
   }
-  return {}; // win32 / linux / other: default native frame.
+  // win32 / linux / other: frameless — our custom TitleBar draws the controls.
+  return { frame: false };
+}
+
+/** Wire the three frameless window-control IPC handlers ONCE for the whole
+ *  process. Each handler resolves its target window from the SENDER
+ *  (BrowserWindow.fromWebContents) — NEVER a caller-supplied id — and takes NO
+ *  untrusted args, so a renderer can only act on its OWN window. The offscreen
+ *  capture window simply never calls these. Guarded by a module flag so a
+ *  second window (or app.activate re-create) cannot double-register a handler
+ *  (ipcMain.handle throws on a duplicate channel). */
+let windowControlsRegistered = false;
+function registerWindowControlHandlers(): void {
+  if (windowControlsRegistered) return;
+  windowControlsRegistered = true;
+  const senderWindow = (evt: Electron.IpcMainInvokeEvent): BrowserWindow | null =>
+    BrowserWindow.fromWebContents(evt.sender);
+  ipcMain.handle(IPC.WINDOW_MINIMIZE, (evt) => {
+    senderWindow(evt)?.minimize();
+  });
+  ipcMain.handle(IPC.WINDOW_TOGGLE_MAXIMIZE, (evt) => {
+    const win = senderWindow(evt);
+    if (!win) return;
+    if (win.isMaximized()) {
+      win.unmaximize();
+    } else {
+      if (process.platform === 'linux') {
+        preMaximizeBoundsMap.set(win, win.getBounds());
+      }
+      win.maximize();
+    }
+  });
+  ipcMain.handle(IPC.WINDOW_CLOSE, (evt) => {
+    senderWindow(evt)?.close();
+  });
+  // Pull-based authoritative maximize state. The renderer seeds its glyph from
+  // this on mount so it never depends on catching the fire-and-forget initial
+  // WINDOW_MAXIMIZED push (which is sent on did-finish-load — BEFORE the
+  // renderer's onMaximizeChange listener attaches, and Electron does not replay
+  // it). Sender-scoped, no untrusted args; false when the window is unresolved.
+  ipcMain.handle(IPC.WINDOW_IS_MAXIMIZED, (evt) => senderWindow(evt)?.isMaximized() ?? false);
+  // Live screen rectangle of the SENDER window — the Linux frameless edge-resize
+  // handles read this at drag start to anchor the geometry. Sender-scoped, no
+  // untrusted args; a zero rect when the window is unresolved (the renderer
+  // guards against a degenerate start anyway).
+  ipcMain.handle(IPC.WINDOW_GET_BOUNDS, (evt): WindowBounds => {
+    const win = senderWindow(evt);
+    if (!win || win.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
+    const b = win.getBounds();
+    return { x: b.x, y: b.y, width: b.width, height: b.height };
+  });
+  // Apply a resize during a Linux frameless edge-drag. RIGOROUSLY validates the
+  // caller-supplied payload (the ONLY WINDOW_* handler that takes args, so it is
+  // the only one that must distrust input): every field must be a FINITE integer
+  // (rejects NaN/Infinity/non-number/missing), and width/height are CLAMPED to
+  // [MIN_W..MAX] / [MIN_H..MAX] so a hostile renderer can neither collapse the
+  // window below the usable floor nor request an absurd surface. Sender-scoped
+  // (own window only); an invalid payload or an unresolved/destroyed sender is a
+  // silent no-op (never trust the renderer; mirror of OPEN_EXTERNAL/clipboard).
+  ipcMain.handle(IPC.WINDOW_SET_BOUNDS, (evt, payload: unknown) => {
+    const win = senderWindow(evt);
+    if (!win || win.isDestroyed()) return;
+    const bounds = validateBounds(payload);
+    if (bounds === null) return;
+    win.setBounds(bounds);
+  });
+}
+
+/** True for a finite integer (rejects NaN, ±Infinity, non-numbers, floats). */
+function isFiniteInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v);
+}
+
+/** Clamp `v` into [lo, hi]. */
+function clampDim(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+/** Soft-clamp the window ORIGIN (x/y) so a malformed/hostile WINDOW_SET_BOUNDS
+ *  payload can never park the frameless window unreachably offscreen (a lost-
+ *  window soft-DoS — there is no native titlebar to drag it back). The allowed
+ *  envelope is the bounding box of every display's workArea, GROWN by the window
+ *  size minus a small on-screen MARGIN, so:
+ *   - legitimate multi-monitor negative coords and overscan still pass, and
+ *   - the window may hang mostly off an edge, but at least a MARGIN-wide strip
+ *     always stays on some display (grabbable / reachable via the WM).
+ *  Falls back to the ±MAX_WINDOW_DIM bound if the display list can't be read
+ *  (e.g. screen not ready), so x/y are never left fully unbounded. */
+const OFFSCREEN_MARGIN = 48;
+function clampOrigin(x: number, y: number, width: number, height: number): { x: number; y: number } {
+  let left = -MAX_WINDOW_DIM;
+  let top = -MAX_WINDOW_DIM;
+  let right = MAX_WINDOW_DIM;
+  let bottom = MAX_WINDOW_DIM;
+  try {
+    const displays = screen.getAllDisplays();
+    if (displays.length > 0) {
+      // Union bounding box of all displays' work areas.
+      let uL = Infinity;
+      let uT = Infinity;
+      let uR = -Infinity;
+      let uB = -Infinity;
+      for (const d of displays) {
+        const w = d.workArea;
+        uL = Math.min(uL, w.x);
+        uT = Math.min(uT, w.y);
+        uR = Math.max(uR, w.x + w.width);
+        uB = Math.max(uB, w.y + w.height);
+      }
+      // Allow the window to slide off until only MARGIN px remain on a display:
+      //   x in [uL - width + MARGIN, uR - MARGIN]
+      //   y in [uT - height + MARGIN, uB - MARGIN]
+      left = uL - width + OFFSCREEN_MARGIN;
+      top = uT - height + OFFSCREEN_MARGIN;
+      right = uR - OFFSCREEN_MARGIN;
+      bottom = uB - OFFSCREEN_MARGIN;
+      // Degenerate guard: a window wider/taller than the whole desktop would make
+      // left > right; keep the origin pinned at the union's top-left in that case.
+      if (left > right) left = right = uL;
+      if (top > bottom) top = bottom = uT;
+    }
+  } catch {
+    /* screen unavailable (not ready): keep the generous ±MAX_WINDOW_DIM bound. */
+  }
+  return { x: clampDim(x, left, right), y: clampDim(y, top, bottom) };
+}
+
+/** Validate + CLAMP a caller-supplied WINDOW_SET_BOUNDS payload, or null when it
+ *  is not a well-formed bounds object. x/y must be finite integers (they may be
+ *  negative — multi-monitor layouts put windows at negative screen coords); the
+ *  SIZE is clamped to [MIN..MAX] and the ORIGIN is soft-clamped to keep a
+ *  grabbable strip on a display (clampOrigin), so a renderer can drive neither a
+ *  degenerate size NOR an unrecoverable-offscreen position. */
+function validateBounds(payload: unknown): WindowBounds | null {
+  if (payload === null || typeof payload !== 'object') return null;
+  const { x, y, width, height } = payload as Record<string, unknown>;
+  if (!isFiniteInt(x) || !isFiniteInt(y) || !isFiniteInt(width) || !isFiniteInt(height)) {
+    return null;
+  }
+  const w = clampDim(width, MIN_W, MAX_WINDOW_DIM);
+  const h = clampDim(height, MIN_H, MAX_WINDOW_DIM);
+  const origin = clampOrigin(x, y, w, h);
+  return { x: origin.x, y: origin.y, width: w, height: h };
 }
 
 /** Create the normal, visible application window. */
@@ -440,8 +664,83 @@ function createMainWindow(services: Services): BrowserWindow {
     ...mainWindowChrome(),
     webPreferences: hardenedWebPreferences(),
   });
-  void win.loadURL(indexUrl(null));
+  // Hard minimum size (DIP), enforced by the OS/Electron regardless of platform.
+  // On Linux the frameless window has no native resize border, so we also draw
+  // custom edge handles (WindowResizeHandles) that drive WINDOW_SET_BOUNDS — both
+  // honor this same floor, so the 3-pane layout can never be shrunk into collapse.
+  win.setMinimumSize(MIN_W, MIN_H);
+  // The interactive window honors the layout/boot hints (pane sizes/collapse +
+  // the .md reading-column width mode) from argv, mirroring the capture path's
+  // forwarding. The renderer reads these from location.search regardless of
+  // launch path; absent flags forward nothing, so a plain `Loom <folder>` is
+  // unchanged (indexUrl emits no query and persisted localStorage wins).
+  void win.loadURL(indexUrl(parseLayoutHints(process.argv)));
   installNavGuard(win);
+  // Frameless custom chrome (win32/linux): the renderer draws its own
+  // min/max/close controls, so it needs the live maximize state to flip the
+  // maximize<->restore glyph. Register the (process-wide, once) sender-scoped
+  // control handlers and push the maximize state to THIS window on every
+  // toggle. The push is harmless on darwin (the renderer there renders no
+  // controls and ignores it).
+  registerWindowControlHandlers();
+  // Linux frameless maximize / fullscreen correction: some WMs apply a ~1cm
+  // frame-decoration offset to frameless windows when maximizing or entering
+  // fullscreen. Override with the correct display geometry after the WM fires,
+  // and restore the pre-state bounds on exit.
+  if (process.platform === 'linux') {
+    // setBounds() is deferred via setImmediate on all four handlers to avoid
+    // racing with the WM's synchronous maximize/fullscreen operation. Calling
+    // setBounds() synchronously inside the maximize event conflicts with some
+    // WMs (fluxbox, Mutter) and crashes the renderer context; the deferred
+    // call runs on the next event-loop tick after the WM has settled.
+    win.on('maximize', () => {
+      setImmediate(() => {
+        if (win.isDestroyed()) return;
+        win.setBounds(linuxMaximizeBounds(win.getBounds(), screen.getAllDisplays()));
+      });
+    });
+    win.on('unmaximize', () => {
+      const prev = preMaximizeBoundsMap.get(win);
+      if (prev) preMaximizeBoundsMap.delete(win);
+      setImmediate(() => {
+        if (win.isDestroyed()) return;
+        if (prev) win.setBounds(prev);
+      });
+    });
+    win.on('enter-full-screen', () => {
+      const cur = win.getBounds();
+      preFullscreenBoundsMap.set(win, cur);
+      // For true fullscreen, target the full display bounds (not workArea) so
+      // the window reaches the physical screen edges including the taskbar area.
+      const displays = screen.getAllDisplays();
+      const nearest = linuxMaximizeBounds(cur, displays.map(d => ({ bounds: d.bounds, workArea: d.bounds })));
+      setImmediate(() => {
+        if (win.isDestroyed()) return;
+        win.setBounds(nearest);
+      });
+    });
+    win.on('leave-full-screen', () => {
+      const prev = preFullscreenBoundsMap.get(win);
+      if (prev) preFullscreenBoundsMap.delete(win);
+      setImmediate(() => {
+        if (win.isDestroyed()) return;
+        if (prev) win.setBounds(prev);
+      });
+    });
+  }
+  const pushMaximized = (): void => {
+    if (!win.isDestroyed()) win.webContents.send(IPC.WINDOW_MAXIMIZED, win.isMaximized());
+  };
+  win.on('maximize', pushMaximized);
+  win.on('unmaximize', pushMaximized);
+  // INITIAL SEED is pull-based, NOT this push. The renderer queries the
+  // authoritative state via the WINDOW_IS_MAXIMIZED invoke inside its mount
+  // effect (TitleBar WindowControls), which cannot be missed. We STILL emit one
+  // best-effort push on EACH did-finish-load (idempotent boolean) as a belt-and-
+  // braces backstop for the live toggle subscription — but correctness no longer
+  // DEPENDS on the renderer's onMaximizeChange listener being attached before
+  // this fires, so an in-app reload while maximized seeds correctly regardless.
+  win.webContents.on('did-finish-load', pushMaximized);
   services.ipc.attachRenderer((channel, payload) => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   });
@@ -658,6 +957,7 @@ const VALUE_FLAGS = new Set([
   '--chat-w',
   '--chatw',
   '--explorer-w',
+  '--md-width',
   '--search',
 ]);
 
