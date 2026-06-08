@@ -194,3 +194,10 @@ export type {
   FileKind,
   RenderState,
 } from './shared/types.js';
+
+// Pure Linux maximize bounds correction (frameless WM frame-offset fix).
+// Re-exported so the node --test suite can pin the display-selection logic
+// (nearest display by center distance, workArea return, empty-list fallback)
+// without Electron.
+export { linuxMaximizeBounds } from './main/linux-maximize.js';
+export type { DisplayInfo } from './main/linux-maximize.js';

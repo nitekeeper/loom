@@ -27,6 +27,7 @@ import { createWatcher } from './watcher.js';
 import { createConfigStore } from './config.js';
 import { createIpcWiring } from './ipc.js';
 import { createWsFeed, wsEnabled } from './ws.js';
+import { linuxMaximizeBounds } from './linux-maximize.js';
 
 /** Capture window dimensions (FR — headless screenshots via a normal,
  *  WSLg-composited hidden window; see runCapture + applyWslSwitches). */
@@ -54,6 +55,14 @@ const MAX_WINDOW_DIM = 100_000;
 const CAPTURE_SETTLE_MS = 1500;
 /** Hard ceiling: a capture that hangs must still exit the process. */
 const CAPTURE_TIMEOUT_MS = 30_000;
+
+// Per-window pre-maximize / pre-fullscreen bounds (Linux only). WeakMap avoids
+// retaining a closed window. Populated before win.maximize() so the unmaximize
+// handler can restore the exact pre-maximize position even if the WM shifted its
+// own restore point after our setBounds override. The fullscreen map captures
+// bounds on enter-full-screen (before correction) for leave-full-screen restore.
+const preMaximizeBoundsMap = new WeakMap<BrowserWindow, Electron.Rectangle>();
+const preFullscreenBoundsMap = new WeakMap<BrowserWindow, Electron.Rectangle>();
 
 /** Parsed --capture invocation. */
 interface CaptureArgs {
@@ -523,8 +532,14 @@ function registerWindowControlHandlers(): void {
   ipcMain.handle(IPC.WINDOW_TOGGLE_MAXIMIZE, (evt) => {
     const win = senderWindow(evt);
     if (!win) return;
-    if (win.isMaximized()) win.unmaximize();
-    else win.maximize();
+    if (win.isMaximized()) {
+      win.unmaximize();
+    } else {
+      if (process.platform === 'linux') {
+        preMaximizeBoundsMap.set(win, win.getBounds());
+      }
+      win.maximize();
+    }
   });
   ipcMain.handle(IPC.WINDOW_CLOSE, (evt) => {
     senderWindow(evt)?.close();
@@ -668,6 +683,42 @@ function createMainWindow(services: Services): BrowserWindow {
   // toggle. The push is harmless on darwin (the renderer there renders no
   // controls and ignores it).
   registerWindowControlHandlers();
+  // Linux frameless maximize / fullscreen correction: some WMs apply a ~1cm
+  // frame-decoration offset to frameless windows when maximizing or entering
+  // fullscreen. Override with the correct display geometry after the WM fires,
+  // and restore the pre-state bounds on exit.
+  if (process.platform === 'linux') {
+    win.on('maximize', () => {
+      if (win.isDestroyed()) return;
+      win.setBounds(linuxMaximizeBounds(win.getBounds(), screen.getAllDisplays()));
+    });
+    win.on('unmaximize', () => {
+      if (win.isDestroyed()) return;
+      const prev = preMaximizeBoundsMap.get(win);
+      if (prev) {
+        win.setBounds(prev);
+        preMaximizeBoundsMap.delete(win);
+      }
+    });
+    win.on('enter-full-screen', () => {
+      if (win.isDestroyed()) return;
+      const cur = win.getBounds();
+      preFullscreenBoundsMap.set(win, cur);
+      // For true fullscreen, target the full display bounds (not workArea) so
+      // the window reaches the physical screen edges including the taskbar area.
+      const displays = screen.getAllDisplays();
+      const nearest = linuxMaximizeBounds(cur, displays.map(d => ({ bounds: d.bounds, workArea: d.bounds })));
+      win.setBounds(nearest);
+    });
+    win.on('leave-full-screen', () => {
+      if (win.isDestroyed()) return;
+      const prev = preFullscreenBoundsMap.get(win);
+      if (prev) {
+        win.setBounds(prev);
+        preFullscreenBoundsMap.delete(win);
+      }
+    });
+  }
   const pushMaximized = (): void => {
     if (!win.isDestroyed()) win.webContents.send(IPC.WINDOW_MAXIMIZED, win.isMaximized());
   };
