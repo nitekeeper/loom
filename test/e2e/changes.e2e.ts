@@ -208,7 +208,11 @@ test('c: a hostile *.html diff renders as escaped source — no script runs, no 
     await expect(changes.locator('.diff-body')).toHaveCount(1);
 
     // The escaped source text is present (proves it rendered, as inert text).
-    await expect(changes.locator('.diff-text')).toContainText('onerror');
+    // Assert on the single `.diff-body` container, NOT `.diff-text` (which matches
+    // every diff line → a Playwright strict-mode violation); the container carries
+    // the escaped hostile bytes as inert text. (Tier-1 diff-render.mjs pins the
+    // escape at the render sink itself.)
+    await expect(changes.locator('.diff-body')).toContainText('onerror');
 
     // No live <script>/<img> materialized inside the diff (the bytes are escaped).
     expect(await changes.locator('script').count()).toBe(0);
