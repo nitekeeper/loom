@@ -23,6 +23,37 @@ export { createEventBus } from './main/eventbus.js';
 export type { EventBus, EventHandler } from './main/eventbus.js';
 export { kindOf, dispatchFor, extensionOf } from './shared/dispatch.js';
 
+// Electron-free main-process git-diff layer (the "Changes" viewer). The PURE
+// parsers (parseNameStatusZ/parseUnifiedDiff) are the direct unit-test target;
+// the async fns (getChanges/getFileDiff/resolveBaseSha) are exercised over a
+// REAL temp-git-repo fixture. Electron-free: node:child_process/fs/path + shared
+// types only, so it pulls cleanly into the Node test bundle.
+export {
+  getChanges,
+  getFileDiff,
+  listChangesWithBase,
+  resolveBaseSha,
+  resolveFileDiffRequest,
+  parseNameStatusZ,
+  parseUnifiedDiff,
+} from './main/git-diff.js';
+export type { ChangesWithBase, FileDiffRequest } from './main/git-diff.js';
+
+// Pure DOM-free diff-row view model (the "Changes" viewer's render core).
+// Re-exported so the jsdom Tier-1 suite can pin the visual contract (add/del/
+// context classes + sigils + accessible-name suffixes, NFR-12) and prove Law-1
+// hostile content stays escaped at the presenter sink — without a display.
+export { buildDiffRows, classifyDiffLine } from './renderer/lib/diff-view.js';
+export type { DiffRow, DiffRowClass } from './renderer/lib/diff-view.js';
+
+// The REAL DiffBody presenter (the production Law-1 render sink). Re-exported so
+// the node --test tier can renderToStaticMarkup the ACTUAL component with a
+// hostile diff line and prove the serialized HTML escapes '<' — neutering the
+// escape in FileDiff.tsx turns that test RED (anti-revert, sdet/F1). DiffBody is
+// a pure presenter (no hooks / no window.loom at render time), so it pulls
+// cleanly into the Node bundle.
+export { DiffBody } from './renderer/components/FileDiff.js';
+
 // Project-wide content search (Law 3 confined + bounded). The pure matcher
 // (matchFile) re-exported for unit tests, plus createSandbox + createSearch so
 // the suite can prove the confined walk over a real temp dir (finds content,

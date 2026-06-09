@@ -248,12 +248,22 @@ export function findConflict(
   return null;
 }
 
-/** Combos RESERVED by the app shell that a command may NOT be rebound to.
- *  Currently just the fixed Shortcuts-panel opener (Ctrl/Cmd+Comma), which
- *  the App dispatcher intercepts BEFORE matching any rebindable command — so a
- *  command bound here would be permanently dead. The panel treats a captured
- *  reserved combo as a hard conflict and refuses the assignment (KB-2). */
-export const RESERVED_COMBOS: ReadonlySet<string> = new Set(['Ctrl+,']);
+/** Combos RESERVED by the app shell that a command may NOT be rebound to —
+ *  each is intercepted by the App dispatcher BEFORE matching any rebindable
+ *  command, so a command bound to one would be permanently dead. The panel
+ *  treats a captured reserved combo as a hard conflict and refuses the
+ *  assignment (KB-2).
+ *
+ *  ORDER MATTERS: the Shortcuts-panel opener is `Array.from(RESERVED_COMBOS)[0]`
+ *  (ShortcutsPanel.OPENER_COMBO), so 'Ctrl+,' (the Shortcuts opener) MUST stay
+ *  at index 0 — APPEND new reserved combos, never prepend. 'Ctrl+Shift+G' is the
+ *  fixed Changes-viewer toggle (App.tsx dispatcher intercepts it before the
+ *  rebindable-command loop), reserved here so a rebind onto it is hard-blocked
+ *  rather than silently shadowed. */
+export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
+  'Ctrl+,',
+  'Ctrl+Shift+G',
+]);
 
 /** True when `combo` is reserved by the app shell (see RESERVED_COMBOS) and
  *  must never be assigned to a rebindable command. */

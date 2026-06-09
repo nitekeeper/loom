@@ -29,6 +29,7 @@ import type {
   SessionCounters,
   Theme,
   GitFileStatus,
+  ChangeSet,
 } from '../../shared/types.js';
 import { diffOverrides } from './keybindings.js';
 import { MAX_STORE_MESSAGES } from './window.js';
@@ -65,6 +66,11 @@ export interface ViewModel extends InitialState {
   newlyAdded: ReadonlySet<string>;
   /** Git working-tree status map (path -> status). Persists until committed. */
   gitStatus: ReadonlyMap<string, GitFileStatus>;
+  /** Branch "Changes" listing (files created/modified vs the base merge-base),
+   *  or null until first loaded. Fetched on demand via loadChanges() when the
+   *  Changes viewer opens (the StatusBar toggle). Per-file diffs are NOT stored
+   *  here — they are fetched lazily on row expand to keep this snapshot lean. */
+  changes: ChangeSet | null;
   /** Monotonic revision for the SELECTED file's content. Bumped whenever the
    *  open file changes on disk (a change/add FileEvent for `selected`) or the
    *  user (re-)selects a file. The Viewer's content hook re-reads on every bump
@@ -101,6 +107,9 @@ export interface LoomStore {
   setKeybindings(resolved: Record<string, string>): Promise<void>;
   /** Toggle PAUSED <-> LIVE through the main process (FR-36). */
   togglePause(): Promise<void>;
+  /** Fetch the branch "Changes" listing (files created/modified vs the base)
+   *  and fold it into the view-model. Called when the Changes viewer opens. */
+  loadChanges(): Promise<void>;
 }
 
 /** How long a row-flash persists after a FileEvent (ms). */
@@ -421,6 +430,7 @@ export function createStore(): LoomStore {
       justModified: new Set<string>(),
       newlyAdded: new Set<string>(),
       gitStatus: new Map<string, GitFileStatus>(),
+      changes: null,
       fileRev: 0,
     };
     emit();
@@ -570,6 +580,26 @@ export function createStore(): LoomStore {
     await window.loom.setLiveState(next);
   };
 
+  // Fetch the branch change listing and fold it into the snapshot. main is
+  // fail-soft (available:false off a git repo), so this never rejects. Fired on
+  // open of the Changes viewer (v1 = fetch-on-open; a push-driven refresh-while-
+  // closed re-fetch — subscribing this to the existing onGitStatus push — is
+  // DEFERRED, so a commit made while the viewer is CLOSED leaves the count chip
+  // stale until the next open).
+  const loadChanges = async (): Promise<void> => {
+    // Reset to null FIRST so a re-open shows the honest "Loading changes…" state
+    // (ChangesView's changes===null guard) instead of briefly flashing the PRIOR
+    // fetch's stale list for a frame (frontend/F3).
+    if (vm !== null) set({ changes: null });
+    try {
+      const changes = await window.loom.getChanges();
+      if (vm === null) return;
+      set({ changes });
+    } catch {
+      /* main is fail-soft; leave changes null (honest loading state) on error. */
+    }
+  };
+
   return {
     getSnapshot: () => vm,
     getViewModel: () => vm,
@@ -584,5 +614,6 @@ export function createStore(): LoomStore {
     setTheme,
     setKeybindings,
     togglePause,
+    loadChanges,
   };
 }

@@ -34,6 +34,8 @@ import type {
   Theme,
   WindowBounds,
   GitFileStatus,
+  ChangeSet,
+  FileDiff,
 } from '../shared/types.js';
 
 /* ------------------------------------------------------------------ */
@@ -61,6 +63,8 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.WINDOW_GET_BOUNDS,
   IPC.WINDOW_SET_BOUNDS,
   IPC.GIT_STATUS,
+  IPC.GET_CHANGES,
+  IPC.READ_FILE_DIFF,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
@@ -163,6 +167,16 @@ export function createBridge(): LoomBridge {
     },
     onGitStatus(handler: (s: Record<string, GitFileStatus>) => void): () => void {
       return subscribe<Record<string, GitFileStatus>>(IPC.GIT_STATUS, handler);
+    },
+    getChanges(): Promise<ChangeSet> {
+      return ipcRenderer.invoke(assertInvoke(IPC.GET_CHANGES));
+    },
+    readFileDiff(filePath: string): Promise<FileDiff> {
+      // The path is forwarded as-is; main RE-CONFINES it via
+      // sandbox.resolveInRoot before any git read (the git object-store read
+      // bypasses the fs sandbox — never trust the renderer; Law 3). The renderer
+      // cannot widen scope: an out-of-root path returns an empty FileDiff.
+      return ipcRenderer.invoke(assertInvoke(IPC.READ_FILE_DIFF), filePath);
     },
     // Frameless custom-chrome window controls (win32/linux). Each method hard-
     // pins its single IPC.* constant via assertInvoke and sends NO arguments —

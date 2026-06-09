@@ -33,8 +33,16 @@ import {
   type SearchQuery,
   type SearchResults,
   type GitFileStatus,
+  type ChangeSet,
+  type FileDiff,
 } from '../shared/types.js';
 import { getGitStatus } from './git.js';
+import {
+  getChanges,
+  getFileDiff,
+  listChangesWithBase,
+  resolveFileDiffRequest,
+} from './git-diff.js';
 import type { ConfigStore } from './config.js';
 import type { LoomDb } from './db.js';
 import type { EventBus } from './eventbus.js';
@@ -242,6 +250,60 @@ class IpcWiringImpl implements IpcWiring {
       const map = await getGitStatus(this.deps.rootPath);
       return Object.fromEntries(map);
     });
+
+    // List every file CREATED/MODIFIED on the current branch vs. the base
+    // merge-base (three-dot). main resolves rootPath itself — the renderer
+    // passes NO directory. Fail-soft inside getChanges (never throws).
+    ipcMain.handle(IPC.GET_CHANGES, (): Promise<ChangeSet> =>
+      getChanges(this.deps.rootPath),
+    );
+
+    // The before->after unified diff for ONE changed file. SECURITY (Law 3):
+    // `git show <sha>:<path>` reads git's OBJECT STORE, which bypasses the fs
+    // sandbox — so we RE-CONFINE the renderer-supplied path (and a rename's
+    // oldPath) via sandbox.resolveInRoot BEFORE any git read. A resolveInRoot
+    // throw (escape / NUL / '..' / absolute / symlink) is caught and returned as
+    // an empty FileDiff, so an out-of-root path can NEVER reach git. main stays
+    // authoritative: it re-resolves the base to a SHA (no ref name flows into a
+    // content command) and re-derives this file's changeKind/binary from a fresh
+    // listing rather than trusting the renderer's shape.
+    ipcMain.handle(
+      IPC.READ_FILE_DIFF,
+      async (_evt, relPath: unknown): Promise<FileDiff> => {
+        if (typeof relPath !== 'string') {
+          return {
+            path: '',
+            oldPath: null,
+            changeKind: 'modified',
+            binary: false,
+            truncated: false,
+            hunks: [],
+          };
+        }
+
+        // Re-derive this file's row from the authoritative listing AND reuse the
+        // merge-base SHA it already resolved (no second resolveBaseSha — main
+        // stays authoritative without the redundant base resolution per expand).
+        const { changeSet, mergeBase } = await listChangesWithBase(
+          this.deps.rootPath,
+        );
+
+        // The find-by-path short-circuit, the Law-3 confine of path+oldPath
+        // (sandbox.resolveInRoot — `git show/diff <sha>:<path>` reads the object
+        // store, bypassing the fs sandbox), the catch→empty branch, and the
+        // base-resolved guard all live in the PURE resolveFileDiffRequest so
+        // production and the unit suite run the SAME decision. We inject the
+        // Electron-bound sandbox gate + getFileDiff reader here.
+        return resolveFileDiffRequest({
+          changeSet,
+          relPath,
+          mergeBase,
+          confine: (p) => this.deps.sandbox.resolveInRoot(p),
+          readDiff: (rel, mb, kind, oldPath, binary) =>
+            getFileDiff(this.deps.rootPath, rel, mb, kind, oldPath, binary),
+        });
+      },
+    );
   }
 
   // --- renderer pump -------------------------------------------

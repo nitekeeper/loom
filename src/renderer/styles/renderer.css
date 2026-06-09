@@ -641,6 +641,103 @@ html:not([data-platform='linux']) .win-resize { display: none; }
 .sandbox-note .lk { color: var(--accent); }
 
 /* ============================================================
+   Branch CHANGES viewer (center-pane mode — replaces the Viewer)
+   ------------------------------------------------------------
+   ChangesView reuses the .pane.viewer placement (center 1fr track), so
+   there is NO .body grid-template change. A scrollable list of per-file
+   collapsible diff blocks; each diff line's TEXT is escaped via
+   highlightCode (Law 1), and the +/− sigil, gutter numbers, and row
+   background class are pure CSS OUTSIDE the escaped span. Addition/
+   deletion backgrounds + sigils are NON-color-redundant cues (NFR-12):
+   the glyph carries the meaning, the tint is supplemental.
+   ============================================================ */
+.pane.viewer.changes { overflow: hidden; display: flex; flex-direction: column; }
+.changes-crumb { display: inline-flex; align-items: center; gap: 7px; }
+.changes-head-icon { display: inline-flex; color: var(--text-dim); }
+.changes-count { margin-left: auto; }
+/* The scrollable list of per-file diff blocks. */
+.changes-list { overflow: auto; padding: 8px 0 28px; min-height: 0; }
+/* Empty / unavailable / loading state (mirrors .empty-viewer spacing). */
+.changes-empty {
+  display: flex; flex-direction: column; gap: 8px;
+  align-items: center; justify-content: center;
+  text-align: center; padding: 48px 24px; color: var(--text-faint);
+  font-size: 13px; line-height: 1.6;
+}
+.changes-empty-title { margin: 0; font-size: 15px; color: var(--text-dim); font-weight: 600; }
+
+/* One collapsible per-file block. */
+.changes-file { border-bottom: 1px solid var(--border-soft); }
+.changes-file-head {
+  width: 100%; appearance: none; background: transparent; border: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px; cursor: pointer; text-align: left;
+  font-family: var(--font-mono); font-size: 12px; color: var(--text-dim);
+}
+.changes-file-head:hover { background: var(--panel-2); color: var(--text); }
+.changes-file-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.changes-file-head .twirl { width: 12px; color: var(--text-faint); font-size: 9px; transition: transform .12s; flex: 0 0 12px; }
+.changes-file-head .twirl.open { transform: rotate(90deg); }
+.changes-file-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.changes-file-path b { color: var(--text); font-weight: 600; }
+.changes-file-dir { color: var(--text-faint); }
+.changes-file-kind {
+  margin-left: 4px; font-size: 10px; letter-spacing: .03em;
+  color: var(--text-faint); text-transform: uppercase;
+}
+.diff-loading { padding: 8px 14px; color: var(--text-faint); font-size: 12px; }
+.diff-identical { padding: 8px 14px; color: var(--text-faint); font-size: 12px; }
+
+/* The unified diff body: a 3-column gutter grid mirroring .code — two
+   line-number gutters (old | new), then a +/− sigil, then the source. Each
+   row emits its four grid children so columns stay aligned. */
+.diff-body {
+  display: grid;
+  grid-template-columns: auto auto auto 1fr;
+  align-items: start;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.62;
+  padding: 4px 0 8px;
+}
+.diff-row { display: contents; }
+.diff-gutter {
+  text-align: right; padding: 0 6px;
+  color: var(--text-faint); user-select: none;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.diff-gutter-old { padding-left: 12px; }
+/* The +/− sigil lane — a fixed mono column whose ::before carries the glyph.
+   The glyph (NOT the row tint) is the primary add/del cue (NFR-12). */
+.diff-sigil { width: 16px; text-align: center; user-select: none; color: var(--text-faint); }
+.diff-text { white-space: pre-wrap; word-break: break-word; padding-right: 12px; }
+
+/* Addition row: green tint + a '+' sigil. The tint uses the --live green flash
+   token via color-mix so both themes work. */
+.diff-row.diff-add .diff-gutter,
+.diff-row.diff-add .diff-sigil,
+.diff-row.diff-add .diff-text {
+  background: color-mix(in oklab, var(--live) 14%, transparent);
+}
+.diff-row.diff-add .diff-sigil::before { content: '+'; color: var(--live); }
+/* Deletion row: a dedicated red accent (following the git-badge hardcoded-hex
+   precedent — there is no theme red token) + a '−' (U+2212) sigil. */
+.diff-row.diff-del .diff-gutter,
+.diff-row.diff-del .diff-sigil,
+.diff-row.diff-del .diff-text {
+  background: color-mix(in oklab, #d06a6a 16%, transparent);
+}
+.diff-row.diff-del .diff-sigil::before { content: '\2212'; color: #d06a6a; }
+/* Context row: no tint; the sigil lane stays empty. */
+.diff-row.diff-ctx .diff-sigil::before { content: ''; }
+
+/* Binary / too-large placeholder cards — reuse the Viewer NO-PREVIEW card look:
+   a centered, dimmed metadata card, never decoded bytes (Law 1/2). */
+.diff-binary-card, .diff-too-large-card {
+  margin: 10px 14px; padding: 14px 16px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--border-soft);
+  color: var(--text-faint); font-size: 12px; line-height: 1.5;
+}
+
+/* ============================================================
    Explorer — content SEARCH mode (VS-Code-style search view)
    ------------------------------------------------------------
    Replaces the file tree inside the Explorer pane. A controls block
