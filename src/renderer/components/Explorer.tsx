@@ -18,7 +18,7 @@
  * ============================================================ */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { JSX, KeyboardEvent, RefObject } from 'react';
-import type { FileKind, FileNode } from '../../shared/types.js';
+import type { FileKind, FileNode, GitFileStatus } from '../../shared/types.js';
 
 export interface ExplorerProps {
   rootName: string;
@@ -36,6 +36,8 @@ export interface ExplorerProps {
   justModified?: ReadonlySet<string>;
   /** Paths added this session — NEW badge (FR-39a). */
   newlyAdded?: ReadonlySet<string>;
+  /** Git working-tree status map (path -> status). Persists until committed. */
+  gitStatus?: ReadonlyMap<string, GitFileStatus>;
   /** Open the Explorer's content-search mode (header button + Ctrl/Cmd+Shift+F).
    *  Receives the triggering button so the opener can be recorded for focus
    *  restoration on close (A11Y-SEARCH-02). */
@@ -150,6 +152,7 @@ export function Explorer({
   flashing,
   justModified,
   newlyAdded,
+  gitStatus,
   onOpenSearch,
   searchBtnRef,
 }: ExplorerProps): JSX.Element {
@@ -472,13 +475,20 @@ export function Explorer({
             const isNew = na.has(node.path);
             const isFlashing = flashing.has(node.path);
             const justMod = !isNew && jm.has(node.path);
+            const gitSt = gitStatus?.get(node.path) ?? null;
 
-            // Activity suffix (NEW / just-modified) for the accessible name.
+            // Activity suffix (NEW / just-modified / git status) for the accessible name.
             const activitySuffix = isNew
               ? ' (new)'
               : justMod
                 ? ' (just modified)'
-                : '';
+                : gitSt === 'modified'
+                  ? ' (modified)'
+                  : gitSt === 'added' || gitSt === 'untracked'
+                    ? ' (added)'
+                    : gitSt === 'staged'
+                      ? ' (staged)'
+                      : '';
             // UX-01 / SC 3.2.4: re-activating the open file toggles it CLOSED.
             // That toggle is otherwise silent + invisible, so the selected row
             // advertises it — a hover title and an accessible-name suffix tell
@@ -520,6 +530,15 @@ export function Explorer({
                     aria-hidden="true"
                     title="just modified by an agent"
                   />
+                )}
+                {gitSt === 'modified' && (
+                  <span className="dot-git-modified" aria-hidden="true" title="modified (uncommitted)" />
+                )}
+                {(gitSt === 'added' || gitSt === 'untracked') && (
+                  <span className="badge-git-added">+</span>
+                )}
+                {gitSt === 'staged' && (
+                  <span className="badge-git-staged">S</span>
                 )}
               </div>
               );

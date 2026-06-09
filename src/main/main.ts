@@ -486,7 +486,7 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   const watcher = createWatcher(rootDir, bus);
   watcher.start();
 
-  const ipc = createIpcWiring({ db, sandbox, config, bus, search });
+  const ipc = createIpcWiring({ db, sandbox, config, bus, search, rootPath: rootDir });
   ipc.register();
 
   let ws: Services['ws'] = null;

@@ -1295,6 +1295,7 @@ export function App(): JSX.Element {
             flashing={vm.flashing}
             justModified={vm.justModified}
             newlyAdded={vm.newlyAdded}
+            gitStatus={vm.gitStatus}
           />
         )}
         <Viewer

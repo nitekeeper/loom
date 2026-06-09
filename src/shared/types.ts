@@ -471,6 +471,11 @@ export type Theme = 'dark' | 'light';
  *  CAUGHT_UP: idle, no new events for a short window. */
 export type LiveState = 'LIVE' | 'PAUSED' | 'CAUGHT_UP';
 
+/** Git working-tree status for a single file, populated by the main process
+ *  reading `git status --porcelain` and pushed to the renderer on change.
+ *  Persists until the file is committed (no expiry timer). */
+export type GitFileStatus = 'modified' | 'added' | 'untracked' | 'staged';
+
 /** Persisted config file shape (userData/loom-config.json) (FR-37). */
 export interface LoomConfig {
   theme: Theme;
@@ -579,6 +584,9 @@ export const IPC = {
    *  changed (or the initial state at load). Drives the custom title-bar
    *  maximize<->restore glyph + aria-label flip (frameless win32/linux). */
   WINDOW_MAXIMIZED: 'loom:window:maximized',
+  /** send(Record<string,GitFileStatus>) main->renderer — git working-tree
+   *  status map; pushed on boot and after every file-change event. */
+  GIT_STATUS: 'loom:git:status',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -623,6 +631,11 @@ export interface LoomBridge {
   onCounters(handler: (c: SessionCounters) => void): () => void;
   /** Subscribe to live-state-machine changes. Returns an unsubscribe fn. */
   onLiveState(handler: (s: LiveState) => void): () => void;
+  /** Fetch the current git status map (path -> status). Returns {} when
+   *  the root is not a git repository or git is not installed. */
+  getGitStatus(): Promise<Record<string, GitFileStatus>>;
+  /** Subscribe to git-status pushes from the main process. */
+  onGitStatus(handler: (s: Record<string, GitFileStatus>) => void): () => void;
   /** Frameless custom-chrome window controls (win32/linux; on darwin the native
    *  inset traffic-lights are used instead and the renderer renders no controls).
    *  Each action takes NO untrusted input and acts ONLY on the SENDER window —

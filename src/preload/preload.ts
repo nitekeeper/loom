@@ -33,6 +33,7 @@ import type {
   SessionCounters,
   Theme,
   WindowBounds,
+  GitFileStatus,
 } from '../shared/types.js';
 
 /* ------------------------------------------------------------------ */
@@ -59,6 +60,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.WINDOW_IS_MAXIMIZED,
   IPC.WINDOW_GET_BOUNDS,
   IPC.WINDOW_SET_BOUNDS,
+  IPC.GIT_STATUS,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
@@ -66,6 +68,7 @@ const PUSH_CHANNELS: ReadonlySet<string> = new Set([
   IPC.COUNTERS,
   IPC.LIVE_STATE,
   IPC.WINDOW_MAXIMIZED,
+  IPC.GIT_STATUS,
 ]);
 
 /** Assert a channel is the expected, allow-listed constant before use.
@@ -154,6 +157,12 @@ export function createBridge(): LoomBridge {
     },
     onLiveState(handler: (s: LiveState) => void): () => void {
       return subscribe<LiveState>(IPC.LIVE_STATE, handler);
+    },
+    getGitStatus(): Promise<Record<string, GitFileStatus>> {
+      return ipcRenderer.invoke(assertInvoke(IPC.GIT_STATUS));
+    },
+    onGitStatus(handler: (s: Record<string, GitFileStatus>) => void): () => void {
+      return subscribe<Record<string, GitFileStatus>>(IPC.GIT_STATUS, handler);
     },
     // Frameless custom-chrome window controls (win32/linux). Each method hard-
     // pins its single IPC.* constant via assertInvoke and sends NO arguments —

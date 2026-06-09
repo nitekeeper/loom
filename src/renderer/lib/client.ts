@@ -28,6 +28,7 @@ import type {
   ReceiptView,
   SessionCounters,
   Theme,
+  GitFileStatus,
 } from '../../shared/types.js';
 import { diffOverrides } from './keybindings.js';
 import { MAX_STORE_MESSAGES } from './window.js';
@@ -62,6 +63,8 @@ export interface ViewModel extends InitialState {
   justModified: ReadonlySet<string>;
   /** Paths that appeared this session — NEW badge (FR-39a). */
   newlyAdded: ReadonlySet<string>;
+  /** Git working-tree status map (path -> status). Persists until committed. */
+  gitStatus: ReadonlyMap<string, GitFileStatus>;
   /** Monotonic revision for the SELECTED file's content. Bumped whenever the
    *  open file changes on disk (a change/add FileEvent for `selected`) or the
    *  user (re-)selects a file. The Viewer's content hook re-reads on every bump
@@ -417,6 +420,7 @@ export function createStore(): LoomStore {
       flashing: new Set<string>(),
       justModified: new Set<string>(),
       newlyAdded: new Set<string>(),
+      gitStatus: new Map<string, GitFileStatus>(),
       fileRev: 0,
     };
     emit();
@@ -438,6 +442,17 @@ export function createStore(): LoomStore {
         if (wasPaused && s !== 'PAUSED') flushPaused();
       }),
     );
+    disposers.push(
+      window.loom.onGitStatus((s) => {
+        if (vm === null) return;
+        set({ gitStatus: new Map(Object.entries(s)) });
+      }),
+    );
+    // Populate initial git status
+    void window.loom.getGitStatus().then((s) => {
+      if (vm === null) return;
+      set({ gitStatus: new Map(Object.entries(s)) });
+    });
   };
 
   /* ---------------------------------------------------------------- */

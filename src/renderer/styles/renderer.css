@@ -615,6 +615,17 @@ html:not([data-platform='linux']) .win-resize { display: none; }
   padding: 1px 5px; border-radius: 5px; margin-left: auto;
 }
 .dot-touch { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); margin-left: auto; flex: 0 0 6px; }
+.dot-git-modified { width: 6px; height: 6px; border-radius: 50%; background: #e8a44b; margin-left: auto; flex: 0 0 6px; }
+.badge-git-added {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0;
+  color: #5fce7a; background: color-mix(in oklab, #5fce7a 16%, transparent);
+  padding: 0px 4px; border-radius: 4px; margin-left: auto;
+}
+.badge-git-staged {
+  font-family: var(--font-mono); font-size: 8.5px; font-weight: 700; letter-spacing: .04em;
+  color: #60aaee; background: color-mix(in oklab, #60aaee 16%, transparent);
+  padding: 1px 5px; border-radius: 5px; margin-left: auto;
+}
 @keyframes flashrow {
   0% { background: color-mix(in oklab, var(--live) 40%, transparent); }
   100% { background: transparent; }

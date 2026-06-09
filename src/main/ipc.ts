@@ -32,7 +32,9 @@ import {
   type SessionCounters,
   type SearchQuery,
   type SearchResults,
+  type GitFileStatus,
 } from '../shared/types.js';
+import { getGitStatus } from './git.js';
 import type { ConfigStore } from './config.js';
 import type { LoomDb } from './db.js';
 import type { EventBus } from './eventbus.js';
@@ -67,6 +69,8 @@ export interface IpcDeps {
   bus: EventBus;
   /** Project-wide content search (confined to the sandbox + bounded). */
   search: Search;
+  /** Absolute path of the sandbox root (for git status). */
+  rootPath: string;
 }
 
 class IpcWiringImpl implements IpcWiring {
@@ -76,6 +80,8 @@ class IpcWiringImpl implements IpcWiring {
   private pausedState: LiveState | null = null;
   /** The current auto state (LIVE or CAUGHT_UP). */
   private autoState: LiveState = 'CAUGHT_UP';
+  /** Debounce timer for git status pushes (300ms after a file event). */
+  private gitDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deps: IpcDeps) {}
 
@@ -231,6 +237,11 @@ class IpcWiringImpl implements IpcWiring {
       clipboard.write({ text, html });
       return true;
     });
+
+    ipcMain.handle(IPC.GIT_STATUS, async (): Promise<Record<string, GitFileStatus>> => {
+      const map = await getGitStatus(this.deps.rootPath);
+      return Object.fromEntries(map);
+    });
   }
 
   // --- renderer pump -------------------------------------------
@@ -285,22 +296,49 @@ class IpcWiringImpl implements IpcWiring {
       if (this.pausedState === null && wasAuto !== 'LIVE') pushLiveState();
       armIdle();
       pushCounters();
+      if (e.kind === 'file') this.pushGitStatus(send, () => disposed);
     });
 
     // Emit the starting live state once on attach.
     pushLiveState();
+
+    // Push the initial git status on attach.
+    void getGitStatus(this.deps.rootPath).then((map) => {
+      if (disposed) return;
+      send(IPC.GIT_STATUS, Object.fromEntries(map));
+    });
 
     return () => {
       disposed = true;
       unsubscribe();
       if (countersTimer !== null) clearTimeout(countersTimer);
       if (idleTimer !== null) clearTimeout(idleTimer);
+      if (this.gitDebounceTimer !== null) {
+        clearTimeout(this.gitDebounceTimer);
+        this.gitDebounceTimer = null;
+      }
       this.onHumanLiveStateChange = null;
     };
   }
 
   /** Set by attachRenderer so the human's SET_LIVE_STATE pushes immediately. */
   private onHumanLiveStateChange: (() => void) | null = null;
+
+  private pushGitStatus(
+    send: (channel: string, payload: unknown) => void,
+    isDisposed: () => boolean,
+  ): void {
+    if (this.gitDebounceTimer !== null) clearTimeout(this.gitDebounceTimer);
+    this.gitDebounceTimer = setTimeout(() => {
+      this.gitDebounceTimer = null;
+      if (isDisposed()) return;
+      void getGitStatus(this.deps.rootPath).then((map) => {
+        if (isDisposed()) return;
+        send(IPC.GIT_STATUS, Object.fromEntries(map));
+      });
+    }, 300);
+    (this.gitDebounceTimer as { unref?: () => void }).unref?.();
+  }
 
   private setHumanLiveState(state: LiveState): void {
     if (state === 'PAUSED') {
