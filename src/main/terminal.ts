@@ -67,7 +67,11 @@ export function defaultShell(
   platform: string,
   env: Record<string, string | undefined>,
 ): string {
+  // Deliberately NOT %COMSPEC% (that names cmd.exe) — the design picks
+  // PowerShell as the win32 terminal shell.
   if (platform === 'win32') return 'powershell.exe';
+  // A bogus $SHELL is fine: the factory's spawn throw degrades open() to
+  // { sessionId: null } ("terminal unavailable") rather than crashing.
   return env.SHELL || 'bash';
 }
 
@@ -144,8 +148,15 @@ export function createTerminalManager(deps: {
     if (bytes > OUTPUT_BUFFER_CAP) {
       // Keep only the trailing CAP bytes (may split a multibyte char at the
       // very head of the kept tail — acceptable degradation under a flood).
+      // U+FFFD replacement of the split head can INFLATE the byte count back
+      // over the cap, so trim leading CHARS (strictly decreasing — a byte-wise
+      // re-slice could re-split the U+FFFD) until <= CAP holds strictly.
       chunk = Buffer.from(chunk).subarray(-OUTPUT_BUFFER_CAP).toString();
       bytes = Buffer.byteLength(chunk);
+      while (bytes > OUTPUT_BUFFER_CAP) {
+        chunk = chunk.slice(1);
+        bytes = Buffer.byteLength(chunk);
+      }
       clearPending();
     }
     pending.push({ data: chunk, bytes });

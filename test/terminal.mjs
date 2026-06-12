@@ -55,7 +55,7 @@ function makeFakeFactory() {
 }
 
 /** Let the manager's 8ms coalescing flush timer fire (real, unref'd timer). */
-const settle = () => new Promise((r) => setTimeout(r, 30));
+const settle = () => new Promise((r) => setTimeout(r, 50));
 
 const ENV = { SHELL: '/bin/zsh' };
 
@@ -225,6 +225,33 @@ test('TERM-FLOWCAP: buffered output beyond the cap drops oldest', async () => {
   assert.ok(!forwarded.includes('A'), 'oldest chunk dropped');
   assert.ok(forwarded.endsWith('zzz-tail'), 'tail preserved');
   assert.equal(sink[0][1].sessionId, sessionId);
+  mgr.disposeAll();
+});
+
+test('TERM-FLOWCAP: a single over-cap MULTIBYTE chunk is truncated to strictly <= CAP', async () => {
+  const k = await kit();
+  const { factory, ptys } = makeFakeFactory();
+  const mgr = makeManager(k, factory);
+  mgr.open({ cols: 80, rows: 24 });
+  const CAP = k.OUTPUT_BUFFER_CAP;
+
+  // CAP is not divisible by 3, so the byte-wise tail slice splits a '€' at the
+  // head and U+FFFD replacement would inflate past CAP without the strict trim.
+  ptys[0].emitData('€'.repeat(CAP) + 'zzz-tail');
+
+  const sink = [];
+  mgr.attachSink((channel, payload) => sink.push([channel, payload]));
+  await settle();
+
+  const forwarded = sink
+    .filter(([ch]) => ch === 'loom:terminal:data')
+    .map(([, p]) => p.data)
+    .join('');
+  assert.ok(
+    Buffer.byteLength(forwarded) <= CAP,
+    `forwarded bytes (${Buffer.byteLength(forwarded)}) must be strictly <= CAP (${CAP})`,
+  );
+  assert.ok(forwarded.endsWith('zzz-tail'), 'tail preserved');
   mgr.disposeAll();
 });
 

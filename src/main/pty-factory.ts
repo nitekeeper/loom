@@ -8,7 +8,8 @@
  * or spawn failure THROWS here, which createTerminalManager catches and
  * degrades to { sessionId: null } ("terminal unavailable") instead of
  * crashing boot. Kept out of testkit-entry: the unit suite injects a
- * fake factory; this file is exercised by the Tier-2 e2e only.
+ * fake factory; this file is exercised by the Tier-2 e2e
+ * (test/e2e/terminal.e2e.ts) once built; not unit-testable by design.
  * ============================================================ */
 import type { PtyFactory, PtyLike, PtySpawnOpts } from './terminal.js';
 
@@ -34,6 +35,9 @@ export function createNodePtyFactory(): PtyFactory {
     });
 
     return {
+      // onData/onExit drop node-pty's IDisposable returns: the manager attaches
+      // exactly ONE listener each per pty lifetime and drops the pty after
+      // kill/exit, so there is nothing left to unsubscribe.
       write: (data: string): void => pty.write(data),
       resize: (cols: number, rows: number): void => pty.resize(cols, rows),
       kill: (): void => pty.kill(),

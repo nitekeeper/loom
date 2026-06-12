@@ -780,13 +780,19 @@ function createMainWindow(services: Services): BrowserWindow {
   // DEPENDS on the renderer's onMaximizeChange listener being attached before
   // this fires, so an in-app reload while maximized seeds correctly regardless.
   win.webContents.on('did-finish-load', pushMaximized);
-  services.ipc.attachRenderer((channel, payload) => {
+  const detachRenderer = services.ipc.attachRenderer((channel, payload) => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   });
+  // A full renderer reload loses the sessionId without sending a close — kill
+  // the live PTY so a reload can never orphan it (open() spawns a fresh one).
+  win.webContents.on('did-navigate', () => services.terminal.disposeAll());
   // Kill-on-window-close: the PTY must never outlive the window that owns it
   // (the renderer's pane-close path also kills, but a window closed with the
   // terminal open relies on this). Idempotent with the will-quit disposeAll.
-  win.on('closed', () => services.terminal.disposeAll());
+  win.on('closed', () => {
+    detachRenderer();
+    services.terminal.disposeAll();
+  });
   return win;
 }
 
@@ -888,9 +894,10 @@ async function runCapture(services: Services, capture: CaptureArgs): Promise<voi
     // browser. will-navigate does NOT fire for the programmatic loadURL below,
     // and denying child windows is fine for capture (no popups expected).
     installNavGuard(win);
-    services.ipc.attachRenderer((channel, payload) => {
+    const detachRenderer = services.ipc.attachRenderer((channel, payload) => {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     });
+    win.on('closed', detachRenderer);
 
     await new Promise<void>((resolve) => {
       win.webContents.once('did-finish-load', () => resolve());

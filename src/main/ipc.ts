@@ -35,6 +35,7 @@ import {
   type GitFileStatus,
   type ChangeSet,
   type FileDiff,
+  type TerminalOpenResult,
 } from '../shared/types.js';
 import { getGitStatus } from './git.js';
 import {
@@ -314,7 +315,10 @@ class IpcWiringImpl implements IpcWiring {
     // MAX_TERMINAL_INPUT_BYTES cap, cols/rows ranges — never trust the
     // renderer; unit-pinned in test/terminal.mjs). Invalid/stale input is a
     // silent no-op; a failed spawn returns { sessionId: null } (unavailable).
-    ipcMain.handle(IPC.TERMINAL_OPEN, (_evt, p: unknown) => this.deps.terminal.open(p));
+    ipcMain.handle(
+      IPC.TERMINAL_OPEN,
+      (_evt, p: unknown): TerminalOpenResult => this.deps.terminal.open(p),
+    );
     ipcMain.handle(IPC.TERMINAL_INPUT, (_evt, p: unknown): void => this.deps.terminal.input(p));
     ipcMain.handle(IPC.TERMINAL_RESIZE, (_evt, p: unknown): void => this.deps.terminal.resize(p));
     ipcMain.handle(IPC.TERMINAL_CLOSE, (_evt, p: unknown): void => this.deps.terminal.close(p));
