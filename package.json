@@ -18,6 +18,7 @@
     "dist:linux": "electron-builder --config electron-builder.config.cjs --linux deb --publish never",
     "start": "electron .",
     "loom": "node bin/loom.cjs",
+    "rebuild": "electron-rebuild -f -w node-pty",
     "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs test/mermaid.mjs test/bundle-split.mjs test/copy-serialize.mjs test/md-width.mjs test/window-resize.mjs test/linux-maximize.mjs test/git-diff.mjs test/diff-render.mjs",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
@@ -25,16 +26,20 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "chokidar": "^4.0.3",
     "dompurify": "3.4.8",
     "markdown-it": "^14.1.0",
     "mermaid": "11.15.0",
+    "node-pty": "^1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sql.js": "^1.13.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "@playwright/test": "^1.60.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.19.0",
