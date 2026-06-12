@@ -71,8 +71,8 @@ const mainBuild = {
   // sql.js JS glue is bundled; its .wasm is copied + located at runtime.
   // node-pty is a NATIVE module (terminal pane PTY): kept external and
   // require()'d lazily in src/main/pty-factory.ts — in dev the CJS require
-  // resolves up to project node_modules/; packaged apps ship it via
-  // electron-builder files + asarUnpack.
+  // resolves up to project node_modules/; packaged apps ship it via the
+  // `files` + `asarUnpack` node-pty entries in electron-builder.config.cjs.
   external: ['electron', 'node-pty'],
 };
 

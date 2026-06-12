@@ -86,9 +86,18 @@ module.exports = {
       stdio: 'inherit',
     });
   },
-  files: ['dist/**', 'package.json'],
+  // node-pty (terminal pane PTY) is the ONE native production dependency. It is
+  // marked `external` in build.mjs's mainBuild (never bundled), so the packaged
+  // app must SHIP its tree: the explicit `files` allowlist below otherwise
+  // excludes node_modules entirely. It must ALSO be asar-unpacked — Electron's
+  // patched `fs` cannot dlopen a `.node` binary from inside app.asar, so the
+  // require() is redirected to app.asar.unpacked. node-pty@1.x has no runtime
+  // deps, so only its own tree is needed. electron-builder's DEFAULT
+  // `npmRebuild: true` (not overridden here) rebuilds it against the packaged
+  // Electron's ABI per platform in the installer workflows.
+  files: ['dist/**', 'package.json', 'node_modules/node-pty/**'],
   asar: true,
-  asarUnpack: ['dist/sql-wasm.wasm'],
+  asarUnpack: ['dist/sql-wasm.wasm', 'node_modules/node-pty/**'],
   win: {
     target: [
       { target: 'nsis', arch: ['x64'] },
