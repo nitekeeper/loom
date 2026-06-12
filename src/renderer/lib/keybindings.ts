@@ -36,7 +36,8 @@ export type CommandId =
   | 'toggleTheme'
   | 'togglePause'
   | 'openSearch'
-  | 'copyRendered';
+  | 'copyRendered'
+  | 'toggleTerminal';
 
 /** A command entry shown in the Shortcuts panel. */
 export interface CommandSpec {
@@ -53,6 +54,7 @@ export interface CommandSpec {
 export const COMMANDS: readonly CommandSpec[] = [
   { id: 'toggleExplorer', label: 'Toggle file explorer', defaultBinding: 'Ctrl+B' },
   { id: 'toggleChat', label: 'Toggle agent chat', defaultBinding: 'Ctrl+J' },
+  { id: 'toggleTerminal', label: 'Toggle terminal', defaultBinding: 'Ctrl+`' },
   { id: 'openSearch', label: 'Search file contents', defaultBinding: 'Ctrl+Shift+F' },
   { id: 'closeFile', label: 'Close file', defaultBinding: 'Escape' },
   { id: 'foldAll', label: 'Fold all regions', defaultBinding: 'Ctrl+K' },
