@@ -32,6 +32,7 @@ import { WindowResizeHandles } from './WindowResizeHandles.js';
 import { StatusBar } from './StatusBar.js';
 import { Explorer } from './Explorer.js';
 import { SearchView } from './SearchView.js';
+import { ChangesView } from './ChangesView.js';
 import { Viewer } from './Viewer.js';
 import { Chat } from './Chat.js';
 import { ShortcutsPanel } from './ShortcutsPanel.js';
@@ -596,6 +597,23 @@ function readSearchOpenHint(): boolean {
   return raw !== '0' && raw !== 'false';
 }
 
+/** Read the capture-only `?changes` hint (presence ⇒ open the branch Changes
+ *  viewer on boot for a headless proof screenshot). `?changes` (no value) or
+ *  `=1`/`=true` ⇒ open; `=0`/`=false` ⇒ closed. Parallel to the
+ *  search/shortcuts capture hints. */
+function readChangesHint(): boolean {
+  if (typeof location === 'undefined') return false;
+  let params: URLSearchParams;
+  try {
+    params = new URLSearchParams(location.search);
+  } catch {
+    return false;
+  }
+  if (!params.has('changes')) return false;
+  const raw = params.get('changes');
+  return raw !== '0' && raw !== 'false';
+}
+
 export function App(): JSX.Element {
   // One store instance for the lifetime of the app.
   const store = useMemo(() => createStore(), []);
@@ -804,6 +822,51 @@ export function App(): JSX.Element {
       searchOpenerRef.current = null;
     });
   }, []);
+
+  /* ============================================================
+   * Branch "Changes" viewer (center-pane MODE)
+   * ------------------------------------------------------------
+   * `diffMode` swaps the center 1fr track from the Viewer to the
+   * ChangesView (the SearchView swap idiom, targeting the Viewer track).
+   * The StatusBar Changes toggle + Ctrl/Cmd+Shift+G open it; the
+   * ChangesView × button, the toggle, and Escape close it back to the
+   * previously-selected file's Viewer. A capture `?changes` hint opens
+   * it on boot for a headless proof. App-LOCAL UI state (like searchMode),
+   * NOT part of the frozen InitialState. Fetched once on open.
+   * ============================================================ */
+  const initialDiffMode = useMemo(() => readChangesHint(), []);
+  const [diffMode, setDiffMode] = useState<boolean>(() => initialDiffMode);
+  // The StatusBar Changes toggle — focus returns here on close (SC 2.4.3),
+  // mirroring the search opener pattern.
+  const changesToggleRef = useRef<HTMLButtonElement>(null);
+
+  // Open the Changes viewer and fetch the listing once (v1 = fetch-on-open).
+  const openChanges = useCallback((): void => {
+    setDiffMode(true);
+    setStatusMessage('Changes opened');
+    void store.loadChanges();
+  }, [store]);
+
+  // Close the Changes viewer → back to the selected file's Viewer. Restore focus
+  // to the StatusBar toggle (it never unmounts), deferred to rAF for parity with
+  // closeSearch. Never leaves focus stranded on document.body.
+  const closeChanges = useCallback((): void => {
+    setDiffMode(false);
+    setStatusMessage('Changes closed');
+    requestAnimationFrame(() => changesToggleRef.current?.focus());
+  }, []);
+
+  // The StatusBar toggle + the Ctrl/Cmd+Shift+G binding flip between the two.
+  const toggleChanges = useCallback((): void => {
+    if (diffMode) closeChanges();
+    else openChanges();
+  }, [diffMode, openChanges, closeChanges]);
+
+  // Fire loadChanges once on boot when the capture hint opened the viewer (the
+  // openChanges path is bypassed for the initial render).
+  useEffect(() => {
+    if (initialDiffMode) void store.loadChanges();
+  }, [initialDiffMode, store]);
 
   // Open the panel, remembering the opener so focus returns to it on close.
   const openShortcuts = useCallback((opener: HTMLElement | null): void => {
@@ -1087,14 +1150,47 @@ export function App(): JSX.Element {
 
       const combo = eventToCombo(e);
 
-      // Fixed, non-rebindable opener: Ctrl/Cmd+Comma opens the panel. Skipped
-      // in editable controls so a future text field keeps native behavior.
-      // The panel hard-blocks binding any command to a RESERVED combo (KB-2),
-      // so the opener can never be shadowed; this branch therefore wins
-      // unconditionally for the reserved combo.
-      if (isReserved(combo) && !isEditableTarget(e.target)) {
+      // Fixed, non-rebindable opener: Ctrl/Cmd+Comma opens the Shortcuts panel.
+      // Skipped in editable controls so a future text field keeps native
+      // behavior. RESERVED_COMBOS now holds MULTIPLE fixed combos (the opener +
+      // the Changes toggle), each routed to its OWN action — so this branch must
+      // match the opener SPECIFICALLY (not any reserved combo), else it would
+      // swallow Ctrl/Cmd+Shift+G. The panel still hard-blocks binding any command
+      // to ANY reserved combo (KB-2), so neither fixed combo can be shadowed.
+      if (combo === 'Ctrl+,' && !isEditableTarget(e.target)) {
         e.preventDefault();
         openShortcuts(gearButtonRef.current);
+        return;
+      }
+
+      // Escape closes the Changes viewer first (it is a center-pane MODE, like
+      // search). Only when it is open; otherwise the key falls through to the
+      // close-file / native handling below. Skipped in editable controls. The
+      // !e.defaultPrevented re-check is the same "second, independent barrier"
+      // the close-file path uses (A11Y-CLOSE-05): if a future Escape consumer
+      // (e.g. a tooltip) preventDefaults WITHOUT stopPropagation, a consumed
+      // Escape must not also close the viewer.
+      if (
+        e.key === 'Escape' &&
+        diffMode &&
+        !e.defaultPrevented &&
+        !isEditableTarget(e.target)
+      ) {
+        e.preventDefault();
+        closeChanges();
+        return;
+      }
+
+      // Fixed Ctrl/Cmd+Shift+G binding toggles the branch Changes viewer. A
+      // FIXED combo (not a rebindable CommandId) and a RESERVED combo (so the
+      // Shortcuts panel hard-blocks any rebind onto it, KB-2) — parallel to the
+      // reserved Ctrl/Cmd+Comma opener. eventToCombo folds metaKey into 'Ctrl'
+      // (keybindings.ts:120), so Cmd and Ctrl both canonicalize to
+      // 'Ctrl+Shift+G'. Skipped in editable controls so a future text field
+      // keeps native keys.
+      if (combo === 'Ctrl+Shift+G' && !isEditableTarget(e.target)) {
+        e.preventDefault();
+        toggleChanges();
         return;
       }
 
@@ -1173,6 +1269,9 @@ export function App(): JSX.Element {
     openShortcuts,
     runCloseFileCommand,
     openSearch,
+    diffMode,
+    closeChanges,
+    toggleChanges,
   ]);
 
   if (vm === null) {
@@ -1206,6 +1305,10 @@ export function App(): JSX.Element {
         explorerHidden={explorerHidden}
         onToggleExplorer={toggleExplorer}
         explorerToggleRef={explorerToggleRef}
+        diffMode={diffMode}
+        onToggleDiff={toggleChanges}
+        diffToggleRef={changesToggleRef}
+        changedCount={vm.changes?.available ? vm.changes.files.length : null}
         chatHidden={chatHidden}
         onToggleChat={toggleChat}
         chatToggleRef={chatToggleRef}
@@ -1289,6 +1392,17 @@ export function App(): JSX.Element {
               } else {
                 store.selectFile(path);
                 const name = path.split('/').filter(Boolean).pop() ?? path;
+                // The Changes viewer occupies the SAME center 1fr track as the
+                // Viewer (unlike SearchView, which swaps the explorer column),
+                // so a file genuinely opened from the Explorer while diffMode is
+                // on would be HIDDEN behind ChangesView — the live region would
+                // say "Opened X" but nothing changes on screen. Drop diffMode so
+                // the opened file actually surfaces (SEC-2). We call
+                // setDiffMode(false) directly (NOT closeChanges()) so focus stays
+                // on the just-activated treeitem and the "Opened X" announcement
+                // stands — closeChanges() would steal focus to the StatusBar
+                // toggle and overwrite the message with "Changes closed".
+                setDiffMode(false);
                 setStatusMessage(`Opened ${name}`);
               }
             }}
@@ -1298,14 +1412,23 @@ export function App(): JSX.Element {
             gitStatus={vm.gitStatus}
           />
         )}
-        <Viewer
-          content={content}
-          onClose={closeFileFromButton}
-          foldCommand={foldCommand}
-          copyCommand={copyCommand}
-          targetLine={targetLine}
-          mdWidth={mdWidth}
-        />
+        {/* Center 1fr track: the branch Changes viewer REPLACES the Viewer when
+            diffMode is true (the SearchView swap idiom, targeting the Viewer
+            track because a diff is CONTENT). ChangesView reuses the .pane.viewer
+            placement so NO grid-template change is needed; closing returns to the
+            previously-selected file's Viewer. */}
+        {diffMode ? (
+          <ChangesView changes={vm.changes} onClose={closeChanges} />
+        ) : (
+          <Viewer
+            content={content}
+            onClose={closeFileFromButton}
+            foldCommand={foldCommand}
+            copyCommand={copyCommand}
+            targetLine={targetLine}
+            mdWidth={mdWidth}
+          />
+        )}
         {!explorerHidden && (
           <Splitter
             width={explorerWidth}

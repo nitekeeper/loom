@@ -476,6 +476,85 @@ export type LiveState = 'LIVE' | 'PAUSED' | 'CAUGHT_UP';
  *  Persists until the file is committed (no expiry timer). */
 export type GitFileStatus = 'modified' | 'added' | 'untracked' | 'staged';
 
+/* ------------------------------------------------------------------ */
+/* 7b. Git changes / diff (the "Changes" viewer)                       */
+/* ------------------------------------------------------------------ */
+
+/** How a file changed on the current branch relative to the base merge-base
+ *  (git-diff "Changes" viewer). Mirrors git's name-status M/A/D/R/C codes. The
+ *  v1 producer surfaces only added/modified (+ a rename destination, shaped as
+ *  added with oldPath set); 'deleted'/'copied' are reserved for forward-compat. */
+export type ChangeKind = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
+
+/** One file changed on the current branch vs. the base (default `main`).
+ *  Produced from `git diff --name-status -M -z <mergeBaseSha>...HEAD`. `path` is
+ *  the root-relative POSIX path of the NEW (HEAD) side, same shape/keying as
+ *  FileNode.path; confined to the sandbox root (Law 3). RAW git output — the
+ *  renderer MUST escape `path`/`oldPath` before render (Law 1, like
+ *  SearchMatch.lineText). */
+export interface ChangedFile {
+  path: string;
+  changeKind: ChangeKind;
+  /** Source (OLD) path for a rename/copy; null otherwise. */
+  oldPath: string | null;
+  /** True when git classified the file binary (numstat '-\t-'): the viewer shows
+   *  a 'Binary file changed' card, never decoded bytes (Law 1). */
+  binary: boolean;
+}
+
+/** Result of listing branch changes (GET_CHANGES). When the root is not a git
+ *  repo, git is unavailable, or there is no base to diff against, `available`
+ *  is false and `files` is empty (fail-soft, mirroring getGitStatus's empty
+ *  contract). The renderer shows a graceful 'no changes' state, never an error. */
+export interface ChangeSet {
+  available: boolean;
+  /** The base ref the changes were computed against (e.g. "main"); '' when none. */
+  base: string;
+  /** Current branch name (HEAD side), or null when detached/unknown. */
+  branch: string | null;
+  /** Every file CREATED or MODIFIED (+ rename dest) on the branch, in git order. */
+  files: ChangedFile[];
+}
+
+/** One line inside a DiffHunk. `origin` selects styling; `text` is the line
+ *  WITHOUT the leading +/-/space marker. RAW file content — escape before render. */
+export interface DiffLine {
+  origin: 'context' | 'add' | 'del';
+  /** 1-based OLD-side line number (null for a pure addition). */
+  oldLine: number | null;
+  /** 1-based NEW-side line number (null for a pure deletion). */
+  newLine: number | null;
+  text: string;
+}
+
+/** One contiguous changed block, parsed from `git diff --unified=N --no-color`.
+ *  Carries the @@ -oldStart,oldLines +newStart,newLines @@ header counts so the
+ *  renderer draws gutter line numbers without re-parsing. `header` (optional
+ *  function-context git emits after @@) is RAW — escape before render. */
+export interface DiffHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  header?: string;
+  lines: DiffLine[];
+}
+
+/** The before->after diff for ONE changed file (READ_FILE_DIFF). Produced from
+ *  `git diff --unified --no-color -M <mergeBaseSha>...HEAD -- <path>`, parsed in
+ *  main. Confined to the sandbox root (Law 3); hunk text is inert source (Law 1).
+ *  `binary` mirrors FileContent's null-for-binary contract; `truncated` bounds a
+ *  giant file (MAX_DIFF_BYTES) — both null out `hunks` and show a placeholder. */
+export interface FileDiff {
+  path: string;
+  oldPath: string | null;
+  changeKind: ChangeKind;
+  binary: boolean;
+  truncated: boolean;
+  /** Parsed hunks; null when binary or truncated; empty array when identical. */
+  hunks: DiffHunk[] | null;
+}
+
 /** Persisted config file shape (userData/loom-config.json) (FR-37). */
 export interface LoomConfig {
   theme: Theme;
@@ -587,6 +666,16 @@ export const IPC = {
   /** send(Record<string,GitFileStatus>) main->renderer — git working-tree
    *  status map; pushed on boot and after every file-change event. */
   GIT_STATUS: 'loom:git:status',
+  /** invoke(): ChangeSet — list every file CREATED/MODIFIED on the current
+   *  branch vs. the base merge-base (three-dot). Confined to the sandbox root
+   *  (Law 3); fail-soft available:false when not a git repo. */
+  GET_CHANGES: 'loom:git:changes',
+  /** invoke(path: string): FileDiff — the before->after unified diff for ONE
+   *  changed file. `path` is a root-relative POSIX path from a prior
+   *  ChangedFile; main RE-CONFINES it via sandbox.resolveInRoot before any git
+   *  read (never trust the renderer; the git show object-store read bypasses the
+   *  fs sandbox, so this re-check is mandatory). */
+  READ_FILE_DIFF: 'loom:git:diff',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -636,6 +725,13 @@ export interface LoomBridge {
   getGitStatus(): Promise<Record<string, GitFileStatus>>;
   /** Subscribe to git-status pushes from the main process. */
   onGitStatus(handler: (s: Record<string, GitFileStatus>) => void): () => void;
+  /** List every file created/modified on the current branch vs. the base.
+   *  Resolves available:false when the root is not a git repo or git is
+   *  unavailable. */
+  getChanges(): Promise<ChangeSet>;
+  /** Fetch the before->after diff for ONE changed file. `path` is a root-relative
+   *  POSIX path from a ChangedFile; main re-confines it to the sandbox. */
+  readFileDiff(path: string): Promise<FileDiff>;
   /** Frameless custom-chrome window controls (win32/linux; on darwin the native
    *  inset traffic-lights are used instead and the renderer renders no controls).
    *  Each action takes NO untrusted input and acts ONLY on the SENDER window —
@@ -753,6 +849,12 @@ export const MAX_NAME_LENGTH = 64;
  *  integer is set) and injected into the engine + MCP server; an absent or
  *  invalid config value falls back to this constant. */
 export const MAX_BODY_LENGTH = 500;
+
+/** Hard ceiling (bytes) on a single file's diff payload. A file whose base OR
+ *  head blob exceeds this is reported truncated:true with null hunks so a
+ *  multi-megabyte file can't flood the renderer's per-line highlighter
+ *  (mirrors sandbox MAX_TEXT_BYTES). */
+export const MAX_DIFF_BYTES = 2 * 1024 * 1024;
 
 /** DEFAULT cap on the number of persisted chat messages per folder. Bounds
  *  memory + the per-flush full-image serialize cost under sustained multi-agent

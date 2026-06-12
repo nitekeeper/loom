@@ -2038,6 +2038,21 @@ test('FR-54 isReserved: the fixed Ctrl/Cmd+Comma opener is reserved + un-assigna
   // It collides with nothing in the default set (it is not a command binding).
   const { resolveBindings } = await kit();
   assert.equal(findConflict(resolveBindings({}), 'Ctrl+,', null), null, 'no command holds the opener combo');
+
+  // The fixed Changes-viewer toggle (Ctrl/Cmd+Shift+G) is ALSO reserved so a
+  // rebind onto it is hard-blocked by the panel rather than silently shadowed by
+  // the App dispatcher's fixed branch (frontend/F1).
+  assert.equal(isReserved('Ctrl+Shift+G'), true, 'the Changes toggle is reserved');
+  assert.equal(RESERVED_COMBOS.has('Ctrl+Shift+G'), true, 'RESERVED_COMBOS contains the Changes toggle');
+  // The Shortcuts-panel opener (ShortcutsPanel.OPENER_COMBO) reads
+  // Array.from(RESERVED_COMBOS)[0], so the opener MUST remain at index 0 — a
+  // prepend of a new reserved combo would break the panel's "press X to open"
+  // hint. This pins the ordering contract.
+  assert.equal(
+    Array.from(RESERVED_COMBOS)[0],
+    'Ctrl+,',
+    'the opener combo MUST stay at RESERVED_COMBOS index 0 (panel OPENER_COMBO)',
+  );
 });
 
 test('FR-54 isPlatformCritical: load-bearing native combos flagged for a soft warning (KB-5)', async () => {

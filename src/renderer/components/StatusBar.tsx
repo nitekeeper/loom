@@ -30,6 +30,15 @@ export interface StatusBarProps {
   /** Ref to the toggle <button> so App can restore focus when the Explorer
    *  collapses out from under the keyboard (no lost focus / no trap). */
   explorerToggleRef?: Ref<HTMLButtonElement>;
+  /** True while the Changes viewer is open (drives the toggle's pressed state). */
+  diffMode: boolean;
+  /** Open/close the branch Changes viewer (also bound to Ctrl/Cmd+Shift+G). */
+  onToggleDiff(): void;
+  /** Ref to the Changes toggle <button> so App can restore focus on close. */
+  diffToggleRef?: Ref<HTMLButtonElement>;
+  /** Number of changed files on the branch, for the optional count chip; null
+   *  until the listing is first fetched (or off a git repo). */
+  changedCount: number | null;
   /** True when the Chat pane is collapsed (drives the chat toggle's state). */
   chatHidden: boolean;
   /** Collapse/expand the Chat pane (also bound to Ctrl/Cmd+J in App).
@@ -82,6 +91,35 @@ function SidebarIcon({ collapsed }: { collapsed: boolean }): JSX.Element {
           stroke="none"
         />
       )}
+    </svg>
+  );
+}
+
+/** Changes/diff glyph: a git branch — semantically mapping to "branch changes",
+ *  visually distinct from the explorer PANEL rectangle and the chat speech
+ *  bubble at 16px so the three left/right toggles can never be confused. The
+ *  branch nodes FILL (solid) when the Changes viewer is open and are hollow
+ *  outlines when closed, so the glyph itself signals open vs closed at a glance
+ *  (UX-3) — a non-color, shape-based state cue, not tint alone. */
+function DiffIcon({ open }: { open: boolean }): JSX.Element {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {/* Three branch nodes connected by the fork lines. */}
+      <circle cx="6" cy="6" r="2.5" fill={open ? 'currentColor' : 'none'} />
+      <circle cx="6" cy="18" r="2.5" fill={open ? 'currentColor' : 'none'} />
+      <circle cx="18" cy="8" r="2.5" fill={open ? 'currentColor' : 'none'} />
+      <path d="M6 8.5v7" />
+      <path d="M18 10.5a6 6 0 0 1-6 6H8.5" />
     </svg>
   );
 }
@@ -217,6 +255,10 @@ export function StatusBar({
   explorerHidden,
   onToggleExplorer,
   explorerToggleRef,
+  diffMode,
+  onToggleDiff,
+  diffToggleRef,
+  changedCount,
   chatHidden,
   onToggleChat,
   chatToggleRef,
@@ -256,6 +298,29 @@ export function StatusBar({
         }
       >
         <SidebarIcon collapsed={explorerHidden} />
+      </button>
+
+      {/* Branch CHANGES toggle — a workspace-level view, so it sits in the LEFT
+          cluster next to the explorer toggle. A true toggle button: STABLE name
+          ("Changes") + aria-pressed for the open/closed state (A11Y-EXP-04); the
+          shortcut hint lives in the visual tooltip only. An optional changed-file
+          count rides as a .badge-new chip (aria-hidden — the count is supplemental,
+          the stable name never changes). */}
+      <button
+        type="button"
+        className="iconbtn statusbar-changes-btn"
+        ref={diffToggleRef}
+        onClick={onToggleDiff}
+        aria-pressed={diffMode}
+        aria-label="Changes"
+        title="Show changes on this branch (Ctrl/Cmd+Shift+G)"
+      >
+        <DiffIcon open={diffMode} />
+        {changedCount !== null && changedCount > 0 ? (
+          <span className="badge-new statusbar-changes-count" aria-hidden="true">
+            {changedCount}
+          </span>
+        ) : null}
       </button>
 
       <span className="stat-sep" aria-hidden="true" />

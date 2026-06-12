@@ -139,6 +139,14 @@ The renderer NEVER touches `ipcRenderer` directly — only `window.loom`.
 | `EVENT`             | `loom:event`      | send   | `(LoomEvent)` main→renderer |
 | `COUNTERS`          | `loom:counters`   | send   | `(SessionCounters)` main→renderer |
 | `LIVE_STATE`        | `loom:live:state` | send   | `(LiveState)` main→renderer |
+| `GIT_STATUS`        | `loom:git:status` | invoke + send | `() → Record<string, GitFileStatus>` (invoke); `(Record<string, GitFileStatus>)` main→renderer push on boot + after each file event |
+| `GET_CHANGES`       | `loom:git:changes`| invoke | `() → ChangeSet` — files CREATED/MODIFIED on the branch vs the base merge-base (three-dot). Fail-soft `available:false` off a git repo (Law 3 confined; main resolves `rootPath`). |
+| `READ_FILE_DIFF`    | `loom:git:diff`   | invoke | `(path: string) → FileDiff` — the before→after unified diff for ONE changed file. `path` is a root-relative POSIX path from a prior `ChangedFile`; main **re-confines it via `sandbox.resolveInRoot` before any git read** (the `git show <sha>:<path>` object-store read bypasses the fs sandbox), pre-resolves the base to a 40-char SHA, and passes paths to git only as positional args after `--`. |
+
+`GitFileStatus = 'modified' | 'added' | 'untracked' | 'staged'`. The git-changes
+payload types (`ChangeKind`, `ChangedFile`, `ChangeSet`, `DiffLine`, `DiffHunk`,
+`FileDiff`) + `MAX_DIFF_BYTES` are frozen in `src/shared/types.ts` §7b. `path` /
+`oldPath` / hunk text are RAW git output — escape at the render sink (Law 1).
 
 Preload bridge (`window.loom: LoomBridge`):
 
@@ -151,6 +159,10 @@ setLiveState(state: LiveState): Promise<void>
 onEvent(h: (e: LoomEvent) => void): () => void       // returns unsubscribe
 onCounters(h: (c: SessionCounters) => void): () => void
 onLiveState(h: (s: LiveState) => void): () => void
+getGitStatus(): Promise<Record<string, GitFileStatus>>
+onGitStatus(h: (s: Record<string, GitFileStatus>) => void): () => void
+getChanges(): Promise<ChangeSet>
+readFileDiff(path: string): Promise<FileDiff>
 ```
 
 ---
