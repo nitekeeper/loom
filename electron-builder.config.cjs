@@ -91,11 +91,31 @@ module.exports = {
   // app must SHIP its tree: the explicit `files` allowlist below otherwise
   // excludes node_modules entirely. It must ALSO be asar-unpacked — Electron's
   // patched `fs` cannot dlopen a `.node` binary from inside app.asar, so the
-  // require() is redirected to app.asar.unpacked. node-pty@1.x has no runtime
-  // deps, so only its own tree is needed. electron-builder's DEFAULT
-  // `npmRebuild: true` (not overridden here) rebuilds it against the packaged
-  // Electron's ABI per platform in the installer workflows.
-  files: ['dist/**', 'package.json', 'node_modules/node-pty/**'],
+  // require() is redirected to app.asar.unpacked. Its only declared dep,
+  // node-addon-api, is compile-time headers — nothing else is require()d at
+  // runtime. electron-builder's DEFAULT `npmRebuild: true` (not overridden
+  // here) rebuilds it against the packaged Electron's ABI per platform in the
+  // installer workflows.
+  //
+  // LEAN PACKAGING — the negation globs prune ~62 MB of dead weight while
+  // keeping every runtime path alive. node-pty's loader (lib/utils.js
+  // pathToModule) probes `build/Release` FIRST, then build/Debug, then
+  // `prebuilds/<platform>-<arch>` — and every workflow rebuilds (the explicit
+  // electron-rebuild step + npmRebuild), so build/Release/pty.node always
+  // exists and prebuilds/ (58 MB, mostly foreign-platform binaries) is never
+  // reached. The other excluded subtrees are build-time only: src + deps +
+  // third_party (C/C++ sources the gyp compile consumes), scripts (install
+  // hooks), bin (prebuild tooling), typings (TS declarations). What SHIPS:
+  // lib/** (the runtime JS), build/Release/** (the rebuilt .node),
+  // package.json / binding.gyp / LICENSE / README, and node-pty's own inert
+  // node_modules/ (node-addon-api, ~0.5 MB).
+  files: [
+    'dist/**',
+    'package.json',
+    'node_modules/node-pty/**',
+    '!node_modules/node-pty/prebuilds/**',
+    '!node_modules/node-pty/{src,deps,third_party,scripts,bin,typings}/**',
+  ],
   asar: true,
   asarUnpack: ['dist/sql-wasm.wasm', 'node_modules/node-pty/**'],
   win: {

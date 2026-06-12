@@ -83,7 +83,11 @@ async function launch(dir: string): Promise<{ app: ElectronApplication; page: Pa
     // LOOM_ROOT is the sandbox root the launcher normally sets (bin/loom.cjs);
     // resolveRoot() honors it byte-for-byte — the PTY must spawn with this
     // directory as its cwd (AC 1).
-    env: { ...process.env, LOOM_ROOT: dir },
+    // SHELL is pinned to bash because the app honors $SHELL (defaultShell,
+    // src/main/terminal.ts) and every probe in this suite is Bourne syntax
+    // ($(pwd), $$, quote-splitting) — a fish/other login shell on a local dev
+    // box would otherwise break the tests spuriously.
+    env: { ...process.env, LOOM_ROOT: dir, SHELL: 'bash' },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.pane.explorer [role="treeitem"]', { timeout: 30_000 });
@@ -170,11 +174,13 @@ test('closing the pane kills the PTY process', async () => {
     await openTerminal(page);
 
     // Learn the shell's pid from inside the shell. `$$` expands only in the
-    // shell, so the typed line renders as `PID:$$` (no digits) and the regex
-    // below can only match REAL output.
-    await runCommand(page, 'echo "PID:$$"');
-    await expect(page.locator(PANE)).toContainText(/PID:\d+/, { timeout: 15_000 });
-    const match = /PID:(\d+)/.exec(await paneText(page));
+    // shell, so the typed line renders as `PID:$$:END` (no digits) and the
+    // regex below can only match REAL output. The `:END` terminator guards
+    // against a partially flushed render: a bare /PID:\d+/ could match
+    // mid-paint and capture a TRUNCATED pid.
+    await runCommand(page, 'echo "PID:$$:END"');
+    await expect(page.locator(PANE)).toContainText(/PID:\d+:END/, { timeout: 15_000 });
+    const match = /PID:(\d+):END/.exec(await paneText(page));
     expect(match, 'shell pid did not render').not.toBeNull();
     const pid = Number(match![1]);
 
