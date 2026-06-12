@@ -551,8 +551,16 @@ function registerWindowControlHandlers(): void {
       const cur = win.getBounds();
       const isManual = manualMaximizedMap.get(win) ?? false;
       const decision = computeWslToggleMaximize(isManual, cur, preMaximizeBoundsMap.get(win) ?? null, screen.getAllDisplays());
-      if (!isManual) preMaximizeBoundsMap.set(win, cur);
-      else preMaximizeBoundsMap.delete(win);
+      if (!isManual) {
+        // Fresh maximize: record the floating bounds to restore later.
+        preMaximizeBoundsMap.set(win, cur);
+      } else if (!decision.isMaximized) {
+        // True restore: the recorded bounds were consumed.
+        preMaximizeBoundsMap.delete(win);
+      }
+      // else: re-maximize after a drag-while-fake-maximized (stale-flag
+      // recovery in computeWslToggleMaximize) — KEEP the recorded preMax
+      // bounds so the next undisturbed toggle still restores them.
       manualMaximizedMap.set(win, decision.isMaximized);
       win.setBounds(decision.bounds);
       if (!win.isDestroyed()) win.webContents.send(IPC.WINDOW_MAXIMIZED, decision.isMaximized);
