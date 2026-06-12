@@ -276,10 +276,14 @@ export function findConflict(
  *  at index 0 — APPEND new reserved combos, never prepend. 'Ctrl+Shift+G' is the
  *  fixed Changes-viewer toggle (App.tsx dispatcher intercepts it before the
  *  rebindable-command loop), reserved here so a rebind onto it is hard-blocked
- *  rather than silently shadowed. */
+ *  rather than silently shadowed. 'Ctrl+Shift+Tab' is the terminal pane's
+ *  focus-escape hatch (TerminalPane's attachCustomKeyEventHandler moves focus
+ *  out of xterm on it) — reserved so a command rebound onto it could never
+ *  fire focus-escape AND its own action (e.g. dock-close/kill) at once. */
 export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
   'Ctrl+,',
   'Ctrl+Shift+G',
+  'Ctrl+Shift+Tab',
 ]);
 
 /** True when `combo` is reserved by the app shell (see RESERVED_COMBOS) and
@@ -379,11 +383,14 @@ export function diffOverrides(
   const overrides: Record<string, string> = {};
   for (const id of COMMAND_IDS) {
     const v = resolved[id];
-    // Persist ONLY real, differing-from-default bindings. A VACATED command
-    // (combo === '' from a reassign that re-collided, KB-3) is structurally
-    // invalid, so we never persist it — it falls back to its default on
-    // resolve, and the panel re-captures it before close anyway.
-    if (typeof v === 'string' && v !== DEFAULT_BINDINGS[id] && isValidBinding(v)) {
+    // Persist ONLY real, differing-from-default bindings ALLOWED for their
+    // command (bindingAllowedFor: structural validity + the toggleTerminal
+    // modifier requirement — anything resolveBindings would drop must never
+    // persist, or the UI and the live bindings silently diverge). A VACATED
+    // command (combo === '' from a reassign that re-collided, KB-3) is
+    // structurally invalid, so we never persist it — it falls back to its
+    // default on resolve, and the panel re-captures it before close anyway.
+    if (typeof v === 'string' && v !== DEFAULT_BINDINGS[id] && bindingAllowedFor(id, v)) {
       overrides[id] = v;
     }
   }

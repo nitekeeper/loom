@@ -4,6 +4,7 @@
   "description": "A desktop viewer with a built-in chat layer that AI agents use to communicate, watched live by a human.",
   "private": true,
   "author": "nitekeeper",
+  "homepage": "https://github.com/nitekeeper/loom",
   "type": "commonjs",
   "main": "dist/main.cjs",
   "bin": {

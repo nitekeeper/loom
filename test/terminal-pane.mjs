@@ -99,3 +99,16 @@ test('TERM-KB: toggleTerminal rejects modifier-less overrides (editable punch-th
   assert.equal(resolveBindings({ toggleTerminal: 'K' }).toggleTerminal, 'Ctrl+`');
   assert.equal(resolveBindings({ toggleTerminal: 'Alt+T' }).toggleTerminal, 'Alt+T');
 });
+
+test('TERM-KB: diffOverrides never persists a disallowed toggleTerminal binding', async () => {
+  const { diffOverrides, DEFAULT_BINDINGS } = await kit();
+  // A modifier-less toggleTerminal binding is dropped by resolveBindings, so
+  // persisting it would make the stored config and the live bindings diverge.
+  const overrides = diffOverrides({ ...DEFAULT_BINDINGS, toggleTerminal: 'K' });
+  assert.deepEqual(overrides, {}, 'the bare-key override is not persisted');
+});
+
+test('TERM-KB: Ctrl+Shift+Tab (terminal focus-escape) is reserved', async () => {
+  const { isReserved } = await kit();
+  assert.equal(isReserved('Ctrl+Shift+Tab'), true);
+});

@@ -52,6 +52,7 @@ import {
   COMMANDS,
   DEFAULT_BINDINGS,
   RESERVED_COMBOS,
+  bindingAllowedFor,
   eventToCombo,
   findConflict,
   formatCombo,
@@ -234,7 +235,8 @@ export function ShortcutsPanel({
   );
 
   // Assign a valid combo to the capturing command, handling reserved combos
-  // (hard block) and conflicts (reassign/cancel).
+  // (hard block), per-command disallowed combos (hard block), and conflicts
+  // (reassign/cancel).
   const assignCombo = useCallback(
     (id: CommandId, combo: string): void => {
       // The app-shell opener is reserved — refuse and explain (KB-2).
@@ -243,6 +245,18 @@ export function ShortcutsPanel({
         setLiveCombo(combo);
         announce(
           `${formatCombo(combo)} is reserved for opening Keyboard Shortcuts and cannot be assigned. Press another key combination, or press Escape to cancel.`,
+        );
+        return;
+      }
+      // Per-command guard (bindingAllowedFor): toggleTerminal must keep at
+      // least one modifier — it fires even inside editable targets, so a bare
+      // key would kill the shell on every plain keystroke. Refuse and explain
+      // exactly like a reserved combo, so the panel can never capture+persist
+      // a binding that resolveBindings would silently drop (UI/live skew).
+      if (!bindingAllowedFor(id, combo)) {
+        setLiveCombo(combo);
+        announce(
+          `${formatCombo(combo)} cannot be assigned to ${labelFor(id)} — this shortcut needs a modifier key (like Ctrl). Press another key combination, or press Escape to cancel.`,
         );
         return;
       }
@@ -525,9 +539,14 @@ export function ShortcutsPanel({
               pendingEscape !== null && pendingEscape.id === id;
             const current = working[id] ?? DEFAULT_BINDINGS[id];
             // A VACATED command (combo === '' after a re-colliding reassign,
-            // KB-3) shows its default as the resolved fallback.
+            // KB-3) — or a binding DISALLOWED for this command (e.g. a stale
+            // modifier-less toggleTerminal override that resolveBindings
+            // drops) — shows its default as the resolved fallback, so the row
+            // always displays what is actually live.
             const shown =
-              current && isValidBinding(current) ? current : DEFAULT_BINDINGS[id];
+              current && bindingAllowedFor(id, current)
+                ? current
+                : DEFAULT_BINDINGS[id];
             const display = capturing
               ? liveCombo
                 ? formatCombo(liveCombo)
