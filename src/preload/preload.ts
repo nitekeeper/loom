@@ -36,6 +36,10 @@ import type {
   GitFileStatus,
   ChangeSet,
   FileDiff,
+  TerminalOpenParams,
+  TerminalOpenResult,
+  TerminalDataPush,
+  TerminalExitPush,
 } from '../shared/types.js';
 
 /* ------------------------------------------------------------------ */
@@ -65,6 +69,10 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.GIT_STATUS,
   IPC.GET_CHANGES,
   IPC.READ_FILE_DIFF,
+  IPC.TERMINAL_OPEN,
+  IPC.TERMINAL_INPUT,
+  IPC.TERMINAL_RESIZE,
+  IPC.TERMINAL_CLOSE,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
@@ -73,6 +81,8 @@ const PUSH_CHANNELS: ReadonlySet<string> = new Set([
   IPC.LIVE_STATE,
   IPC.WINDOW_MAXIMIZED,
   IPC.GIT_STATUS,
+  IPC.TERMINAL_DATA,
+  IPC.TERMINAL_EXIT,
 ]);
 
 /** Assert a channel is the expected, allow-listed constant before use.
@@ -213,6 +223,33 @@ export function createBridge(): LoomBridge {
         // x/y/width/height as finite integers and CLAMPS the size before applying
         // (never trust the renderer; mirror of openExternal/copyToClipboard).
         return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_SET_BOUNDS), b);
+      },
+    },
+    // Terminal pane PTY controls (loom:terminal:*). Each method hard-pins its
+    // single IPC.* constant via assertInvoke; every payload is forwarded as-is
+    // because main's PURE session manager is the authoritative re-validation
+    // gate (types, the per-spawn sessionId token, the 64 KiB input cap,
+    // cols/rows ranges — never trust the renderer; invalid/stale input is a
+    // silent no-op). onData/onExit reuse the same subscribe() helper every
+    // other push uses, so the renderer never receives the IpcRendererEvent.
+    terminal: {
+      open(opts: TerminalOpenParams): Promise<TerminalOpenResult> {
+        return ipcRenderer.invoke(assertInvoke(IPC.TERMINAL_OPEN), opts);
+      },
+      input(sessionId: string, data: string): Promise<void> {
+        return ipcRenderer.invoke(assertInvoke(IPC.TERMINAL_INPUT), { sessionId, data });
+      },
+      resize(sessionId: string, cols: number, rows: number): Promise<void> {
+        return ipcRenderer.invoke(assertInvoke(IPC.TERMINAL_RESIZE), { sessionId, cols, rows });
+      },
+      close(sessionId: string): Promise<void> {
+        return ipcRenderer.invoke(assertInvoke(IPC.TERMINAL_CLOSE), { sessionId });
+      },
+      onData(h: (p: TerminalDataPush) => void): () => void {
+        return subscribe<TerminalDataPush>(IPC.TERMINAL_DATA, h);
+      },
+      onExit(h: (p: TerminalExitPush) => void): () => void {
+        return subscribe<TerminalExitPush>(IPC.TERMINAL_EXIT, h);
       },
     },
   };

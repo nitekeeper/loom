@@ -26,6 +26,8 @@ import { createSearch } from './search.js';
 import { createWatcher } from './watcher.js';
 import { createConfigStore } from './config.js';
 import { createIpcWiring } from './ipc.js';
+import { createTerminalManager } from './terminal.js';
+import { createNodePtyFactory } from './pty-factory.js';
 import { createWsFeed, wsEnabled } from './ws.js';
 import { linuxMaximizeBounds, computeWslToggleMaximize } from './linux-maximize.js';
 
@@ -286,6 +288,9 @@ interface Services {
   sandbox: ReturnType<typeof createSandbox>;
   watcher: ReturnType<typeof createWatcher>;
   ipc: ReturnType<typeof createIpcWiring>;
+  /** The human-invoked terminal pane's PTY session manager (loom:terminal:*).
+   *  PTY lives ONLY in main; killed on window close / app quit. */
+  terminal: ReturnType<typeof createTerminalManager>;
   mcp: ReturnType<typeof createMcpServer>;
   ws: ReturnType<typeof createWsFeed> | null;
   rootDir: string;
@@ -486,7 +491,13 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   const watcher = createWatcher(rootDir, bus);
   watcher.start();
 
-  const ipc = createIpcWiring({ db, sandbox, config, bus, search, rootPath: rootDir });
+  // The terminal pane's PTY session manager (human-invoked; MCP-invisible).
+  // The node-pty factory loads its native binding LAZILY on first open(), so a
+  // missing/ABI-broken node-pty degrades to "terminal unavailable"
+  // ({ sessionId: null }) instead of failing boot.
+  const terminal = createTerminalManager({ factory: createNodePtyFactory(), rootDir });
+
+  const ipc = createIpcWiring({ db, sandbox, config, bus, search, rootPath: rootDir, terminal });
   ipc.register();
 
   let ws: Services['ws'] = null;
@@ -495,7 +506,7 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
     await ws.start();
   }
 
-  return { db, bus, engine, sandbox, watcher, ipc, mcp, ws, rootDir, ownsMcpAdvert };
+  return { db, bus, engine, sandbox, watcher, ipc, terminal, mcp, ws, rootDir, ownsMcpAdvert };
 }
 
 /** Platform-aware window-chrome options for the MAIN window.
@@ -772,6 +783,10 @@ function createMainWindow(services: Services): BrowserWindow {
   services.ipc.attachRenderer((channel, payload) => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
   });
+  // Kill-on-window-close: the PTY must never outlive the window that owns it
+  // (the renderer's pane-close path also kills, but a window closed with the
+  // terminal open relies on this). Idempotent with the will-quit disposeAll.
+  win.on('closed', () => services.terminal.disposeAll());
   return win;
 }
 
@@ -1104,6 +1119,11 @@ export function bootstrap(): void {
         void services.ws?.stop();
         services.watcher.stop();
       });
+
+      // Lifecycle safety: never leak a live PTY past the app. disposeAll() is
+      // idempotent (a second call on an already-killed session is a no-op), so
+      // it is safe to fire on BOTH will-quit and window close.
+      app.on('will-quit', () => services.terminal.disposeAll());
 
       if (capture) {
         await runCapture(services, capture);
