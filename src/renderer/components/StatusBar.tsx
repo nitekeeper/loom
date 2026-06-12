@@ -48,6 +48,13 @@ export interface StatusBarProps {
   /** Ref to the chat toggle <button> so App can restore focus when the Chat
    *  collapses out from under the keyboard (no lost focus / no trap). */
   chatToggleRef?: Ref<HTMLButtonElement>;
+  /** True when the terminal dock is open (drives the toggle's state). */
+  terminalOpen: boolean;
+  /** Open/close the bottom terminal dock (also bound to Ctrl/Cmd+`). */
+  onToggleTerminal(): void;
+  /** Ref to the terminal toggle <button> so App can restore focus when the
+   *  dock closes out from under the keyboard (no lost focus / no trap). */
+  terminalToggleRef?: Ref<HTMLButtonElement>;
   onTogglePause(): void;
   onToggleTheme(): void;
   /** Open the Settings panel. (The Keyboard Shortcuts panel has its own fixed
@@ -167,6 +174,44 @@ function ChatBubbleIcon({ collapsed }: { collapsed: boolean }): JSX.Element {
   );
 }
 
+/** Terminal glyph: a framed prompt (`>` chevron + cursor underscore) — the
+ *  conventional "terminal" affordance, instantly distinct from the chat
+ *  bubble and the explorer panel rectangle at 16px. The frame FILLS when the
+ *  dock is open (the prompt knocks out in the panel color via the accent-ink
+ *  trick used by filled glyphs) and is a hollow outline when closed, so the
+ *  glyph itself signals open vs closed at a glance (UX-3) — a non-color,
+ *  shape-based state cue, not tint alone. */
+function TerminalIcon({ open }: { open: boolean }): JSX.Element {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect
+        x="3"
+        y="4"
+        width="18"
+        height="16"
+        rx="2"
+        fill={open ? 'currentColor' : 'none'}
+      />
+      {/* Prompt chevron + cursor line. On the filled (open) frame they draw in
+          the panel surface color so they stay visible against the fill. */}
+      <g stroke={open ? 'var(--panel)' : 'currentColor'}>
+        <path d="m7 9 3 3-3 3" />
+        <line x1="12.5" y1="15" x2="17" y2="15" />
+      </g>
+    </svg>
+  );
+}
+
 function SunIcon(): JSX.Element {
   return (
     <svg
@@ -262,6 +307,9 @@ export function StatusBar({
   chatHidden,
   onToggleChat,
   chatToggleRef,
+  terminalOpen,
+  onToggleTerminal,
+  terminalToggleRef,
   onTogglePause,
   onToggleTheme,
   onOpenSettings,
@@ -377,6 +425,22 @@ export function StatusBar({
         }
       >
         <ChatBubbleIcon collapsed={chatHidden} />
+      </button>
+
+      {/* Terminal-dock toggle — next to the chat toggle (both are body-pane
+          visibility controls). A true toggle button: STABLE name ("Terminal")
+          + aria-pressed for the open/closed state (A11Y-EXP-04); the shortcut
+          hint lives in the visual tooltip only. */}
+      <button
+        type="button"
+        className="iconbtn"
+        ref={terminalToggleRef}
+        onClick={onToggleTerminal}
+        aria-pressed={terminalOpen}
+        aria-label="Terminal"
+        title="Toggle terminal (Ctrl+`)"
+      >
+        <TerminalIcon open={terminalOpen} />
       </button>
 
       <span className="stat-sep" aria-hidden="true" />

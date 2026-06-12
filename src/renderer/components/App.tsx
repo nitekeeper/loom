@@ -3,7 +3,10 @@
  * ------------------------------------------------------------
  * The window root: a CSS grid of rows `auto auto 1fr` —
  * TitleBar (chrome) / StatusBar (chrome) / body of three content
- * panes (Explorer | Viewer | Chat). NO terminal pane (OQ-6).
+ * panes (Explorer | Viewer | Chat), plus an OPTIONAL bottom-dock
+ * terminal row spanning all three columns (status-bar toggle /
+ * Ctrl|Cmd+`, resizable via a row splitter, maximizable, session
+ * killed on close — a human-invoked surface, never agent-reachable).
  * Owns top-level UI state: selected file, active channel, theme,
  * derived from the LoomStore (FR-14 single source of truth).
  * ============================================================ */
@@ -37,6 +40,16 @@ import { Viewer } from './Viewer.js';
 import { Chat } from './Chat.js';
 import { ShortcutsPanel } from './ShortcutsPanel.js';
 import { SettingsPanel } from './SettingsPanel.js';
+import { TerminalPane } from './TerminalPane.js';
+import {
+  clampTerminalHeight,
+  terminalHeightMax,
+  TERMINAL_DEFAULT_HEIGHT,
+  TERMINAL_HEIGHT_KEY,
+  TERMINAL_HEIGHT_STEP,
+  TERMINAL_MIN_HEIGHT,
+  TERMINAL_OPEN_KEY,
+} from '../lib/terminal-pane.js';
 import { readInitialMdWidth, persistMdWidth } from '../lib/md-width.js';
 import type { WidthMode } from '../lib/md-width.js';
 import { installGlobalAnchorGuard } from '../lib/anchor-guard.js';
@@ -416,6 +429,106 @@ function useExplorerWidth(): {
   return { width, setWidth };
 }
 
+/* ============================================================
+ * Terminal-dock resize + open state (bottom row, FR-54 idiom)
+ * ------------------------------------------------------------
+ * Mirror of the chat resize rotated 90°: the optional terminal dock
+ * is a SECOND `.body` grid row spanning all three columns, resized
+ * via a horizontal splitter on its TOP edge. Height is driven by the
+ * `--terminal-h` custom property on `.body`, clamped by the pure
+ * helpers in lib/terminal-pane.ts (min 120px, max 80% of the body),
+ * and persisted in localStorage; the open state persists too.
+ * Maximize is session-only.
+ * ============================================================ */
+
+/** Read the live `.body` height (px) for the terminal-height clamp, falling
+ *  back to the window height pre-mount so the lazy init never divides by a
+ *  zero-height body. */
+function bodyHeightNow(): number {
+  if (typeof document !== 'undefined') {
+    const body = document.querySelector('.body');
+    if (body instanceof HTMLElement && body.clientHeight > 0) {
+      return body.clientHeight;
+    }
+  }
+  return typeof window !== 'undefined' && window.innerHeight > 0
+    ? window.innerHeight
+    : 800;
+}
+
+/** Clamp a candidate dock height against the CURRENT body height. */
+function clampTerminalHeightNow(h: number): number {
+  return clampTerminalHeight(h, bodyHeightNow());
+}
+
+/** Read the persisted dock height from localStorage, or null when unset. */
+function readPersistedTerminalHeight(): number | null {
+  try {
+    const raw = window.localStorage.getItem(TERMINAL_HEIGHT_KEY);
+    if (raw === null) return null;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Compute the initial dock height: persisted, else default — clamped. */
+function initialTerminalHeight(): number {
+  const persisted = readPersistedTerminalHeight();
+  if (persisted !== null) return clampTerminalHeightNow(persisted);
+  return clampTerminalHeightNow(TERMINAL_DEFAULT_HEIGHT);
+}
+
+/** Read the persisted dock open state, or null when unset (default closed). */
+function readPersistedTerminalOpen(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(TERMINAL_OPEN_KEY);
+    if (raw === null) return null;
+    return raw === '1';
+  } catch {
+    return null;
+  }
+}
+
+/** Compute the initial dock open state: persisted, else closed (default). */
+function initialTerminalOpen(): boolean {
+  return readPersistedTerminalOpen() ?? false;
+}
+
+/** Manage the resizable terminal-dock height: state + persistence +
+ *  window-resize re-clamp. Mirror of useChatWidth on the row axis. */
+function useTerminalHeight(): {
+  height: number;
+  setHeight: (next: number, persist: boolean) => void;
+} {
+  // Lazy init so the localStorage read happens once, pre-paint.
+  const [height, setHeightState] = useState<number>(() => initialTerminalHeight());
+
+  const setHeight = useCallback((next: number, persist: boolean): void => {
+    const clamped = clampTerminalHeightNow(next);
+    setHeightState(clamped);
+    if (persist) {
+      try {
+        window.localStorage.setItem(TERMINAL_HEIGHT_KEY, String(clamped));
+      } catch {
+        /* localStorage may be unavailable; height still applies in-session. */
+      }
+    }
+  }, []);
+
+  // Re-clamp when the window shrinks so the columns above never collapse.
+  useEffect(() => {
+    const onResize = (): void => {
+      setHeightState((h) => clampTerminalHeightNow(h));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  return { height, setHeight };
+}
+
 /** Which pane edge a Splitter controls. 'left' = Explorer right edge
  *  (drag right widens), 'right' = Chat left edge (drag left widens). */
 type SplitterEdge = 'left' | 'right';
@@ -549,6 +662,124 @@ function Splitter({
   );
 }
 
+interface RowSplitterProps {
+  /** Current dock height (px) — drives aria-valuenow. */
+  height: number;
+  /** Clamped+persisting height setter. */
+  setHeight: (next: number, persist: boolean) => void;
+  /** Accessible label + min/max/step config for the dock. */
+  ariaLabel: string;
+  min: number;
+  max: number;
+  step: number;
+}
+
+/** The terminal dock's draggable TOP-edge divider — the horizontal mirror of
+ *  Splitter. Pointer drag (capture-based) on clientY: dragging UP widens the
+ *  dock (delta = startHeight − (clientY − startY)); ArrowUp widens / ArrowDown
+ *  narrows by `step`; Home = max, End = min (matching the column splitters'
+ *  Home-widens convention). role="separator" with aria-orientation
+ *  "horizontal" — per APG the orientation names the SEPARATOR's axis. */
+function RowSplitter({
+  height,
+  setHeight,
+  ariaLabel,
+  min,
+  max,
+  step,
+}: RowSplitterProps): JSX.Element {
+  const [dragging, setDragging] = useState(false);
+  // Drag origin, captured on pointerdown so the move math is delta-based.
+  const origin = useRef<{ y: number; h: number } | null>(null);
+
+  const onPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      // Primary button / pen / touch only; ignore secondary clicks.
+      if (e.button !== 0) return;
+      e.preventDefault();
+      origin.current = { y: e.clientY, h: height };
+      setDragging(true);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      document.querySelector('.win')?.classList.add('dragging-row');
+    },
+    [height],
+  );
+
+  const onPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      const o = origin.current;
+      if (o === null) return;
+      const delta = e.clientY - o.y;
+      // The dock grows UPWARD: dragging the seam up widens it.
+      setHeight(o.h - delta, false); // live, un-persisted update
+    },
+    [setHeight],
+  );
+
+  const endDrag = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      if (origin.current === null) return;
+      origin.current = null;
+      setDragging(false);
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* capture may already be released (lostpointercapture). */
+      }
+      document.querySelector('.win')?.classList.remove('dragging-row');
+      // Persist the settled height.
+      setHeight(height, true);
+    },
+    [setHeight, height],
+  );
+
+  const onKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+      let next: number | null = null;
+      switch (e.key) {
+        case 'ArrowUp': // the dock grows upward, so up widens
+          next = height + step;
+          break;
+        case 'ArrowDown':
+          next = height - step;
+          break;
+        case 'Home': // max height
+          next = max;
+          break;
+        case 'End': // min height
+          next = min;
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      setHeight(next, true);
+    },
+    [height, setHeight, step, min, max],
+  );
+
+  return (
+    <div
+      className={'splitter horizontal' + (dragging ? ' dragging' : '')}
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label={ariaLabel}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      aria-valuenow={Math.round(height)}
+      // Human-readable value so AT announces "240 pixels" not a bare integer
+      // (APG window-splitter guidance — A11Y-EXP-03 / SC 1.3.1).
+      aria-valuetext={`${Math.round(height)} pixels`}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onLostPointerCapture={endDrag}
+      onKeyDown={onKeyDown}
+    />
+  );
+}
+
 /** Read the capture-only `?shortcuts` hint (presence ⇒ open the Keyboard
  *  Shortcuts panel on boot for a headless proof screenshot). `?shortcuts`
  *  (no value) or `=1`/`=true` ⇒ open; `=0`/`=false` ⇒ closed. Parallel to
@@ -659,6 +890,49 @@ export function App(): JSX.Element {
   // updates the toggle's own state and is announced only when it is focused —
   // not a status message. Both the Explorer and Chat toggles write here.
   const [statusMessage, setStatusMessage] = useState('');
+
+  // ---- Terminal dock (bottom row): open/height/maximize state ----
+  // Height mirrors useChatWidth (persisted, clamped); open state persists via
+  // TERMINAL_OPEN_KEY; maximize is SESSION-ONLY (never persisted) so a relaunch
+  // always starts with the three columns visible.
+  const { height: terminalHeight, setHeight: setTerminalHeight } =
+    useTerminalHeight();
+  const [terminalOpen, setTerminalOpen] = useState<boolean>(() =>
+    initialTerminalOpen(),
+  );
+  const [terminalMax, setTerminalMax] = useState<boolean>(false);
+  // Bumped on (re)open so TerminalPane re-focuses xterm (the command-nonce
+  // idiom — fold/copy commands use the same shape).
+  const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
+  // The StatusBar terminal toggle — focus returns here on close (SC 2.4.3).
+  const terminalToggleRef = useRef<HTMLButtonElement>(null);
+  // Latest open state in a ref so the toggle can read it without side effects
+  // inside the state updater (StrictMode-safe — the toggleExplorer idiom).
+  const terminalOpenRef = useRef(terminalOpen);
+  terminalOpenRef.current = terminalOpen;
+
+  const toggleTerminal = useCallback((): void => {
+    const next = !terminalOpenRef.current;
+    try {
+      window.localStorage.setItem(TERMINAL_OPEN_KEY, next ? '1' : '0');
+    } catch {
+      /* localStorage may be unavailable; state still applies in-session. */
+    }
+    if (next) {
+      // Opening: focus lands in the terminal (TerminalPane focuses xterm on
+      // mount; the nonce also covers a re-open of an already-mounted pane).
+      setTerminalFocusNonce((n) => n + 1);
+    } else {
+      // Closing: maximize is open-only, and focus must never strand inside
+      // the unmounting pane — return it to the always-visible toggle.
+      setTerminalMax(false);
+      requestAnimationFrame(() => terminalToggleRef.current?.focus());
+    }
+    // Announce the change to assistive tech via the polite live region
+    // (SC 4.1.3 / A11Y-CHAT-02) — perceivable regardless of focus location.
+    setStatusMessage(next ? 'Terminal opened' : 'Terminal closed');
+    setTerminalOpen(next);
+  }, []);
 
   // Keyboard Shortcuts panel open state. App owns it; the fixed Ctrl/Cmd+Comma
   // opener, the Settings "Open Keyboard Shortcuts" button, and the `?shortcuts`
@@ -1216,8 +1490,12 @@ export function App(): JSX.Element {
       }
 
       // Every other command is suppressed inside editable controls so normal
-      // typing (and native combos like Ctrl/Cmd+B bold) is never swallowed.
-      if (isEditableTarget(e.target)) return;
+      // typing (and native combos like Ctrl/Cmd+B bold) is never swallowed —
+      // EXCEPT toggleTerminal: xterm's hidden <textarea> IS an editable
+      // target, and Ctrl/Cmd+` must close the dock from inside the terminal
+      // (symmetric with opening it). The terminal swallows every OTHER combo
+      // by design (a shell owns its keys); only its own toggle punches out.
+      if (matched !== 'toggleTerminal' && isEditableTarget(e.target)) return;
 
       e.preventDefault();
       switch (matched) {
@@ -1226,6 +1504,9 @@ export function App(): JSX.Element {
           break;
         case 'toggleChat':
           toggleChat(true);
+          break;
+        case 'toggleTerminal':
+          toggleTerminal();
           break;
         case 'foldAll':
           fireFoldCommand('fold');
@@ -1264,6 +1545,7 @@ export function App(): JSX.Element {
     store,
     toggleExplorer,
     toggleChat,
+    toggleTerminal,
     fireFoldCommand,
     fireCopyCommand,
     openShortcuts,
@@ -1312,6 +1594,9 @@ export function App(): JSX.Element {
         chatHidden={chatHidden}
         onToggleChat={toggleChat}
         chatToggleRef={chatToggleRef}
+        terminalOpen={terminalOpen}
+        onToggleTerminal={toggleTerminal}
+        terminalToggleRef={terminalToggleRef}
         onTogglePause={() => void store.togglePause()}
         onToggleTheme={() =>
           void store.setTheme(vm.theme === 'dark' ? 'light' : 'dark')
@@ -1329,12 +1614,18 @@ export function App(): JSX.Element {
         className={
           'body' +
           (explorerHidden ? ' explorer-hidden' : '') +
-          (chatHidden ? ' chat-hidden' : '')
+          (chatHidden ? ' chat-hidden' : '') +
+          // The terminal dock adds a second grid ROW (terminal-open); maximize
+          // collapses row 1 so the dock fills the body (terminal-max). The
+          // row classes compose freely with the column-hiding classes above.
+          (terminalOpen ? ' terminal-open' : '') +
+          (terminalOpen && terminalMax ? ' terminal-max' : '')
         }
         style={
           {
             ['--explorer-w' as string]: explorerWidth + 'px',
             ['--chat-w' as string]: chatWidth + 'px',
+            ['--terminal-h' as string]: terminalHeight + 'px',
           } as CSSProperties
         }
       >
@@ -1462,6 +1753,29 @@ export function App(): JSX.Element {
             onSelectChannel={(name) => store.setActiveChannel(name)}
             onOpenInbox={(name) => store.openInbox(name)}
             onCloseInbox={() => store.closeInbox()}
+          />
+        )}
+        {/* Terminal dock (bottom row, spans all columns). The row splitter on
+            its top edge resizes it; hidden while maximized (the dock fills the
+            body, so there is no seam to drag). Unmounting TerminalPane closes
+            the PTY session — the dock's open state IS the session lifetime. */}
+        {terminalOpen && !terminalMax && (
+          <RowSplitter
+            height={terminalHeight}
+            setHeight={setTerminalHeight}
+            ariaLabel="Resize terminal"
+            min={TERMINAL_MIN_HEIGHT}
+            max={Math.max(TERMINAL_MIN_HEIGHT, terminalHeightMax(bodyHeightNow()))}
+            step={TERMINAL_HEIGHT_STEP}
+          />
+        )}
+        {terminalOpen && (
+          <TerminalPane
+            height={terminalHeight}
+            maximized={terminalMax}
+            onToggleMaximize={() => setTerminalMax((m) => !m)}
+            onClose={toggleTerminal}
+            focusNonce={terminalFocusNonce}
           />
         )}
       </div>
