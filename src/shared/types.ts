@@ -155,6 +155,15 @@ export interface PurgeAllResult {
 export interface Caller {
   /** Registered agent name, or null for not-yet-registered sessions. */
   name: string | null;
+  /** The `connection_id` of the agents row THIS session registered, bound by
+   *  register() alongside `name`. The engine accepts the session only while
+   *  the live row's connection_id still matches — so after the human removes
+   *  an agent (REMOVE_AGENT) and a NEW agent re-registers the freed bare
+   *  name, the OLD session keeps failing NOT_REGISTERED instead of silently
+   *  acting as its successor (identity capture). ADDITIVE + optional: a
+   *  caller without one (hand-built test/demo callers) skips the check —
+   *  every transport-bound session gets it from register(). */
+  connectionId?: string | null;
 }
 
 /** Union of all 10 tool names — the frozen tool surface. */
@@ -395,6 +404,14 @@ export interface SessionCounters {
   messages: number;
   receipts: number;
   files: number;    // files written/observed this session
+  /** Count of STALE agents — status='gone' rows ∪ status='active' rows with
+   *  no live MCP session bound to their connection_id (dead/restart-orphaned
+   *  agents that never deregistered; the reaper never flips db status, so
+   *  they sit 'active' forever). Drives the roster's "clear stale (N)"
+   *  button. Computed ONLY in main (the live-session map lives there) on the
+   *  same COUNTERS tick as the others; the renderer must never guess
+   *  staleness from AgentEvents. ADDITIVE; optional for back-compat. */
+  staleAgents?: number;
 }
 
 export interface AgentView {
@@ -663,6 +680,38 @@ export const IPC = {
    *  the window minimum + a sane maximum before applying; invalid input or an
    *  unresolved sender is a silent no-op (never trust the renderer). */
   WINDOW_SET_BOUNDS: 'loom:window:set-bounds',
+  /** invoke(name: string): boolean — HUMAN roster curation: remove ONE agent
+   *  (any status) from the roster. main RE-VALIDATES the input (string,
+   *  trimmed non-empty, <= MAX_NAME_LENGTH, existing row) and DELETEs the
+   *  agents row plus its memberships/receipts; MESSAGES ARE PRESERVED (the
+   *  sender column may dangle by design — the renderer never joins agents).
+   *  For a still-active agent this is a FORCE-deregister with NO identity
+   *  capture: session identity is the (name, connectionId) pair register()
+   *  bound (Caller.connectionId vs the row's per-registration-unique
+   *  connection_id), so the removed session's calls fail NOT_REGISTERED and
+   *  KEEP failing even after a NEW agent re-registers the freed bare name.
+   *  The stale transport object may linger if its client keeps polling
+   *  (every poll refreshes the reaper's lastSeen) — harmless, since every
+   *  call it makes is refused. Publishes the same 'gone' AgentEvent
+   *  deregister publishes (the renderer drops the chip) plus one
+   *  ChannelEvent per channel that lost the agent's membership. A removed
+   *  name re-registers FRESH (no blocklist). Resolves whether a row was
+   *  removed; invalid/unknown input is a fail-soft false. NO MCP tool
+   *  counterpart — UI affordance only. */
+  REMOVE_AGENT: 'loom:agent:remove',
+  /** invoke(): number — HUMAN roster curation: remove ALL STALE agents at
+   *  once (same delete semantics as REMOVE_AGENT, messages preserved; one
+   *  'gone' AgentEvent per removed row + one ChannelEvent per channel that
+   *  lost members). STALE = status='gone' ∪ status='active' with no live MCP
+   *  session bound to the row's connection_id — the dead chips the human
+   *  actually sees (agents that crash/exit never deregister and the reaper
+   *  never touches the db). A LIVE connected agent is NEVER swept; the
+   *  per-chip × (REMOVE_AGENT) is the only way to remove one. After an app
+   *  relaunch every 'active' row is stale until its agent re-registers
+   *  (sessions die with the process) — sweeping them all is intended.
+   *  Resolves the count removed; 0 when none. Takes NO args. NO MCP tool
+   *  counterpart — UI affordance only. */
+  CLEAR_STALE_AGENTS: 'loom:agent:clear-stale',
   /** send(LoomEvent) main->renderer — the live event feed. */
   EVENT: 'loom:event',
   /** send(SessionCounters) main->renderer — telemetry tick. */
@@ -744,6 +793,14 @@ export interface LoomBridge {
   /** Fetch the before->after diff for ONE changed file. `path` is a root-relative
    *  POSIX path from a ChangedFile; main re-confines it to the sandbox. */
   readFileDiff(path: string): Promise<FileDiff>;
+  /** HUMAN roster curation: remove ONE agent from the roster (force-deregister
+   *  when still active). main re-validates the name + deletes the row; messages
+   *  are preserved. Resolves true when a row was removed (fail-soft false). */
+  removeAgent(name: string): Promise<boolean>;
+  /** HUMAN roster curation: remove ALL stale agents at once (gone rows +
+   *  actives with no live session — see CLEAR_STALE_AGENTS). Resolves the
+   *  count removed. Takes no args; messages are preserved. */
+  clearStaleAgents(): Promise<number>;
   /** Frameless custom-chrome window controls (win32/linux; on darwin the native
    *  inset traffic-lights are used instead and the renderer renders no controls).
    *  Each action takes NO untrusted input and acts ONLY on the SENDER window —

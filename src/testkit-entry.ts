@@ -19,6 +19,14 @@
 export { createDb } from './main/db.js';
 export type { LoomDb } from './main/db.js';
 export { createEngine } from './main/engine.js';
+
+// HUMAN roster curation helpers (IPC-only, NOT MCP tools): the pure fns the
+// REMOVE_AGENT / CLEAR_STALE_AGENTS handlers call. Re-exported so the
+// agent-remove suite can pin re-validation, the 'gone' AgentEvent publish,
+// the preserved-history delete semantics, the stale definition (gone ∪
+// active-without-live-session), and the NOT_REGISTERED session ending —
+// Electron-free.
+export { removeAgentByName, clearStaleAgents, isStaleAgent } from './main/engine.js';
 export { createEventBus } from './main/eventbus.js';
 export type { EventBus, EventHandler } from './main/eventbus.js';
 export { kindOf, dispatchFor, extensionOf } from './shared/dispatch.js';
@@ -68,6 +76,27 @@ export { DiffBody, ChangeKindGlyph } from './renderer/components/FileDiff.js';
 // presenter (no hooks / no window.loom at render time), so it pulls cleanly
 // into the Node bundle.
 export { FolderIcon } from './renderer/components/Explorer.js';
+
+// The Chat roster strip (FR-46) — a hook-free pure presenter (ChangeKindGlyph
+// idiom), so the node --test tier can renderToStaticMarkup the ACTUAL
+// component and pin the per-chip remove (×) button, the clear-stale (N)
+// button (disabled at zero), the sibling-not-nested button structure, and
+// the force-remove aria cue. The two focus-target pickers are pure DOM walks
+// (no React), exported so the jsdom tier can pin the never-strand-focus
+// contract (the App.tsx close-file idiom).
+export {
+  Roster,
+  nextFocusAfterChipRemoval,
+  focusTargetAfterClearStale,
+} from './renderer/components/Roster.js';
+
+// The renderer-side state store (window.loom consumer). Pure module (no React;
+// DOM/`location` access is guarded), so the node tier can boot the REAL store
+// over a stubbed window.loom and pin the human roster-curation actions
+// (optimistic chip drop, inbox-lens close, gone-count zeroing, fail-soft
+// bridge results) without Electron.
+export { createStore } from './renderer/lib/client.js';
+export type { LoomStore, ViewModel } from './renderer/lib/client.js';
 
 // Project-wide content search (Law 3 confined + bounded). The pure matcher
 // (matchFile) re-exported for unit tests, plus createSandbox + createSearch so

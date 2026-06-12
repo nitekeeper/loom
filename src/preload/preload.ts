@@ -65,6 +65,8 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.GIT_STATUS,
   IPC.GET_CHANGES,
   IPC.READ_FILE_DIFF,
+  IPC.REMOVE_AGENT,
+  IPC.CLEAR_STALE_AGENTS,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
@@ -177,6 +179,17 @@ export function createBridge(): LoomBridge {
       // bypasses the fs sandbox — never trust the renderer; Law 3). The renderer
       // cannot widen scope: an out-of-root path returns an empty FileDiff.
       return ipcRenderer.invoke(assertInvoke(IPC.READ_FILE_DIFF), filePath);
+    },
+    removeAgent(name: string): Promise<boolean> {
+      // The name is forwarded as-is; main is the authority — it RE-VALIDATES
+      // (string, trimmed non-empty, length cap, existing row) and fail-softs
+      // to false on anything invalid (never trust the renderer).
+      return ipcRenderer.invoke(assertInvoke(IPC.REMOVE_AGENT), name);
+    },
+    clearStaleAgents(): Promise<number> {
+      // No-arg control: main resolves the stale set itself (it owns both the
+      // db and the live MCP session map; the renderer never guesses).
+      return ipcRenderer.invoke(assertInvoke(IPC.CLEAR_STALE_AGENTS));
     },
     // Frameless custom-chrome window controls (win32/linux). Each method hard-
     // pins its single IPC.* constant via assertInvoke and sends NO arguments —

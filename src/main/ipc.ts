@@ -43,6 +43,7 @@ import {
   listChangesWithBase,
   resolveFileDiffRequest,
 } from './git-diff.js';
+import { removeAgentByName, clearStaleAgents, isStaleAgent } from './engine.js';
 import type { ConfigStore } from './config.js';
 import type { LoomDb } from './db.js';
 import type { EventBus } from './eventbus.js';
@@ -68,6 +69,13 @@ export interface IpcWiring {
   register(): void;
   /** Begin pushing events/counters/live-state to the given webContents. */
   attachRenderer(send: (channel: string, payload: unknown) => void): () => void;
+  /** Nudge a counters recompute+push OUTSIDE the bus. The MCP session reaper
+   *  evicts sessions without publishing any bus event, yet eviction changes
+   *  staleAgents — without this nudge the count froze at its last pushed
+   *  value (dead chips beside a disabled "clear stale (0)"). Debounced
+   *  exactly like every bus-driven counters push; a no-op when no renderer
+   *  is attached. */
+  nudgeCounters(): void;
 }
 
 export interface IpcDeps {
@@ -79,6 +87,12 @@ export interface IpcDeps {
   search: Search;
   /** Absolute path of the sandbox root (for git status). */
   rootPath: string;
+  /** The connection_ids bound to currently-LIVE MCP sessions (from
+   *  McpServerHandle.liveConnectionIds). The stale-agent sweep + the
+   *  staleAgents counter consult this; OPTIONAL and fail-soft — when absent
+   *  (degraded boot with no MCP server, or tests) the live set is empty,
+   *  which is CORRECT: with no agent transport, no agent can be live. */
+  liveConnectionIds?: () => ReadonlySet<string>;
 }
 
 class IpcWiringImpl implements IpcWiring {
@@ -157,7 +171,21 @@ class IpcWiringImpl implements IpcWiring {
       messages: db.countMessages(),
       receipts: db.countReceipts(),
       files: this.fileCount,
+      // Drives the roster's "clear stale (N)" button: gone rows ∪ actives
+      // with no live session — the SAME isStaleAgent definition the sweep
+      // applies, over the SAME live-session set, so the count always equals
+      // what the button would remove. Counters are pushed on every bus event
+      // (remove/clear/deregister/register all publish), so it stays
+      // authoritative without the renderer guessing from AgentEvents.
+      staleAgents: db.listAgents().filter((a) => isStaleAgent(a, this.liveIds()))
+        .length,
     };
+  }
+
+  /** Live MCP session connection_ids (empty when no MCP server — correct:
+   *  with no agent transport nothing can be live). */
+  private liveIds(): ReadonlySet<string> {
+    return this.deps.liveConnectionIds?.() ?? new Set<string>();
   }
 
   private buildInitialState(): InitialState {
@@ -259,6 +287,25 @@ class IpcWiringImpl implements IpcWiring {
       getChanges(this.deps.rootPath),
     );
 
+    // HUMAN roster curation (UI-only — no MCP tool counterpart). main is the
+    // authority: removeAgentByName RE-VALIDATES the renderer-supplied name
+    // (string, trimmed non-empty, <= MAX_NAME_LENGTH, existing row) and is
+    // fail-soft (false / 0, never a throw). Both delete the agents row(s) +
+    // memberships/receipts while PRESERVING messages, and publish the same
+    // 'gone' AgentEvent deregister publishes so the roster updates live.
+    ipcMain.handle(IPC.REMOVE_AGENT, (_evt, name: unknown): boolean =>
+      removeAgentByName(this.deps.db, this.deps.bus, name),
+    );
+
+    // Sweep STALE agents: gone rows ∪ actives with no live MCP session bound
+    // (the dead chips the human actually sees — kaizen field report). A LIVE
+    // connected agent is never swept. The whole sweep runs synchronously on
+    // the event loop, so it cannot race a register() (which claims the row +
+    // binds the session in one synchronous unit).
+    ipcMain.handle(IPC.CLEAR_STALE_AGENTS, (): number =>
+      clearStaleAgents(this.deps.db, this.deps.bus, this.liveIds()),
+    );
+
     // The before->after unified diff for ONE changed file. SECURITY (Law 3):
     // `git show <sha>:<path>` reads git's OBJECT STORE, which bypasses the fs
     // sandbox — so we RE-CONFINE the renderer-supplied path (and a rename's
@@ -344,6 +391,9 @@ class IpcWiringImpl implements IpcWiring {
 
     // Allow SET_LIVE_STATE (human) to drive a push immediately.
     this.onHumanLiveStateChange = pushLiveState;
+    // Allow out-of-bus sources (the MCP session reaper) to drive a counters
+    // recompute+push — same debounce as the bus-driven path.
+    this.onCountersNudge = pushCounters;
 
     const unsubscribe = this.deps.bus.subscribe((e: LoomEvent) => {
       if (disposed) return;
@@ -381,11 +431,19 @@ class IpcWiringImpl implements IpcWiring {
         this.gitDebounceTimer = null;
       }
       this.onHumanLiveStateChange = null;
+      this.onCountersNudge = null;
     };
+  }
+
+  nudgeCounters(): void {
+    this.onCountersNudge?.();
   }
 
   /** Set by attachRenderer so the human's SET_LIVE_STATE pushes immediately. */
   private onHumanLiveStateChange: (() => void) | null = null;
+  /** Set by attachRenderer so out-of-bus sources (the MCP reaper) can drive a
+   *  debounced counters recompute+push (see IpcWiring.nudgeCounters). */
+  private onCountersNudge: (() => void) | null = null;
 
   private pushGitStatus(
     send: (channel: string, payload: unknown) => void,

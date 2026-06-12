@@ -34,6 +34,15 @@ export interface ChatProps {
   onOpenInbox: (agent: string) => void;
   /** Store action: close the inbox lens (back to the channel thread). */
   onCloseInbox: () => void;
+  /** Authoritative count of STALE agents (counters.staleAgents: gone rows +
+   *  actives with no live session) — drives the roster's "clear stale (N)"
+   *  button (disabled at zero). */
+  staleCount: number;
+  /** Store action: HUMAN curation — remove one agent from the roster
+   *  (force-deregister when still active; chat history preserved). */
+  onRemoveAgent: (name: string) => void;
+  /** Store action: HUMAN curation — sweep all STALE agents at once. */
+  onClearStale: () => void;
 }
 
 /** A message is in an agent's inbox iff it carries a receipt for that
@@ -55,6 +64,9 @@ export function Chat(props: ChatProps): JSX.Element {
     onSelectChannel,
     onOpenInbox,
     onCloseInbox,
+    staleCount,
+    onRemoveAgent,
+    onClearStale,
   } = props;
 
   // The store is the single source of truth for navigation (FR-14): the
@@ -118,7 +130,10 @@ export function Chat(props: ChatProps): JSX.Element {
       <Roster
         agents={agents}
         openInbox={openInbox}
+        staleCount={staleCount}
         onOpenInbox={(name) => (name === null ? onCloseInbox() : onOpenInbox(name))}
+        onRemoveAgent={onRemoveAgent}
+        onClearStale={onClearStale}
       />
 
       {openInbox ? (

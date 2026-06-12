@@ -1290,19 +1290,42 @@ mark.search-hit {
    ============================================================ */
 .roster { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); }
 .roster .lbl { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-faint); margin-right: 2px; flex: 0 0 auto; width: 100%; margin-bottom: 2px; }
+/* The chip pill is a WRAPPER (.rchip-wrap) holding two SIBLING buttons —
+   the open-inbox chip (.rchip, keeps the class App.tsx focus-targets) and
+   the remove × (.rchip-x). Siblings, never nested buttons (a11y). */
+.rchip-wrap {
+  position: relative; display: flex; align-items: stretch;
+  border-radius: 999px; border: 1px solid var(--border);
+  background: var(--panel-2); flex: 0 0 auto;
+}
+.rchip-wrap.active { border-color: var(--accent); background: color-mix(in oklab, var(--accent) 12%, transparent); }
 .rchip {
   position: relative; display: flex; align-items: center; gap: 6px;
-  padding: 3px 9px 3px 3px; border-radius: 999px; cursor: pointer;
-  border: 1px solid var(--border); background: var(--panel-2); flex: 0 0 auto;
+  padding: 3px 2px 3px 3px; border-radius: 999px 0 0 999px; cursor: pointer;
+  border: 0; background: none; flex: 0 0 auto;
   font-family: inherit; color: inherit;
 }
 .rchip:hover { background: var(--panel-3); }
-.rchip.active { border-color: var(--accent); background: color-mix(in oklab, var(--accent) 12%, transparent); }
 .rchip .nm { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
 .rchip.active .nm { color: var(--text); }
-.rchip.gone { opacity: .45; }
-/* non-color cue: gone agents also get a struck-through name (NFR-12) */
-.rchip.gone .nm { text-decoration: line-through; }
+/* remove (×) — separate sibling button. Every roster chip is a live agent
+   (gone chips never render), so the × is always a FORCE-remove: warn tint
+   on hover makes that visually distinct from the open-inbox action. */
+.rchip-x {
+  display: flex; align-items: center; border: 0; background: none;
+  cursor: pointer; padding: 0 8px 0 4px; border-radius: 0 999px 999px 0;
+  color: var(--text-faint); font-family: inherit; font-size: 13px; line-height: 1;
+}
+.rchip-x:hover { color: var(--warn); background: color-mix(in oklab, var(--warn) 14%, transparent); }
+/* clear-stale — quiet text button at the end of the strip; disabled at N=0 */
+.roster-clear-stale {
+  border: 1px solid var(--border); background: none; cursor: pointer;
+  border-radius: 999px; padding: 3px 9px; flex: 0 0 auto;
+  font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--text-faint); font-family: inherit;
+}
+.roster-clear-stale:not(:disabled):hover { color: var(--text-dim); background: var(--panel-3); }
+.roster-clear-stale:disabled { opacity: .45; cursor: default; }
 
 .avatar {
   border-radius: 50%; display: grid; place-items: center;

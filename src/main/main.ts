@@ -450,7 +450,15 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   const engine = createEngine(db, bus, { maxBodyLength, rootDir, maxMessages });
 
   // MCP schema mirrors the SAME cap for an early client-side reject (R1).
-  const mcp = createMcpServer(engine, { maxBodyLength });
+  // onSessionsReaped: the reaper publishes NO bus event, but evicting a
+  // REGISTERED session changes staleAgents — nudge ipc's counters push so
+  // the "clear stale (N)" button can't freeze at a stale count. Late-bound:
+  // ipc is constructed after the MCP server (the closure defers the call).
+  let notifySessionsReaped: () => void = () => {};
+  const mcp = createMcpServer(engine, {
+    maxBodyLength,
+    onSessionsReaped: () => notifySessionsReaped(),
+  });
   let ownsMcpAdvert = false;
   try {
     await mcp.start();
@@ -486,8 +494,20 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   const watcher = createWatcher(rootDir, bus);
   watcher.start();
 
-  const ipc = createIpcWiring({ db, sandbox, config, bus, search, rootPath: rootDir });
+  const ipc = createIpcWiring({
+    db,
+    sandbox,
+    config,
+    bus,
+    search,
+    rootPath: rootDir,
+    // The stale-agent sweep + staleAgents counter consult the LIVE MCP
+    // session bindings. When the MCP server failed to start (degraded boot)
+    // its session map is simply empty — correct: no transport, nothing live.
+    liveConnectionIds: () => mcp.liveConnectionIds(),
+  });
   ipc.register();
+  notifySessionsReaped = () => ipc.nudgeCounters();
 
   let ws: Services['ws'] = null;
   if (wsEnabled()) {

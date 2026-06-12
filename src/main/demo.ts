@@ -218,6 +218,9 @@ async function writeArchitecture(root: string, action: 'create' | 'modify'): Pro
 export async function seed(engine: LoomEngine, root: string): Promise<void> {
   // 1. Register every agent (lead first). register() is idempotent-ish:
   //    a name collision would be suffixed, so on a fresh DB names are exact.
+  //    NOTE: demo agents register IN-PROCESS (no MCP session binds their
+  //    connection_id), so they all count as STALE for the roster's "clear
+  //    stale (N)" button — intended: demo/capture agents are sweepable.
   for (const name of AGENTS) {
     engine.register(caller(name), { name });
     await sleep(20);

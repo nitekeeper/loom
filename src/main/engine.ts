@@ -105,17 +105,31 @@ export function createEngine(
   }
 
   /** Resolve the caller's registered name or throw NOT_REGISTERED.
-   *  A caller is "registered" when it has a bound name that still
-   *  resolves to an existing agents row (active OR gone). */
+   *  A caller is "registered" when it has a bound name that still resolves
+   *  to an existing agents row (active OR gone) AND — when the session
+   *  carries the connectionId register() bound — that row is still THE SAME
+   *  registration (agents.connection_id matches). The match closes the
+   *  identity-capture hole around human removal (REMOVE_AGENT): removal
+   *  frees the bare name for a NEW agent to re-register; without it, the
+   *  OLD removed session's calls would silently succeed AS the new agent
+   *  (read its inbox, send as it). The recreated row carries a different
+   *  connection_id, so the stale session keeps failing NOT_REGISTERED.
+   *  Hand-built callers without a connectionId (in-process unit tests)
+   *  skip the match — every real session gets one from register(). */
   function requireRegistered(caller: Caller): string {
     const name = caller.name;
-    if (name === null || db.getAgent(name) === undefined) {
+    const agent = name === null ? undefined : db.getAgent(name);
+    if (
+      agent === undefined ||
+      (caller.connectionId != null && agent.connection_id !== caller.connectionId)
+    ) {
       throw new LoomError(
         'NOT_REGISTERED',
         'caller must register() before invoking this tool',
       );
     }
-    return name;
+    // name is non-null here (agent would be undefined otherwise).
+    return name as string;
   }
 
   /** Resolve a channel by name or throw CHANNEL_NOT_FOUND. */
@@ -159,6 +173,12 @@ export function createEngine(
   // next send. No-op when unlimited.
   if (maxMessages > 0) db.pruneMessagesToCap(maxMessages);
 
+  // Monotonic disambiguator for generated connection_ids: two registrations
+  // of the SAME bare name within the SAME millisecond (e.g. remove → instant
+  // re-register) must still mint DISTINCT connection_ids, or the stale-session
+  // guard in requireRegistered could not tell the claims apart.
+  let connSeq = 0;
+
   return {
     register(caller: Caller, params: RegisterParams): RegisterResult {
       const requested = params.name.trim();
@@ -187,10 +207,16 @@ export function createEngine(
       }
 
       const at = now();
-      const connection_id =
-        caller.name !== null && caller.name !== ''
-          ? caller.name
-          : `conn-${assigned}-${at}`;
+      // ALWAYS mint a fresh, per-registration-unique connection_id. The
+      // legacy branch that reused caller.name as the id when an already-named
+      // session registered a SECOND name made it deterministic and REUSABLE:
+      // after the human removed the rows, a new session re-running the same
+      // register sequence minted the SAME id, so the OLD session's stale
+      // (name, connectionId) binding matched the successor row and it could
+      // act AS the new agent (identity-capture PoC, RM-12). Nothing reads
+      // connection_id back except requireRegistered's match, so uniqueness is
+      // the property that matters — name + wall-clock ms + monotonic seq.
+      const connection_id = `conn-${assigned}-${at}-${connSeq++}`;
       const agent = {
         name: assigned,
         connection_id,
@@ -200,8 +226,11 @@ export function createEngine(
       db.insertAgent(agent);
       db.flush();
 
-      // Bind the caller identity to the assigned name (mutate caller).
+      // Bind the caller identity to the assigned name AND this registration's
+      // connection_id (mutate caller) — the pair requireRegistered verifies,
+      // so a later same-name re-registration is a DIFFERENT identity.
       caller.name = assigned;
+      caller.connectionId = connection_id;
 
       bus.publish({ kind: 'agent', agent });
       return { ok: true, name: assigned, channels: [] };
@@ -498,10 +527,134 @@ export function createEngine(
       // null it so a stale follow-up call fails cleanly with NOT_REGISTERED
       // rather than acting under a vanished name. Callers MUST re-register.
       caller.name = null;
+      caller.connectionId = null;
 
       return { ok: true, deleted: { messages, channels, agents, reports } };
     },
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * HUMAN roster curation (IPC-only — NOT MCP tools, the frozen 10 are  *
+ * untouched). Pure fns over (db, bus) so the node --test suite drives *
+ * them Electron-free; src/main/ipc.ts is their only production caller *
+ * (REMOVE_AGENT / CLEAR_STALE_AGENTS).                                *
+ * ------------------------------------------------------------------ */
+
+/** Channels that currently hold a membership for ANY of `names`. Snapshotted
+ *  BEFORE the delete so the post-delete ChannelEvents cover exactly the
+ *  channels whose member lists changed. */
+function channelsWithMembers(db: LoomDb, names: ReadonlySet<string>) {
+  return db
+    .listChannels()
+    .filter((c) => db.listMemberships(c.id).some((m) => names.has(m.agent_name)));
+}
+
+/** Publish one ChannelEvent (the same shape join_channel publishes) per
+ *  affected channel with its POST-delete member list, so the renderer's
+ *  ChannelTabs member counts stay in sync with MCP list_channels without a
+ *  relaunch. */
+function publishMembershipRemovals(
+  db: LoomDb,
+  bus: EventBus,
+  affected: ReturnType<typeof channelsWithMembers>,
+): void {
+  for (const channel of affected) {
+    bus.publish({
+      kind: 'channel',
+      channel,
+      members: db.listMemberships(channel.id).map((m) => m.agent_name),
+    });
+  }
+}
+
+/** Remove ONE agent (any status) from the roster: DELETE its agents row
+ *  (+ memberships/receipts; messages preserved — see LoomDb.removeAgent).
+ *
+ *  Re-validates the renderer-supplied input here (never trust the renderer):
+ *  non-string / blank / over-long / unknown names are a fail-soft `false`.
+ *
+ *  For a still-ACTIVE agent this is a FORCE-deregister. Its MCP session (if
+ *  any) ends because session identity is bound to the registered row's
+ *  connection_id (requireRegistered): with the row deleted the next tool
+ *  call fails NOT_REGISTERED, and — crucially — it KEEPS failing even after
+ *  a NEW agent re-registers the freed bare name, because the recreated row
+ *  carries a different connection_id (no identity capture). The idle reaper
+ *  evicts the dead transport (the same backstop deregister relies on); no
+ *  parallel session-teardown path is introduced.
+ *
+ *  Publishes the SAME 'gone' AgentEvent shape deregister publishes — the
+ *  renderer's reduceAgent already drops a gone agent from the roster, so the
+ *  strip updates live without any new event kind (the LoomEvent union stays
+ *  frozen) — plus one ChannelEvent per channel the agent belonged to (member
+ *  lists stay live). A removed name may re-register FRESH (no blocklist). */
+export function removeAgentByName(
+  db: LoomDb,
+  bus: EventBus,
+  name: unknown,
+): boolean {
+  if (typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_NAME_LENGTH) return false;
+  const agent = db.getAgent(trimmed);
+  if (agent === undefined) return false;
+  const affected = channelsWithMembers(db, new Set([trimmed]));
+  if (!db.removeAgent(trimmed)) return false;
+  bus.publish({ kind: 'agent', agent: { ...agent, status: 'gone' } });
+  publishMembershipRemovals(db, bus, affected);
+  return true;
+}
+
+/** Is this agents row STALE — i.e. clearable by the roster's sweep button?
+ *  Stale = explicitly deregistered (status='gone') OR still marked 'active'
+ *  but with NO live MCP session bound to its registration (its connection_id
+ *  is absent from the live set). The kaizen field case: agents whose process
+ *  died (or whose app was restarted) never call deregister, and the idle
+ *  reaper only closes transports — it NEVER touches the db — so dead agents
+ *  sit 'active' forever; the old gone-only sweep cleared rows the roster
+ *  never even displays. Exported so the counters tick
+ *  (SessionCounters.staleAgents) and the sweep share ONE definition. */
+export function isStaleAgent(
+  agent: { status: 'active' | 'gone'; connection_id: string },
+  liveConnectionIds: ReadonlySet<string>,
+): boolean {
+  return agent.status === 'gone' || !liveConnectionIds.has(agent.connection_id);
+}
+
+/** Remove EVERY stale agent at once (same delete semantics as
+ *  removeAgentByName): status='gone' rows ∪ status='active' rows with no
+ *  live session bound (isStaleAgent over the live connection_id set the MCP
+ *  server reports). A LIVE connected agent is NEVER swept — the per-chip ×
+ *  is the only affordance that can remove one.
+ *
+ *  Post-restart note: sessions do not survive the process, so after a
+ *  relaunch EVERY 'active' row is stale until its agent re-registers —
+ *  sweeping them all is the intended meaning of the button. No race with a
+ *  registering agent: register() claims the row AND binds the session's
+ *  connectionId in one synchronous unit on the same event loop this sweep
+ *  runs on, so at sweep time an agent is either fully live (kept) or not
+ *  yet present (nothing to remove).
+ *
+ *  Returns the number removed; publishes one 'gone' AgentEvent per removed
+ *  row (the renderer's reduceAgent drops the VISIBLE stale-active chips —
+ *  the user-facing point of the sweep) plus one ChannelEvent per channel
+ *  that lost members. */
+export function clearStaleAgents(
+  db: LoomDb,
+  bus: EventBus,
+  liveConnectionIds: ReadonlySet<string>,
+): number {
+  const stale = db.listAgents().filter((a) => isStaleAgent(a, liveConnectionIds));
+  if (stale.length === 0) return 0;
+  const affected = channelsWithMembers(db, new Set(stale.map((a) => a.name)));
+  const removed = new Set(db.removeAgents(stale.map((a) => a.name)));
+  for (const agent of stale) {
+    if (removed.has(agent.name)) {
+      bus.publish({ kind: 'agent', agent: { ...agent, status: 'gone' } });
+    }
+  }
+  publishMembershipRemovals(db, bus, affected);
+  return removed.size;
 }
 
 /** Count regular files anywhere under `dir` (recursive), for the purge_all

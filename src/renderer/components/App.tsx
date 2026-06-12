@@ -1462,6 +1462,22 @@ export function App(): JSX.Element {
             onSelectChannel={(name) => store.setActiveChannel(name)}
             onOpenInbox={(name) => store.openInbox(name)}
             onCloseInbox={() => store.closeInbox()}
+            staleCount={vm.counters.staleAgents ?? 0}
+            onRemoveAgent={(name) => {
+              // Announce the outcome via the polite live region (the same
+              // setStatusMessage idiom as close-file / pane toggles) so the
+              // removal is perceivable regardless of focus (SC 4.1.3).
+              void store.removeAgent(name).then((removed) => {
+                if (removed) setStatusMessage(`Removed ${name} from the roster`);
+              });
+            }}
+            onClearStale={() => {
+              void store.clearStaleAgents().then((n) => {
+                setStatusMessage(
+                  n === 1 ? 'Cleared 1 stale agent' : `Cleared ${n} stale agents`,
+                );
+              });
+            }}
           />
         )}
       </div>

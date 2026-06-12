@@ -57,6 +57,14 @@ export interface McpServerHandle {
   readonly port: number;
   /** Number of live MCP sessions currently held (monitoring + tests). */
   sessionCount(): number;
+  /** The connection_ids bound to currently-LIVE sessions (each set on the
+   *  session's Caller by register()). This is the authority the human
+   *  stale-agent sweep (CLEAR_STALE_AGENTS) and the staleAgents counter
+   *  consult: an agents row whose connection_id is absent here has no live
+   *  session — its process died, was reaped, or predates this launch — and
+   *  is sweepable. Unregistered sessions contribute nothing (their caller
+   *  carries no binding yet), so they never shield a row. */
+  liveConnectionIds(): Set<string>;
   /** Evict every session last seen at or before `idleSince` (epoch ms),
    *  closing its transport + server. Returns the count reaped. The idle reaper
    *  calls this with (now - sessionIdleTtlMs); exposed so a test can force
@@ -139,6 +147,16 @@ export interface McpServerOptions {
    *  an ephemeral OS-assigned port — used by tests so concurrent server boots
    *  never contend for a fixed port or scan into the ws feed's port. */
   startPort?: number;
+  /** Invoked after reapIdleSessions evicts >= 1 REGISTERED session, with the
+   *  count of registered sessions evicted. Reaping publishes NO bus event,
+   *  yet it changes the stale-agent picture (an evicted registered session's
+   *  row loses its live binding) — without this nudge the renderer's
+   *  staleAgents counter froze at its last pushed value and the "clear
+   *  stale" button sat disabled next to dead chips. main wires this to
+   *  ipc.nudgeCounters(). Unregistered evictions don't fire it (they bind no
+   *  row, so nothing about staleness changed). Failures are swallowed —
+   *  the reaper must never die to an observer callback. */
+  onSessionsReaped?: (registeredEvicted: number) => void;
 }
 
 export function createMcpServer(
@@ -510,9 +528,15 @@ export function createMcpServer(
    *  also exposed on the handle for monitoring + deterministic tests. */
   async function reapIdleSessions(idleSince: number): Promise<number> {
     let reaped = 0;
+    let registeredEvicted = 0;
     for (const [id, s] of [...sessions]) {
       if (s.lastSeen > idleSince) continue;
       sessions.delete(id);
+      // A REGISTERED session's eviction changes the stale-agent picture (its
+      // row loses its live binding); count it so the caller can be nudged.
+      if (s.caller.connectionId != null && s.caller.connectionId !== '') {
+        registeredEvicted += 1;
+      }
       try {
         await s.transport.close();
       } catch {
@@ -525,6 +549,16 @@ export function createMcpServer(
       }
       reaped += 1;
     }
+    // Nudge the observer (ipc counters push) ONLY when a registered session
+    // left — reaping never publishes a bus event, so without this the
+    // staleAgents count froze until an unrelated event arrived.
+    if (registeredEvicted > 0) {
+      try {
+        opts.onSessionsReaped?.(registeredEvicted);
+      } catch {
+        /* observer callback must never break the reaper */
+      }
+    }
     return reaped;
   }
 
@@ -535,6 +569,15 @@ export function createMcpServer(
 
     sessionCount(): number {
       return sessions.size;
+    },
+
+    liveConnectionIds(): Set<string> {
+      const ids = new Set<string>();
+      for (const s of sessions.values()) {
+        const id = s.caller.connectionId;
+        if (typeof id === 'string' && id !== '') ids.add(id);
+      }
+      return ids;
     },
 
     reapIdleSessions,

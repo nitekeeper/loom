@@ -115,6 +115,22 @@ export interface LoomDb {
    *  over the partial unread index. Replaces the O(agents × messages × receipts)
    *  nested scan in buildAgentViews (the multi-second window-open freeze). */
   unreadCountsByRecipient(): Map<string, number>;
+  /** HUMAN roster curation: DELETE one agent's row outright (any status),
+   *  plus its FK children keyed by agent name (memberships + receipts).
+   *  CHAT HISTORY IS PRESERVED: messages the agent sent (or was the direct
+   *  target of) are NOT touched — FK enforcement is toggled off for just the
+   *  parent-row delete, so messages.sender/target may dangle by design (the
+   *  renderer renders sender as a plain string and never joins agents).
+   *  Returns false (fail-soft) when no such row exists. A removed name is
+   *  immediately re-registrable as a FRESH agent (no blocklist). */
+  removeAgent(name: string): boolean;
+  /** HUMAN roster curation: remove EVERY listed agent that exists, in ONE
+   *  sweep (one children-first delete + one synchronous flush), with the
+   *  same preserved-history semantics as removeAgent. Unknown names are
+   *  skipped fail-soft. Returns the names actually removed. The stale-agent
+   *  sweep (engine.clearStaleAgents) resolves WHICH rows are stale — gone ∪
+   *  active-without-live-session — and hands the name list here. */
+  removeAgents(names: string[]): string[];
 }
 
 type Cell = SqlValue | undefined;
@@ -566,6 +582,52 @@ class SqlJsLoomDb implements LoomDb {
     return out;
   }
 
+  removeAgent(name: string): boolean {
+    return this.removeAgents([name]).length === 1;
+  }
+
+  removeAgents(names: string[]): string[] {
+    // Skip unknown names fail-soft; delete the rest in ONE sweep (one
+    // children-first delete + one synchronous flush).
+    const existing = names.filter((n) => this.getAgent(n) !== undefined);
+    if (existing.length === 0) return [];
+    this.deleteAgentRows(existing);
+    return existing;
+  }
+
+  /** Delete the given agents' rows + their name-keyed FK children
+   *  (receipts.recipient, memberships.agent_name). Messages are PRESERVED:
+   *  messages.sender / messages.target still reference the removed name, so
+   *  FK enforcement is toggled OFF for ONLY the agents-row delete (restored
+   *  in finally). Like purgeAll, this human-deliberate, irreversible delete
+   *  flushes SYNCHRONOUSLY so a crash inside the debounce window cannot
+   *  resurrect the removed roster rows on the next launch. */
+  private deleteAgentRows(names: string[]): void {
+    const conn = this.conn;
+    const placeholders = names.map(() => '?').join(', ');
+    const run = (sql: string): void => {
+      const stmt = conn.prepare(sql);
+      try {
+        stmt.run(names);
+      } finally {
+        stmt.free();
+      }
+    };
+    // Children first (FK-safe under the still-ON pragma).
+    run(`DELETE FROM receipts WHERE recipient IN (${placeholders})`);
+    run(`DELETE FROM memberships WHERE agent_name IN (${placeholders})`);
+    // Parent row: messages.sender/target may still reference the name —
+    // intentionally preserved history — so disable FK checks for this one
+    // statement only and restore them whatever happens.
+    conn.run('PRAGMA foreign_keys = OFF;');
+    try {
+      run(`DELETE FROM agents WHERE name IN (${placeholders})`);
+    } finally {
+      conn.run('PRAGMA foreign_keys = ON;');
+    }
+    this.flushNow();
+  }
+
   // --- internals ------------------------------------------------
 
   private lastInsertRowId(): SqlValue {
@@ -604,6 +666,13 @@ class SqlJsLoomDb implements LoomDb {
     }
     const bytes = this.db.export();
     writeFileSync(this.dbFile, bytes);
+    // sql.js export() internally closes + reopens the database handle, which
+    // RESETS connection-level PRAGMAs — silently dropping the foreign_keys=ON
+    // init() set (so FK enforcement was lost after the first flush). Re-apply
+    // it here so the documented Appendix-A contract ("foreign keys are
+    // enforced", AC-16) holds for the whole session, not just until the
+    // first write.
+    this.db.run('PRAGMA foreign_keys = ON;');
   }
 
   /** Delete ALL chat data in FK-safe order, then flush the now-empty db (R4,

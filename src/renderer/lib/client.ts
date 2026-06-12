@@ -110,6 +110,20 @@ export interface LoomStore {
   /** Fetch the branch "Changes" listing (files created/modified vs the base)
    *  and fold it into the view-model. Called when the Changes viewer opens. */
   loadChanges(): Promise<void>;
+  /** HUMAN roster curation: remove ONE agent (force-deregister when still
+   *  active; chat history preserved). Optimistically drops the chip; main's
+   *  authoritative 'gone' AgentEvent makes the replay a no-op. Resolves
+   *  main's answer (true = a row was removed) so the caller can announce the
+   *  outcome honestly (App's polite live region); a rejected invoke is
+   *  swallowed fail-soft as false. */
+  removeAgent(name: string): Promise<boolean>;
+  /** HUMAN roster curation: remove ALL STALE agents at once (gone rows +
+   *  actives with no live MCP session — main owns that determination; the
+   *  renderer never guesses which chips are stale). Optimistically zeroes
+   *  counters.staleAgents (the clear-stale button disables immediately);
+   *  the swept chips are dropped by the authoritative 'gone' AgentEvents
+   *  that follow. Resolves main's removed COUNT (0 on failure). */
+  clearStaleAgents(): Promise<number>;
 }
 
 /** How long a row-flash persists after a FileEvent (ms). */
@@ -224,7 +238,13 @@ export function createStore(): LoomStore {
     // sender name; the db keeps the row for name-collision accounting.
     if (a.status === 'gone') {
       if (!current.agents.some((x) => x.name === a.name)) return current;
-      return { ...current, agents: current.agents.filter((x) => x.name !== a.name) };
+      return {
+        ...current,
+        agents: current.agents.filter((x) => x.name !== a.name),
+        // An inbox lens open on the departed agent closes with its chip —
+        // never a lens over a roster entry that no longer exists.
+        inboxAgent: current.inboxAgent === a.name ? null : current.inboxAgent,
+      };
     }
     const existing = current.agents.find((x) => x.name === a.name);
     const agents: AgentView[] = existing
@@ -388,7 +408,32 @@ export function createStore(): LoomStore {
     if (vm === null) return;
     // PAUSED freezes the live VIEW for the human observer: buffer the event
     // (do not drop it) so the view stays a faithful catch-up on resume.
+    //
+    // ROSTER-CURATION EXCEPTION: a 'gone' AgentEvent passes the gate
+    // immediately. It only ever REMOVES a chip (reduceAgent), and it is how
+    // the human's own × / clear-stale results arrive — the human just acted
+    // and must see the roster respond even while the feed is frozen (the
+    // same reasoning as the optimistic × drop; the count zeroing and the
+    // announcement already fire regardless of pause). Deregister-gone events
+    // ride along: equally removal-only, presentation-safe. To keep the
+    // resume replay coherent, buffered agent events for the SAME name are
+    // purged so a chip the human removed cannot resurrect on resume.
     if (vm.liveState === 'PAUSED') {
+      if (e.kind === 'agent' && e.agent.status === 'gone') {
+        const name = e.agent.name;
+        for (let i = pausedBuffer.length - 1; i >= 0; i--) {
+          const b = pausedBuffer[i];
+          if (b !== undefined && b.kind === 'agent' && b.agent.name === name) {
+            pausedBuffer.splice(i, 1);
+          }
+        }
+        const next = reduce(vm, e);
+        if (next !== vm) {
+          vm = next;
+          emit();
+        }
+        return;
+      }
       pausedBuffer.push(e);
       return;
     }
@@ -600,6 +645,43 @@ export function createStore(): LoomStore {
     }
   };
 
+  // HUMAN roster curation. Optimistic local drop (so the chip vanishes even
+  // while the feed is PAUSED — curation is human UI state, not agent
+  // activity), then the authoritative main-process delete; the 'gone'
+  // AgentEvent main publishes is a no-op replay through reduceAgent. An
+  // inbox lens open on a removed agent is closed. Fail-soft: main returns
+  // false/0 for anything invalid, and a rejected invoke is swallowed (the
+  // next agent event / relaunch re-syncs from the single source of truth).
+  const removeAgent = async (name: string): Promise<boolean> => {
+    if (vm === null) return false;
+    set({
+      agents: vm.agents.filter((a) => a.name !== name),
+      inboxAgent: vm.inboxAgent === name ? null : vm.inboxAgent,
+    });
+    try {
+      return await window.loom.removeAgent(name);
+    } catch {
+      /* fail-soft: leave the optimistic state; main remains authoritative. */
+      return false;
+    }
+  };
+
+  const clearStaleAgents = async (): Promise<number> => {
+    if (vm === null) return 0;
+    // The renderer CANNOT know which 'active' chips are stale — the live
+    // MCP session map lives in main — so it never guesses: the swept chips
+    // are removed by the authoritative 'gone' AgentEvents main publishes.
+    // Only the aggregate is zeroed optimistically so the "clear stale (N)"
+    // button disables at once; the next COUNTERS push restores main's truth.
+    set({ counters: { ...vm.counters, staleAgents: 0 } });
+    try {
+      return await window.loom.clearStaleAgents();
+    } catch {
+      /* fail-soft: main remains authoritative. */
+      return 0;
+    }
+  };
+
   return {
     getSnapshot: () => vm,
     getViewModel: () => vm,
@@ -615,5 +697,7 @@ export function createStore(): LoomStore {
     setKeybindings,
     togglePause,
     loadChanges,
+    removeAgent,
+    clearStaleAgents,
   };
 }
