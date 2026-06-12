@@ -114,6 +114,10 @@ async function launch(dir: string): Promise<{ app: ElectronApplication; page: Pa
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.pane.explorer [role="treeitem"]', { timeout: 30_000 });
+  // The dir-row folder icon mounts as an inline SVG (FolderIcon, not the old ▤ glyph)
+  // (the fixture's only dir row is .git itself, rendered per FR-3 nothing-hidden —
+  // if a dotdir filter ever lands, reseed a real subdir here).
+  await expect(page.locator('.pane.explorer [role="treeitem"] .fileicon svg').first()).toBeVisible();
   await installOpenExternalSpy(app);
   // Renderer-side sentinel: if any seeded hostile bytes EXECUTED in the diff
   // render, this global would flip true. It must stay untouched.

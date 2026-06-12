@@ -68,6 +68,37 @@ function SearchIcon(): JSX.Element {
   );
 }
 
+/** Folder glyph for directory rows: a single-path Lucide-style folder outline —
+ *  semantically mapping "folder outline → directory". A one-path silhouette
+ *  stays crisp at 14px (the in-file icon size used inside the 16px .fileicon
+ *  box) where multi-stroke detail would smear. The icon is STATIC by design:
+ *  expansion state is signaled by the adjacent twirl ▶ rotation and the row's
+ *  aria-expanded, so the folder deliberately carries no open/closed cue. It
+ *  replaces the former U+25A4 (SQUARE WITH HORIZONTAL FILL) text glyph, which
+ *  rendered illegibly at the .fileicon's 8px font-size. The stroke color is
+ *  lifted to --text-dim (vs the old glyph's --text-faint) because a 2px
+ *  outline reads dimmer than the filled glyph it replaces — and --text-faint
+ *  is weak on the light theme's near-white panel; --text-dim also matches the
+ *  adjacent fontWeight-600 dir label so icon + label read as one unit.
+ *  Exported for the testkit. */
+export function FolderIcon(): JSX.Element {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+    </svg>
+  );
+}
+
 /** Chip color + glyph per file kind, refined by a few extensions. */
 function iconFor(node: FileNode): { bg: string; t: string } {
   const kind: FileKind = node.kind ?? 'binary';
@@ -456,10 +487,10 @@ export function Explorer({
                     </span>
                     <span
                       className="fileicon"
-                      style={{ background: 'transparent', color: 'var(--text-faint)' }}
+                      style={{ background: 'transparent', color: 'var(--text-dim)' }}
                       aria-hidden="true"
                     >
-                      ▤
+                      <FolderIcon />
                     </span>
                     <span
                       className="fname"

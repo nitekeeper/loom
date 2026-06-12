@@ -8,9 +8,11 @@
  * ============================================================ */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const TESTKIT = path.join(root, 'dist', 'testkit.cjs');
@@ -101,4 +103,20 @@ test('FILETREE: untouched sibling subtrees keep their identity (React can skip)'
   const after = insertNode(before, makeNode('src/b.ts', false));
   assert.notEqual(after, before, 'the root object changed');
   assert.equal(find(after, 'docs'), docsBefore, 'the untouched docs subtree keeps its reference');
+});
+
+test('FILETREE FolderIcon: dir rows render an inline SVG folder (not the legacy ▤ glyph) — anti-revert', async () => {
+  const { FolderIcon } = await kit();
+  // Render the REAL prop-less component (DiffBody/renderToStaticMarkup idiom).
+  const html = renderToStaticMarkup(React.createElement(FolderIcon));
+  assert.ok(html.startsWith('<svg'), 'FolderIcon renders an inline <svg> (DiffIcon idiom)');
+  assert.ok(html.includes('aria-hidden="true"'), 'decorative: hidden from the a11y tree');
+  assert.ok(html.includes('stroke="currentColor"'), 'inherits the row text color');
+  assert.ok(!html.includes('▤'), 'the legacy ▤ text glyph is gone from the icon');
+  // Wiring (source-level): the dir-row must actually MOUNT <FolderIcon /> and the
+  // legacy glyph must be gone from Explorer.tsx entirely — closes the "component
+  // exists but the row still uses ▤" gap a component-only assertion would miss.
+  const src = readFileSync(path.join(root, 'src', 'renderer', 'components', 'Explorer.tsx'), 'utf8');
+  assert.ok(src.includes('<FolderIcon />'), 'the dir row mounts <FolderIcon />');
+  assert.ok(!src.includes('▤'), 'no ▤ anywhere in Explorer.tsx (anti-revert)');
 });

@@ -54,6 +54,14 @@ export type { DiffRow, DiffRowClass } from './renderer/lib/diff-view.js';
 // cleanly into the Node bundle.
 export { DiffBody } from './renderer/components/FileDiff.js';
 
+// The Explorer's dir-row folder glyph (inline SVG, DiffIcon idiom). Re-exported
+// so the node --test tier can renderToStaticMarkup the ACTUAL component and pin
+// the SVG contract (aria-hidden, currentColor stroke) + the absence of the
+// legacy ▤ text glyph it replaced (anti-revert). FolderIcon is a pure prop-less
+// presenter (no hooks / no window.loom at render time), so it pulls cleanly
+// into the Node bundle.
+export { FolderIcon } from './renderer/components/Explorer.js';
+
 // Project-wide content search (Law 3 confined + bounded). The pure matcher
 // (matchFile) re-exported for unit tests, plus createSandbox + createSearch so
 // the suite can prove the confined walk over a real temp dir (finds content,
