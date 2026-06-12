@@ -203,6 +203,46 @@ test('closing the pane kills the PTY process', async () => {
 });
 
 /* ------------------------------------------------------------------ *
+ * 2b. REGRESSION: column splitters must not overlay the dock          *
+ * ------------------------------------------------------------------ */
+// The Explorer/Chat column splitters are absolutely-positioned grid children
+// of .body with top:0/bottom:0 rails at z-index:5. A bare `grid-row: 1` pin
+// resolves an abspos child's END line to the grid CONTAINER edge (CSS Grid
+// §9.2), which once let both rails run straight through the terminal row —
+// painting over the dock and stealing its pointer events. The fix pins
+// `grid-row: 1 / 2` so the rails stop at the row-1/dock seam; this test
+// fails for the right reason if that end line ever regresses.
+test('column splitters do not extend over the open terminal dock', async () => {
+  const dir = makeFixtureDir();
+  const { app, page } = await launch(dir);
+  try {
+    await openTerminal(page);
+
+    const pane = await page.locator(PANE).boundingBox();
+    expect(pane, 'terminal pane has no bounding box').not.toBeNull();
+
+    // Both column splitters: Explorer right edge (.left) and Chat left edge
+    // (the base class). Scope to .body and exclude the dock's own horizontal
+    // splitter, which legitimately straddles the seam by design.
+    const splitters = page.locator('.body > .splitter:not(.horizontal)');
+    await expect(splitters).toHaveCount(2);
+
+    for (const splitter of await splitters.all()) {
+      const box = await splitter.boundingBox();
+      expect(box, 'column splitter has no bounding box').not.toBeNull();
+      // The rail must STOP at (or above) the dock's top edge — no vertical
+      // overlap with the terminal pane. 0.5px slack absorbs subpixel layout
+      // rounding in boundingBox(); a real regression overlaps by the full
+      // dock height (--terminal-h >= 120px), far beyond any rounding noise.
+      expect(box!.y + box!.height).toBeLessThanOrEqual(pane!.y + 0.5);
+    }
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
  * 3. reopening after close yields a fresh working shell               *
  * ------------------------------------------------------------------ */
 test('reopening after close yields a fresh working shell', async () => {

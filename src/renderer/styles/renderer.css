@@ -440,12 +440,19 @@ html[data-platform='darwin'] .win-controls { display: none; }
   grid-template-columns: 1fr;
 }
 /* Pin every child to row 1 so the optional terminal dock (row 2, below) can
-   never capture an auto-placed column pane. The COLUMN splitters are
-   absolutely positioned, so for them this instead resolves their containing
-   block to the row-1 grid area (CSS Grid §9) — exactly right: their
-   top:0/bottom:0 rails span the columns row and STOP above the dock. The
-   terminal items override to row 2 with higher specificity below. */
-.body > * { min-height: 0; min-width: 0; grid-row: 1; }
+   never capture an auto-placed column pane. The END line (`/ 2`) is
+   load-bearing for the absolutely-positioned splitters: for abspos grid
+   children an `auto` grid position resolves to the grid CONTAINER's padding
+   edge, not "span 1" (CSS Grid §9.2) — a bare `grid-row: 1` left their
+   containing block running through the dock row, so their top:0/bottom:0
+   rails painted (and grabbed pointer events, z-index:5) over the terminal.
+   With `1 / 2` the containing block is exactly the row-1 grid area whenever
+   the explicit second row exists (terminal-open), so the rails STOP at the
+   row-1/dock seam; with the terminal closed line 2 is outside the explicit
+   grid and falls back to the container edge — row 1 IS the full body then,
+   so both cases are correct. In-flow panes are unaffected (1 / 2 ≡ span 1).
+   The terminal items override to row 2 with higher specificity below. */
+.body > * { min-height: 0; min-width: 0; grid-row: 1 / 2; }
 
 /* ---- Terminal dock rows (terminal-open / terminal-max) ----
    The dock adds a SECOND grid row below the three columns; row 1 keeps the
@@ -531,8 +538,9 @@ html[data-platform='darwin'] .win-controls { display: none; }
 }
 
 /* Terminal-dock splitter: the SAME affordances rotated 90°. Like its column
-   siblings it is absolutely positioned — its `.body > *` grid-row:1 pin makes
-   row 1 its containing block, so bottom:0 sits exactly on the row-1/dock seam
+   siblings it is absolutely positioned — its `.body > *` grid-row:1/2 pin
+   makes row 1 its containing block (the explicit end line matters for abspos
+   children, see that rule), so bottom:0 sits exactly on the row-1/dock seam
    and translateY(4px) straddles the boundary (the mirror of the column
    splitters' translateX trick). The 2px seam line, hover/drag accent, and the
    focus-visible bar+halo all reuse the base .splitter rules, re-axised. */
