@@ -439,7 +439,46 @@ html[data-platform='darwin'] .win-controls { display: none; }
 .body.explorer-hidden.chat-hidden {
   grid-template-columns: 1fr;
 }
-.body > * { min-height: 0; min-width: 0; }
+/* Pin every child to row 1 so the optional terminal dock (row 2, below) can
+   never capture an auto-placed column pane. The END line (`/ 2`) is
+   load-bearing for the absolutely-positioned splitters: for abspos grid
+   children an `auto` grid position resolves to the grid CONTAINER's padding
+   edge, not "span 1" (CSS Grid §9.2) — a bare `grid-row: 1` left their
+   containing block running through the dock row, so their top:0/bottom:0
+   rails painted (and grabbed pointer events, z-index:5) over the terminal.
+   With `1 / 2` the containing block is exactly the row-1 grid area whenever
+   the explicit second row exists (terminal-open), so the rails STOP at the
+   row-1/dock seam; with the terminal closed line 2 is outside the explicit
+   grid and falls back to the container edge — row 1 IS the full body then,
+   so both cases are correct. In-flow panes are unaffected (1 / 2 ≡ span 1).
+   The terminal items override to row 2 with higher specificity below. */
+.body > * { min-height: 0; min-width: 0; grid-row: 1 / 2; }
+
+/* ---- Terminal dock rows (terminal-open / terminal-max) ----
+   The dock adds a SECOND grid row below the three columns; row 1 keeps the
+   columns (minmax(0,1fr) so they can actually shrink), row 2 is the dock at
+   the live --terminal-h (clamped in App via lib/terminal-pane.ts). These row
+   rules compose freely with the column-hiding variants above — columns and
+   rows are independent properties on the same .body element. */
+.body.terminal-open {
+  grid-template-rows: minmax(0, 1fr) var(--terminal-h, 240px);
+}
+/* Maximized: collapse row 1 so the dock fills the entire body; restore simply
+   drops this class and the prior --terminal-h height takes over again. */
+.body.terminal-open.terminal-max {
+  grid-template-rows: 0 minmax(0, 1fr);
+}
+/* The dock spans ALL columns in row 2 (1 / -1 tracks however many columns the
+   hidden-pane variants leave). Beats the `.body > *` row-1 pin on specificity. */
+.body > .pane.terminal {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+/* While maximized, row 1 still EXISTS at 0 height — hide everything in it
+   (panes + column splitters) so its content leaves the tab order and the AT
+   tree, and its overflow can never paint over the dock. visibility (not
+   display) so the panes keep their layout/scroll state for instant restore. */
+.body.terminal-max > :not(.pane.terminal) { visibility: hidden; }
 
 /* ============================================================
    Chat resize splitter (FR-54 / WCAG 2.4.7, 2.1.1)
@@ -498,10 +537,45 @@ html[data-platform='darwin'] .win-controls { display: none; }
   box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
+/* Terminal-dock splitter: the SAME affordances rotated 90°. Like its column
+   siblings it is absolutely positioned — its `.body > *` grid-row:1/2 pin
+   makes row 1 its containing block (the explicit end line matters for abspos
+   children, see that rule), so bottom:0 sits exactly on the row-1/dock seam
+   and translateY(4px) straddles the boundary (the mirror of the column
+   splitters' translateX trick). The 2px seam line, hover/drag accent, and the
+   focus-visible bar+halo all reuse the base .splitter rules, re-axised. */
+.splitter.horizontal {
+  top: auto;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 8px;
+  transform: translateY(4px);
+  cursor: row-resize;
+}
+.splitter.horizontal::before {
+  top: 3px;             /* center a 2px line in the 8px area */
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 2px;
+}
+.splitter.horizontal:focus-visible::before {
+  top: 2px;
+  left: 0;
+  width: auto;
+  height: 4px;
+}
+
 /* While dragging: kill text selection + any grid width transition so the
    live resize stays crisp and pointerless (FR-54 / reduced-motion safe). */
 .win.dragging { user-select: none; cursor: col-resize; }
 .win.dragging .body { transition: none; }
+/* Row-axis variant for the terminal-dock splitter drag. */
+.win.dragging-row { user-select: none; cursor: row-resize; }
+.win.dragging-row .body { transition: none; }
 
 /* ============================================================
    Linux frameless edge-resize handles (WindowResizeHandles.tsx)
@@ -574,6 +648,29 @@ html:not([data-platform='linux']) .win-resize { display: none; }
 .pane.explorer { border-right: 1px solid var(--border-soft); background: var(--panel); }
 .pane.viewer { background: var(--win); }
 .pane.chat { border-left: 1px solid var(--border-soft); background: var(--panel); }
+/* Terminal dock (row 2): a column flex of .pane-head + the xterm host. The
+   surface matches the xterm theme background (--win, read live by
+   TerminalPane's readXtermTheme) so the pane and the terminal canvas are one
+   seamless sheet in both themes. */
+.pane.terminal { border-top: 1px solid var(--border-soft); background: var(--win); }
+/* The xterm mount target. flex:1 + min-height:0 so the FitAddon always has a
+   real, shrinkable box to measure; the padding is subtracted by fit(). */
+.term-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 8px;
+  background: var(--win);
+}
+/* Inline notice rows ("Terminal unavailable" / "Session ended") — rendered
+   between the head and the xterm host, styled like a quiet banner. */
+.term-note {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border-soft);
+}
 
 .pane-head {
   height: 38px; flex: 0 0 38px;

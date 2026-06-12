@@ -43,6 +43,13 @@ jobs:
       - name: Install dependencies (npm ci)
         run: npm ci
 
+      - name: Rebuild node-pty against Electron's ABI
+        # node-pty (the terminal pane's PTY) is the one NATIVE production dep.
+        # electron-builder's default `npmRebuild: true` rebuilds it again during
+        # packaging, but this explicit step FAILS FAST — a toolchain/ABI problem
+        # surfaces here as a clear compile error, not buried mid-package.
+        run: npx electron-rebuild -f -w node-pty
+
       - name: Build app bundles (esbuild -> dist/)
         run: npm run build
 

@@ -34,6 +34,8 @@ Every part of Loom is built to obey these (requirements §2.1):
 4. **Register to exist, join a channel to talk.** Agent identity and channel membership are explicit, never implicit or anonymous. (Law 4 — FR-15, NFR-4)
 5. **You can talk to whoever shares a channel with you.** Communication is scoped to shared channels; agents that share no channel cannot exchange messages. (Law 5 — FR-20)
 
+> **Human terminal carve-out.** Loom also has a closable bottom-dock terminal pane, and the laws stay honest around it. Law 1 governs *content rendering* and the *agent surface*: no file Loom displays is ever executed, and nothing an agent sends can run. The terminal is different by design — a **deliberate, human-invoked execution surface** (a real shell, spawned in the main process only when *you* open the pane) that is **never reachable by agents or MCP**: the agent tool surface is unchanged, and no agent can see, drive, or type into it. Law 3's file sandbox likewise governs the Explorer/Viewer/MCP *file access* surface only — the shell **starts in** the launch root but, like any shell, is not confined to it.
+
 ---
 
 ## Requirements

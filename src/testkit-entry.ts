@@ -236,6 +236,7 @@ export {
   resolveBindings,
   findConflict,
   isValidBinding,
+  bindingAllowedFor,
   formatCombo,
   diffOverrides,
   planReassign,
@@ -269,6 +270,39 @@ export type {
   FileKind,
   RenderState,
 } from './shared/types.js';
+
+// Pure terminal-dock geometry (the bottom terminal pane's height clamp +
+// persistence keys). Re-exported so the node --test suite can pin the clamp
+// range (min 120 / max 80% of body / degenerate-body pin) and the persisted
+// key names without a DOM. The stateful consumer (useTerminalHeight +
+// RowSplitter) stays in App.tsx; only the pure fns + constants surface here.
+export {
+  clampTerminalHeight,
+  terminalHeightMax,
+  TERMINAL_MIN_HEIGHT,
+  TERMINAL_MAX_FRACTION,
+  TERMINAL_DEFAULT_HEIGHT,
+  TERMINAL_HEIGHT_STEP,
+  TERMINAL_HEIGHT_KEY,
+  TERMINAL_OPEN_KEY,
+} from './renderer/lib/terminal-pane.js';
+
+// The PURE terminal session manager behind the loom:terminal:* channels
+// (single PTY session, payload re-validation, coalesced/bounded output pump,
+// kill-on-close). Electron-free AND node-pty-free — the PTY arrives via the
+// injected PtyFactory seam, so the suite drives it with a recording fake.
+// pty-factory.ts (the only node-pty touchpoint) is deliberately NOT exported.
+export {
+  createTerminalManager,
+  defaultShell,
+  OUTPUT_BUFFER_CAP,
+} from './main/terminal.js';
+export type {
+  TerminalManager,
+  PtyFactory,
+  PtyLike,
+  PtySpawnOpts,
+} from './main/terminal.js';
 
 // Pure Linux maximize bounds correction (frameless WM frame-offset fix).
 // Re-exported so the node --test suite can pin the display-selection logic

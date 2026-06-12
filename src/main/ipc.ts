@@ -35,6 +35,7 @@ import {
   type GitFileStatus,
   type ChangeSet,
   type FileDiff,
+  type TerminalOpenResult,
 } from '../shared/types.js';
 import { getGitStatus } from './git.js';
 import {
@@ -45,6 +46,7 @@ import {
 } from './git-diff.js';
 import { removeAgentByName, clearStaleAgents, isStaleAgent } from './engine.js';
 import type { ConfigStore } from './config.js';
+import type { TerminalManager } from './terminal.js';
 import type { LoomDb } from './db.js';
 import type { EventBus } from './eventbus.js';
 import type { Sandbox } from './sandbox.js';
@@ -93,6 +95,8 @@ export interface IpcDeps {
    *  (degraded boot with no MCP server, or tests) the live set is empty,
    *  which is CORRECT: with no agent transport, no agent can be live. */
   liveConnectionIds?: () => ReadonlySet<string>;
+  /** The human-invoked terminal pane's PTY session manager (loom:terminal:*). */
+  terminal: TerminalManager;
 }
 
 class IpcWiringImpl implements IpcWiring {
@@ -352,6 +356,20 @@ class IpcWiringImpl implements IpcWiring {
         });
       },
     );
+
+    // Terminal pane (loom:terminal:*): each handler delegates the RAW unknown
+    // payload to the PURE session manager, which is the authoritative
+    // re-validation gate (types, the per-spawn sessionId token, the
+    // MAX_TERMINAL_INPUT_BYTES cap, cols/rows ranges — never trust the
+    // renderer; unit-pinned in test/terminal.mjs). Invalid/stale input is a
+    // silent no-op; a failed spawn returns { sessionId: null } (unavailable).
+    ipcMain.handle(
+      IPC.TERMINAL_OPEN,
+      (_evt, p: unknown): TerminalOpenResult => this.deps.terminal.open(p),
+    );
+    ipcMain.handle(IPC.TERMINAL_INPUT, (_evt, p: unknown): void => this.deps.terminal.input(p));
+    ipcMain.handle(IPC.TERMINAL_RESIZE, (_evt, p: unknown): void => this.deps.terminal.resize(p));
+    ipcMain.handle(IPC.TERMINAL_CLOSE, (_evt, p: unknown): void => this.deps.terminal.close(p));
   }
 
   // --- renderer pump -------------------------------------------
@@ -395,6 +413,11 @@ class IpcWiringImpl implements IpcWiring {
     // recompute+push — same debounce as the bus-driven path.
     this.onCountersNudge = pushCounters;
 
+    // Terminal output/exit pushes flow to THIS renderer (the manager's
+    // coalesced TERMINAL_DATA / TERMINAL_EXIT pump). Detached on dispose so
+    // pushes stop after the renderer goes away (unit-pinned: detach => silence).
+    const detachTerminal = this.deps.terminal.attachSink(send);
+
     const unsubscribe = this.deps.bus.subscribe((e: LoomEvent) => {
       if (disposed) return;
       // Fan every event out to the renderer (FR-29).
@@ -424,6 +447,7 @@ class IpcWiringImpl implements IpcWiring {
     return () => {
       disposed = true;
       unsubscribe();
+      detachTerminal();
       if (countersTimer !== null) clearTimeout(countersTimer);
       if (idleTimer !== null) clearTimeout(idleTimer);
       if (this.gitDebounceTimer !== null) {

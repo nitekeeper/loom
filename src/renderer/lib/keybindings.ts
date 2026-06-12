@@ -36,7 +36,8 @@ export type CommandId =
   | 'toggleTheme'
   | 'togglePause'
   | 'openSearch'
-  | 'copyRendered';
+  | 'copyRendered'
+  | 'toggleTerminal';
 
 /** A command entry shown in the Shortcuts panel. */
 export interface CommandSpec {
@@ -53,6 +54,7 @@ export interface CommandSpec {
 export const COMMANDS: readonly CommandSpec[] = [
   { id: 'toggleExplorer', label: 'Toggle file explorer', defaultBinding: 'Ctrl+B' },
   { id: 'toggleChat', label: 'Toggle agent chat', defaultBinding: 'Ctrl+J' },
+  { id: 'toggleTerminal', label: 'Toggle terminal', defaultBinding: 'Ctrl+`' },
   { id: 'openSearch', label: 'Search file contents', defaultBinding: 'Ctrl+Shift+F' },
   { id: 'closeFile', label: 'Close file', defaultBinding: 'Escape' },
   { id: 'foldAll', label: 'Fold all regions', defaultBinding: 'Ctrl+K' },
@@ -213,11 +215,26 @@ export function isValidBinding(combo: string): boolean {
   return isValidKeyToken(last);
 }
 
+/** True when `combo` is a valid binding FOR THE GIVEN COMMAND. On top of the
+ *  structural isValidBinding check, toggleTerminal must carry at least one
+ *  modifier: it is the one command the App dispatcher fires even inside
+ *  editable targets (so Ctrl/Cmd+` can close the dock from xterm's own
+ *  textarea) — a bare-key binding (e.g. 'K') would therefore fire, and KILL
+ *  the shell session, on every plain keystroke in any text field. */
+export function bindingAllowedFor(id: CommandId, combo: string): boolean {
+  if (!isValidBinding(combo)) return false;
+  // isValidBinding guarantees every non-final segment is a modifier, so
+  // "has a modifier" reduces to "more than one segment".
+  if (id === 'toggleTerminal' && combo.split('+').length < 2) return false;
+  return true;
+}
+
 /** Merge user overrides onto the defaults, returning the FULL resolved
  *  id -> combo map for all commands. Only override entries for known
- *  command ids whose value is a valid binding are applied; anything else
- *  (unknown id, empty/invalid combo) falls back to the default so a
- *  corrupt persisted map can never blank a command. */
+ *  command ids whose value is a valid binding FOR THAT COMMAND are applied
+ *  (bindingAllowedFor: structural validity + the toggleTerminal modifier
+ *  requirement); anything else (unknown id, empty/invalid combo) falls back
+ *  to the default so a corrupt persisted map can never blank a command. */
 export function resolveBindings(
   overrides: Readonly<Record<string, string>> | null | undefined,
 ): Record<CommandId, string> {
@@ -225,7 +242,7 @@ export function resolveBindings(
   if (!overrides || typeof overrides !== 'object') return resolved;
   for (const id of COMMAND_IDS) {
     const o = overrides[id];
-    if (typeof o === 'string' && isValidBinding(o)) {
+    if (typeof o === 'string' && bindingAllowedFor(id, o)) {
       resolved[id] = o;
     }
   }
@@ -259,10 +276,14 @@ export function findConflict(
  *  at index 0 — APPEND new reserved combos, never prepend. 'Ctrl+Shift+G' is the
  *  fixed Changes-viewer toggle (App.tsx dispatcher intercepts it before the
  *  rebindable-command loop), reserved here so a rebind onto it is hard-blocked
- *  rather than silently shadowed. */
+ *  rather than silently shadowed. 'Ctrl+Shift+Tab' is the terminal pane's
+ *  focus-escape hatch (TerminalPane's attachCustomKeyEventHandler moves focus
+ *  out of xterm on it) — reserved so a command rebound onto it could never
+ *  fire focus-escape AND its own action (e.g. dock-close/kill) at once. */
 export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
   'Ctrl+,',
   'Ctrl+Shift+G',
+  'Ctrl+Shift+Tab',
 ]);
 
 /** True when `combo` is reserved by the app shell (see RESERVED_COMBOS) and
@@ -362,11 +383,14 @@ export function diffOverrides(
   const overrides: Record<string, string> = {};
   for (const id of COMMAND_IDS) {
     const v = resolved[id];
-    // Persist ONLY real, differing-from-default bindings. A VACATED command
-    // (combo === '' from a reassign that re-collided, KB-3) is structurally
-    // invalid, so we never persist it — it falls back to its default on
-    // resolve, and the panel re-captures it before close anyway.
-    if (typeof v === 'string' && v !== DEFAULT_BINDINGS[id] && isValidBinding(v)) {
+    // Persist ONLY real, differing-from-default bindings ALLOWED for their
+    // command (bindingAllowedFor: structural validity + the toggleTerminal
+    // modifier requirement — anything resolveBindings would drop must never
+    // persist, or the UI and the live bindings silently diverge). A VACATED
+    // command (combo === '' from a reassign that re-collided, KB-3) is
+    // structurally invalid, so we never persist it — it falls back to its
+    // default on resolve, and the panel re-captures it before close anyway.
+    if (typeof v === 'string' && v !== DEFAULT_BINDINGS[id] && bindingAllowedFor(id, v)) {
       overrides[id] = v;
     }
   }

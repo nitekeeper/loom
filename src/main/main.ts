@@ -26,6 +26,8 @@ import { createSearch } from './search.js';
 import { createWatcher } from './watcher.js';
 import { createConfigStore } from './config.js';
 import { createIpcWiring } from './ipc.js';
+import { createTerminalManager } from './terminal.js';
+import { createNodePtyFactory } from './pty-factory.js';
 import { createWsFeed, wsEnabled } from './ws.js';
 import { linuxMaximizeBounds, computeWslToggleMaximize } from './linux-maximize.js';
 
@@ -286,6 +288,9 @@ interface Services {
   sandbox: ReturnType<typeof createSandbox>;
   watcher: ReturnType<typeof createWatcher>;
   ipc: ReturnType<typeof createIpcWiring>;
+  /** The human-invoked terminal pane's PTY session manager (loom:terminal:*).
+   *  PTY lives ONLY in main; killed on window close / app quit. */
+  terminal: ReturnType<typeof createTerminalManager>;
   mcp: ReturnType<typeof createMcpServer>;
   ws: ReturnType<typeof createWsFeed> | null;
   rootDir: string;
@@ -494,6 +499,12 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   const watcher = createWatcher(rootDir, bus);
   watcher.start();
 
+  // The terminal pane's PTY session manager (human-invoked; MCP-invisible).
+  // The node-pty factory loads its native binding LAZILY on first open(), so a
+  // missing/ABI-broken node-pty degrades to "terminal unavailable"
+  // ({ sessionId: null }) instead of failing boot.
+  const terminal = createTerminalManager({ factory: createNodePtyFactory(), rootDir });
+
   const ipc = createIpcWiring({
     db,
     sandbox,
@@ -505,6 +516,7 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
     // session bindings. When the MCP server failed to start (degraded boot)
     // its session map is simply empty — correct: no transport, nothing live.
     liveConnectionIds: () => mcp.liveConnectionIds(),
+    terminal,
   });
   ipc.register();
   notifySessionsReaped = () => ipc.nudgeCounters();
@@ -515,7 +527,7 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
     await ws.start();
   }
 
-  return { db, bus, engine, sandbox, watcher, ipc, mcp, ws, rootDir, ownsMcpAdvert };
+  return { db, bus, engine, sandbox, watcher, ipc, terminal, mcp, ws, rootDir, ownsMcpAdvert };
 }
 
 /** Platform-aware window-chrome options for the MAIN window.
@@ -797,8 +809,18 @@ function createMainWindow(services: Services): BrowserWindow {
   // DEPENDS on the renderer's onMaximizeChange listener being attached before
   // this fires, so an in-app reload while maximized seeds correctly regardless.
   win.webContents.on('did-finish-load', pushMaximized);
-  services.ipc.attachRenderer((channel, payload) => {
+  const detachRenderer = services.ipc.attachRenderer((channel, payload) => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
+  });
+  // A full renderer reload loses the sessionId without sending a close — kill
+  // the live PTY so a reload can never orphan it (open() spawns a fresh one).
+  win.webContents.on('did-navigate', () => services.terminal.disposeAll());
+  // Kill-on-window-close: the PTY must never outlive the window that owns it
+  // (the renderer's pane-close path also kills, but a window closed with the
+  // terminal open relies on this). Idempotent with the will-quit disposeAll.
+  win.on('closed', () => {
+    detachRenderer();
+    services.terminal.disposeAll();
   });
   return win;
 }
@@ -901,9 +923,10 @@ async function runCapture(services: Services, capture: CaptureArgs): Promise<voi
     // browser. will-navigate does NOT fire for the programmatic loadURL below,
     // and denying child windows is fine for capture (no popups expected).
     installNavGuard(win);
-    services.ipc.attachRenderer((channel, payload) => {
+    const detachRenderer = services.ipc.attachRenderer((channel, payload) => {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     });
+    win.on('closed', detachRenderer);
 
     await new Promise<void>((resolve) => {
       win.webContents.once('did-finish-load', () => resolve());
@@ -1132,6 +1155,11 @@ export function bootstrap(): void {
         void services.ws?.stop();
         services.watcher.stop();
       });
+
+      // Lifecycle safety: never leak a live PTY past the app. disposeAll() is
+      // idempotent (a second call on an already-killed session is a no-op), so
+      // it is safe to fire on BOTH will-quit and window close.
+      app.on('will-quit', () => services.terminal.disposeAll());
 
       if (capture) {
         await runCapture(services, capture);

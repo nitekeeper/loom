@@ -58,6 +58,14 @@ jobs:
       - name: Install dependencies (npm ci)
         run: npm ci
 
+      - name: Rebuild node-pty against Electron's ABI
+        # node-pty is a NATIVE module (the terminal pane's PTY, loaded by the
+        # main process at runtime). `npm ci` compiles it against the runner's
+        # system Node ABI, which does NOT match Electron 33's — so without this
+        # rebuild the app launched by terminal.e2e.ts would fail to load it and
+        # the terminal tests would only see the "unavailable" degraded state.
+        run: npx electron-rebuild -f -w node-pty
+
       - name: Install a lightweight window manager (fluxbox)
         # window-controls.e2e.ts tests 2/3/4 (minimize / maximize / double-click
         # maximize) assert against the REAL BrowserWindow.isMinimized() /

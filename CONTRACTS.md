@@ -144,6 +144,12 @@ The renderer NEVER touches `ipcRenderer` directly — only `window.loom`.
 | `CLEAR_STALE_AGENTS` | `loom:agent:clear-stale` | invoke | `() → number` — HUMAN roster curation: remove ALL **STALE** agents at once with the SAME delete semantics as `REMOVE_AGENT` (messages preserved; one `'gone'` `AgentEvent` per removed row + one `ChannelEvent` per channel that lost members). **STALE = `status='gone'` rows ∪ `status='active'` rows whose `connection_id` is NOT bound to any live MCP session** (`McpServerHandle.liveConnectionIds()`): agents that crash/exit never call `deregister`, and the idle reaper only closes transports — it NEVER touches the db — so dead agents sit `'active'` forever; the dead chips the human sees are these rows, not gone ones. A LIVE connected agent is NEVER swept — the per-chip × (`REMOVE_AGENT`) is the only way to remove one. After an app relaunch every `'active'` row is stale until its agent re-registers (sessions die with the process); sweeping them all is intended. No race with a registering agent: `register()` claims the row + binds the session's `connectionId` in one synchronous unit on the same event loop the (synchronous) sweep runs on. The button count (`SessionCounters.staleAgents`) is recomputed in main with the SAME `isStaleAgent` definition over the SAME live set, but it is an ADVISORY display accurate as of its last recompute — the click itself sweeps by definition, whatever is stale at that instant. Counter pushes fire on every bus event AND on an out-of-bus nudge when the idle reaper evicts a registered session (`McpServerOptions.onSessionsReaped` → `IpcWiring.nudgeCounters`; reaping publishes no bus event, and without the nudge the count froze at its last pushed value). Takes NO args; returns the count removed (0 when none). Fail-soft; UI affordance ONLY (no MCP tool counterpart). |
 | `GET_CHANGES`       | `loom:git:changes`| invoke | `() → ChangeSet` — files changed vs the base merge-base: committed branch work UNION uncommitted working-tree changes (staged + unstaged + untracked, `.gitignore` respected; one deduped row per file). Tracked = two-dot worktree diff `git diff <mergeBaseSha> --` (before = merge-base, after = working tree); untracked = `ls-files --others --exclude-standard`, listed as created. Fail-soft `available:false` off a git repo (Law 3 confined; main resolves `rootPath`). Shapes unchanged — this is a semantics-only widening (the old three-dot `<mergeBase>...HEAD` listing missed uncommitted work and was always empty on the base branch). |
 | `READ_FILE_DIFF`    | `loom:git:diff`   | invoke | `(path: string) → FileDiff` — the before→after unified diff for ONE changed file: before = merge-base content, after = CURRENT working-tree content (two-dot `git diff <mergeBaseSha> -- <path>`); an untracked file diffs `--no-index` against `/dev/null` (created, empty before); a worktree-deleted file shows as all deletions. `path` is a root-relative POSIX path from a prior `ChangedFile`; main **re-confines it via `sandbox.resolveInRoot` before any git read** (the `git cat-file/diff <sha>:<path>` object-store read bypasses the fs sandbox), pre-resolves the base to a 40-char SHA, and passes paths to git only as positional args after `--`. |
+| `TERMINAL_OPEN`     | `loom:terminal:open`   | invoke | `(p: TerminalOpenParams) → TerminalOpenResult` — spawn the SINGLE terminal PTY session in main, cwd = the launch root. A second open kills the previous session first. `sessionId: null` = terminal unavailable (the node-pty load/spawn failed) — graceful degradation, never a throw. |
+| `TERMINAL_INPUT`    | `loom:terminal:input`  | invoke | `(p: { sessionId, data }) → void` — renderer keystrokes → PTY stdin. main RE-VALIDATES (never trust the renderer): non-string data, payloads over `MAX_TERMINAL_INPUT_BYTES`, or a stale `sessionId` are silent no-ops. |
+| `TERMINAL_RESIZE`   | `loom:terminal:resize` | invoke | `(p: { sessionId, cols, rows }) → void` — resize the PTY. main RE-VALIDATES: cols/rows must be finite integers within the `TERMINAL_MIN/MAX` bounds; a stale `sessionId` is a silent no-op. |
+| `TERMINAL_CLOSE`    | `loom:terminal:close`  | invoke | `(p: { sessionId }) → void` — kill the PTY session (pane closed). A stale `sessionId` is a silent no-op. |
+| `TERMINAL_DATA`     | `loom:terminal:data`   | send   | `(TerminalDataPush)` main→renderer — coalesced PTY output chunks. |
+| `TERMINAL_EXIT`     | `loom:terminal:exit`   | send   | `(TerminalExitPush)` main→renderer — the PTY exited; the session id is invalidated (input/resize/close after exit are silent no-ops). |
 
 `GitFileStatus = 'modified' | 'added' | 'untracked' | 'staged'`. The git-changes
 payload types (`ChangeKind`, `ChangedFile`, `ChangeSet`, `DiffLine`, `DiffHunk`,
@@ -167,7 +173,30 @@ getChanges(): Promise<ChangeSet>
 readFileDiff(path: string): Promise<FileDiff>
 removeAgent(name: string): Promise<boolean>     // human roster curation
 clearStaleAgents(): Promise<number>             // human roster curation (stale sweep)
+terminal: TerminalBridge                              // namespaced, like windowControls
 ```
+
+The `terminal` bridge member (`TerminalBridge`, `src/shared/types.ts`):
+
+```ts
+terminal.open(opts: TerminalOpenParams): Promise<TerminalOpenResult>
+terminal.input(sessionId: string, data: string): Promise<void>
+terminal.resize(sessionId: string, cols: number, rows: number): Promise<void>
+terminal.close(sessionId: string): Promise<void>
+terminal.onData(h: (p: TerminalDataPush) => void): () => void   // returns unsubscribe
+terminal.onExit(h: (p: TerminalExitPush) => void): () => void   // returns unsubscribe
+```
+
+**Terminal (ADDITIVE).** The `loom:terminal:*` channels carry the human-invoked
+terminal pane's PTY session (types frozen in `src/shared/types.ts` §7c:
+`TerminalOpenParams`, `TerminalOpenResult`, `TerminalDataPush`,
+`TerminalExitPush`). Every payload is RE-VALIDATED in main — types checked, the
+per-spawn `sessionId` token re-matched on every input/resize/close (stale id ⇒
+silent no-op), and each input write capped at `MAX_TERMINAL_INPUT_BYTES`
+(64 KiB). There is a SINGLE live session (a second open kills the previous);
+the PTY is killed on window close. The terminal is **MCP-invisible**: the
+agent-facing tool surface in §(a) is unchanged — no agent can reach, observe,
+or drive the PTY.
 
 ---
 

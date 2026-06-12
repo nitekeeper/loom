@@ -608,6 +608,40 @@ export interface LoomConfig {
 }
 
 /* ------------------------------------------------------------------ */
+/* 7c. Terminal pane (ADDITIVE) — the human-invoked PTY session         */
+/*     carried over loom:terminal:*. PTY lives ONLY in main; the        */
+/*     renderer drives it via the preload bridge. MCP-invisible: no     */
+/*     agent surface touches the terminal.                             */
+/* ------------------------------------------------------------------ */
+
+/** Open the single terminal session: initial xterm grid size. main RE-VALIDATES
+ *  cols/rows as finite integers within the TERMINAL_MIN/MAX bounds. */
+export interface TerminalOpenParams { cols: number; rows: number; }
+
+/** Result of TERMINAL_OPEN. `sessionId` is the per-spawn random token that
+ *  every subsequent input/resize/close must carry (stale-id ⇒ silent no-op).
+ *  null = terminal unavailable (the node-pty load/spawn failed) — the pane
+ *  shows a graceful empty state, never an error throw. */
+export interface TerminalOpenResult { sessionId: string | null; }
+
+/** TERMINAL_DATA push payload: a coalesced batch of PTY output. */
+export interface TerminalDataPush { sessionId: string; data: string; }
+
+/** TERMINAL_EXIT push payload: the PTY exited; the session is invalidated. */
+export interface TerminalExitPush { sessionId: string; exitCode: number; }
+
+/** Hard cap (bytes, Buffer.byteLength) on a single TERMINAL_INPUT write —
+ *  bounds a hostile/runaway renderer paste; over-cap input is a silent no-op. */
+export const MAX_TERMINAL_INPUT_BYTES = 64 * 1024;
+
+/** Sane finite-integer bounds for TERMINAL_OPEN / TERMINAL_RESIZE cols/rows —
+ *  anything outside is rejected as a silent no-op (never trust the renderer). */
+export const TERMINAL_MIN_COLS = 2;
+export const TERMINAL_MAX_COLS = 1000;
+export const TERMINAL_MIN_ROWS = 1;
+export const TERMINAL_MAX_ROWS = 1000;
+
+/* ------------------------------------------------------------------ */
 /* 8. IPC channel contract — every channel name + payload type         */
 /*    (FR-13: all privileged access flows through the preload bridge.) */
 /*    Naming: 'loom:<noun>:<verb>'. invoke = request/response;         */
@@ -737,6 +771,28 @@ export const IPC = {
    *  read (never trust the renderer; the git show object-store read bypasses the
    *  fs sandbox, so this re-check is mandatory). */
   READ_FILE_DIFF: 'loom:git:diff',
+  /** invoke(p: TerminalOpenParams): TerminalOpenResult — spawn the SINGLE
+   *  terminal PTY session in main, cwd = the launch root. A second open kills
+   *  the previous session first. sessionId:null = terminal unavailable (the
+   *  node-pty load/spawn failed) — graceful degradation, never a throw.
+   *  ADDITIVE: a human-invoked surface; MCP-invisible (agents never reach it). */
+  TERMINAL_OPEN: 'loom:terminal:open',
+  /** invoke(p: { sessionId, data }): void — renderer keystrokes -> PTY stdin.
+   *  main RE-VALIDATES (never trust the renderer): non-string data, payloads
+   *  over MAX_TERMINAL_INPUT_BYTES, or a stale sessionId are silent no-ops. */
+  TERMINAL_INPUT: 'loom:terminal:input',
+  /** invoke(p: { sessionId, cols, rows }): void — resize the PTY. main
+   *  RE-VALIDATES: cols/rows must be finite integers within the
+   *  TERMINAL_MIN/MAX bounds; a stale sessionId is a silent no-op. */
+  TERMINAL_RESIZE: 'loom:terminal:resize',
+  /** invoke(p: { sessionId }): void — kill the PTY session (pane closed).
+   *  A stale sessionId is a silent no-op. */
+  TERMINAL_CLOSE: 'loom:terminal:close',
+  /** send(TerminalDataPush) main->renderer — coalesced PTY output chunks. */
+  TERMINAL_DATA: 'loom:terminal:data',
+  /** send(TerminalExitPush) main->renderer — the PTY exited; the session id
+   *  is invalidated (input/resize/close after exit are silent no-ops). */
+  TERMINAL_EXIT: 'loom:terminal:exit',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -807,6 +863,12 @@ export interface LoomBridge {
    *  main resolves the target from the IPC sender, never a caller-supplied id.
    *  Named "windowControls" (not "window") to avoid confusion with the global. */
   windowControls: WindowControls;
+  /** The human-invoked terminal pane's PTY session controls (loom:terminal:*).
+   *  Namespaced like windowControls. Every method hard-pins its single IPC.*
+   *  constant in the preload; main RE-VALIDATES every payload (types, the
+   *  per-spawn sessionId token, the MAX_TERMINAL_INPUT_BYTES cap) — invalid or
+   *  stale input is a silent no-op. MCP-invisible: no agent surface. */
+  terminal: TerminalBridge;
 }
 
 /** A window's screen rectangle (DIP), mirroring Electron's BrowserWindow
@@ -847,6 +909,26 @@ export interface WindowControls {
    *  edge-resize drag. main re-validates + clamps the payload; an invalid shape
    *  or an unresolved sender window is a silent no-op. */
   setBounds(b: WindowBounds): Promise<void>;
+}
+
+/** The terminal pane's bridge surface (see LoomBridge.terminal). Mirrors the
+ *  four loom:terminal:* invokes + the TERMINAL_DATA / TERMINAL_EXIT pushes. */
+export interface TerminalBridge {
+  /** Spawn the SINGLE PTY session in main (cwd = launch root). A second open
+   *  kills the previous session. sessionId:null = terminal unavailable. */
+  open(opts: TerminalOpenParams): Promise<TerminalOpenResult>;
+  /** Forward keystrokes/paste to the PTY's stdin. main re-validates: a stale
+   *  sessionId, non-string data, or an over-cap payload is a silent no-op. */
+  input(sessionId: string, data: string): Promise<void>;
+  /** Resize the PTY grid. main re-validates cols/rows as in-range finite
+   *  integers; a stale sessionId is a silent no-op. */
+  resize(sessionId: string, cols: number, rows: number): Promise<void>;
+  /** Kill the PTY session (the pane closed). Stale id = silent no-op. */
+  close(sessionId: string): Promise<void>;
+  /** Subscribe to coalesced PTY output pushes. Returns an unsubscribe fn. */
+  onData(h: (p: TerminalDataPush) => void): () => void;
+  /** Subscribe to PTY exit pushes. Returns an unsubscribe fn. */
+  onExit(h: (p: TerminalExitPush) => void): () => void;
 }
 
 declare global {
