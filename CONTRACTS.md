@@ -142,6 +142,12 @@ The renderer NEVER touches `ipcRenderer` directly — only `window.loom`.
 | `GIT_STATUS`        | `loom:git:status` | invoke + send | `() → Record<string, GitFileStatus>` (invoke); `(Record<string, GitFileStatus>)` main→renderer push on boot + after each file event |
 | `GET_CHANGES`       | `loom:git:changes`| invoke | `() → ChangeSet` — files CREATED/MODIFIED on the branch vs the base merge-base (three-dot). Fail-soft `available:false` off a git repo (Law 3 confined; main resolves `rootPath`). |
 | `READ_FILE_DIFF`    | `loom:git:diff`   | invoke | `(path: string) → FileDiff` — the before→after unified diff for ONE changed file. `path` is a root-relative POSIX path from a prior `ChangedFile`; main **re-confines it via `sandbox.resolveInRoot` before any git read** (the `git show <sha>:<path>` object-store read bypasses the fs sandbox), pre-resolves the base to a 40-char SHA, and passes paths to git only as positional args after `--`. |
+| `TERMINAL_OPEN`     | `loom:terminal:open`   | invoke | `(p: TerminalOpenParams) → TerminalOpenResult` — spawn the SINGLE terminal PTY session in main, cwd = the launch root. A second open kills the previous session first. `sessionId: null` = terminal unavailable (the node-pty load/spawn failed) — graceful degradation, never a throw. |
+| `TERMINAL_INPUT`    | `loom:terminal:input`  | invoke | `(p: { sessionId, data }) → void` — renderer keystrokes → PTY stdin. main RE-VALIDATES (never trust the renderer): non-string data, payloads over `MAX_TERMINAL_INPUT_BYTES`, or a stale `sessionId` are silent no-ops. |
+| `TERMINAL_RESIZE`   | `loom:terminal:resize` | invoke | `(p: { sessionId, cols, rows }) → void` — resize the PTY. main RE-VALIDATES: cols/rows must be finite integers within the `TERMINAL_MIN/MAX` bounds; a stale `sessionId` is a silent no-op. |
+| `TERMINAL_CLOSE`    | `loom:terminal:close`  | invoke | `(p: { sessionId }) → void` — kill the PTY session (pane closed). A stale `sessionId` is a silent no-op. |
+| `TERMINAL_DATA`     | `loom:terminal:data`   | send   | `(TerminalDataPush)` main→renderer — coalesced PTY output chunks. |
+| `TERMINAL_EXIT`     | `loom:terminal:exit`   | send   | `(TerminalExitPush)` main→renderer — the PTY exited; the session id is invalidated (input/resize/close after exit are silent no-ops). |
 
 `GitFileStatus = 'modified' | 'added' | 'untracked' | 'staged'`. The git-changes
 payload types (`ChangeKind`, `ChangedFile`, `ChangeSet`, `DiffLine`, `DiffHunk`,
@@ -163,7 +169,30 @@ getGitStatus(): Promise<Record<string, GitFileStatus>>
 onGitStatus(h: (s: Record<string, GitFileStatus>) => void): () => void
 getChanges(): Promise<ChangeSet>
 readFileDiff(path: string): Promise<FileDiff>
+terminal: TerminalBridge                              // namespaced, like windowControls
 ```
+
+The `terminal` bridge member (`TerminalBridge`, `src/shared/types.ts`):
+
+```ts
+terminal.open(opts: TerminalOpenParams): Promise<TerminalOpenResult>
+terminal.input(sessionId: string, data: string): Promise<void>
+terminal.resize(sessionId: string, cols: number, rows: number): Promise<void>
+terminal.close(sessionId: string): Promise<void>
+terminal.onData(h: (p: TerminalDataPush) => void): () => void   // returns unsubscribe
+terminal.onExit(h: (p: TerminalExitPush) => void): () => void   // returns unsubscribe
+```
+
+**Terminal (ADDITIVE).** The `loom:terminal:*` channels carry the human-invoked
+terminal pane's PTY session (types frozen in `src/shared/types.ts` §7c:
+`TerminalOpenParams`, `TerminalOpenResult`, `TerminalDataPush`,
+`TerminalExitPush`). Every payload is RE-VALIDATED in main — types checked, the
+per-spawn `sessionId` token re-matched on every input/resize/close (stale id ⇒
+silent no-op), and each input write capped at `MAX_TERMINAL_INPUT_BYTES`
+(64 KiB). There is a SINGLE live session (a second open kills the previous);
+the PTY is killed on window close. The terminal is **MCP-invisible**: the
+agent-facing tool surface in §(a) is unchanged — no agent can reach, observe,
+or drive the PTY.
 
 ---
 
