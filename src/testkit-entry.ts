@@ -200,6 +200,7 @@ export {
   resolveBindings,
   findConflict,
   isValidBinding,
+  bindingAllowedFor,
   formatCombo,
   diffOverrides,
   planReassign,

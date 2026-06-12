@@ -1773,7 +1773,13 @@ export function App(): JSX.Element {
           <TerminalPane
             height={terminalHeight}
             maximized={terminalMax}
-            onToggleMaximize={() => setTerminalMax((m) => !m)}
+            // Maximize/restore is a deliberate "give me the terminal" action —
+            // bump the focus nonce so focus lands in xterm. (The geometry
+            // effect in TerminalPane never focuses; only the nonce does.)
+            onToggleMaximize={() => {
+              setTerminalMax((m) => !m);
+              setTerminalFocusNonce((n) => n + 1);
+            }}
             onClose={toggleTerminal}
             focusNonce={terminalFocusNonce}
           />

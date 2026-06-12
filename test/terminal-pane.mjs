@@ -75,3 +75,27 @@ test('TERM-KB: toggleTerminal command exists with default Ctrl+`', async () => {
     'Ctrl+`',
   );
 });
+
+test('TERM-KB: the default Ctrl+` is structurally valid and collides with nothing', async () => {
+  const { isValidBinding, findConflict, DEFAULT_BINDINGS } = await kit();
+  assert.equal(isValidBinding('Ctrl+`'), true, 'Ctrl+` parses as a real binding');
+  assert.equal(
+    findConflict(DEFAULT_BINDINGS, 'Ctrl+`', 'toggleTerminal'),
+    null,
+    'no other command default claims Ctrl+`',
+  );
+});
+
+test('TERM-KB: toggleTerminal rejects modifier-less overrides (editable punch-through guard)', async () => {
+  const { bindingAllowedFor, resolveBindings } = await kit();
+  // toggleTerminal is the one command the dispatcher fires inside editable
+  // targets (so Ctrl/Cmd+` works from xterm's textarea) — a bare-key binding
+  // would kill the shell on every plain keystroke in any text field.
+  assert.equal(bindingAllowedFor('toggleTerminal', 'K'), false, 'bare letter rejected');
+  assert.equal(bindingAllowedFor('toggleTerminal', 'F5'), false, 'bare named key rejected');
+  assert.equal(bindingAllowedFor('toggleTerminal', 'Ctrl+K'), true, 'modified combo allowed');
+  assert.equal(bindingAllowedFor('foldAll', 'K'), true, 'other commands keep bare keys');
+  // A persisted modifier-less override falls back to the default on resolve.
+  assert.equal(resolveBindings({ toggleTerminal: 'K' }).toggleTerminal, 'Ctrl+`');
+  assert.equal(resolveBindings({ toggleTerminal: 'Alt+T' }).toggleTerminal, 'Alt+T');
+});

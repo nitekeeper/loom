@@ -34,27 +34,39 @@ export interface TerminalPaneProps {
   onToggleMaximize(): void;
   /** Close the dock (kills the PTY via unmount cleanup). */
   onClose(): void;
-  /** Bumped by App when the dock (re)opens via keyboard so focus lands in
-   *  the terminal (mirrors the fold/copy command-nonce idiom). */
+  /** Bumped by App when the dock (re)opens via keyboard or on maximize/
+   *  restore, so focus lands in the terminal exactly on those deliberate
+   *  actions (mirrors the fold/copy command-nonce idiom) — never as a
+   *  resize side effect. */
   focusNonce: number;
 }
 
+/** Shared 1×1 scratch canvas for color conversion, cached across reads (the
+ *  MutationObserver re-reads all four tokens on every theme flip). */
+let colorCanvas: HTMLCanvasElement | null = null;
+
 /** Resolve a CSS color token to an rgb() string xterm's color parser accepts.
- *  The theme tokens are oklch(), which xterm cannot parse — a hidden probe
- *  element lets the browser serialize the used color as rgb(). Falls back to
- *  the raw value (xterm logs + keeps its default on a parse failure). */
+ *  The theme tokens are oklch(), which xterm cannot parse — and in Chromium
+ *  130 neither a getComputedStyle probe nor a ctx.fillStyle read-back helps:
+ *  modern color functions serialize VERBATIM (still oklch). The conversion
+ *  that is guaranteed is painting the color onto a 1×1 canvas and reading the
+ *  pixel back — getImageData is always 8-bit sRGB. Returns undefined when no
+ *  2d context is available (xterm then keeps its built-in defaults). */
 function resolveCssColor(raw: string): string | undefined {
   const value = raw.trim();
   if (value.length === 0) return undefined;
   try {
-    const probe = document.createElement('span');
-    probe.style.color = value;
-    document.body.appendChild(probe);
-    const rgb = getComputedStyle(probe).color;
-    probe.remove();
-    return rgb.length > 0 ? rgb : value;
+    colorCanvas ??= document.createElement('canvas');
+    colorCanvas.width = 1;
+    colorCanvas.height = 1;
+    const ctx = colorCanvas.getContext('2d', { willReadFrequently: true });
+    if (ctx === null) return undefined;
+    ctx.fillStyle = value;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+    return `rgb(${r}, ${g}, ${b})`;
   } catch {
-    return value;
+    return undefined;
   }
 }
 
@@ -141,6 +153,9 @@ export function TerminalPane({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionRef = useRef<string | null>(null);
+  // The pane-head maximize button — the Ctrl+Shift+Tab keyboard escape hatch
+  // out of the terminal lands here (xterm swallows plain Tab by design).
+  const maxBtnRef = useRef<HTMLButtonElement>(null);
   // sessionId === null from open() ⇒ the pty backend failed to load/spawn.
   const [unavailable, setUnavailable] = useState(false);
   // The PTY exited (e.g. the user typed `exit`) — the session id is dead.
@@ -163,6 +178,30 @@ export function TerminalPane({
     let disposed = false;
     let unsubData: (() => void) | null = null;
     let unsubExit: (() => void) | null = null;
+
+    // Wire local keystrokes IMMEDIATELY (before open() resolves) so nothing
+    // typed during the PTY spawn is lost: queue until the session id arrives,
+    // then flush in order; drop the queue if the open fails.
+    let spawnFailed = false;
+    const pendingInput: string[] = [];
+    term.onData((d) => {
+      const id = sessionRef.current;
+      if (id !== null) {
+        void window.loom.terminal.input(id, d);
+      } else if (!spawnFailed) {
+        pendingInput.push(d);
+      }
+    });
+
+    // Keyboard escape hatch (the terminal swallows Tab by design — a shell
+    // owns its keys): Ctrl+Shift+Tab moves focus out to the pane header.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown' && e.key === 'Tab' && e.ctrlKey && e.shiftKey) {
+        maxBtnRef.current?.focus();
+        return false; // swallow — never reaches the shell
+      }
+      return true;
+    });
 
     // Container resize (splitter drag, maximize, window resize) → re-fit the
     // grid, then tell the PTY its new cols/rows.
@@ -192,11 +231,15 @@ export function TerminalPane({
           return;
         }
         if (sessionId === null) {
+          spawnFailed = true;
+          pendingInput.length = 0; // nothing to flush into
           setUnavailable(true); // graceful "terminal unavailable" state
           return;
         }
         sessionRef.current = sessionId;
-        term.onData((d) => void window.loom.terminal.input(sessionId, d));
+        // Flush keystrokes typed while the PTY was spawning, in order.
+        for (const d of pendingInput) void window.loom.terminal.input(sessionId, d);
+        pendingInput.length = 0;
         unsubData = window.loom.terminal.onData((p) => {
           if (p.sessionId === sessionId) term.write(p.data);
         });
@@ -208,6 +251,8 @@ export function TerminalPane({
         term.focus();
       })
       .catch(() => {
+        spawnFailed = true;
+        pendingInput.length = 0;
         if (!disposed) setUnavailable(true);
       });
 
@@ -226,9 +271,10 @@ export function TerminalPane({
     };
   }, []);
 
-  // Re-fit + refocus when the dock geometry changes (splitter height,
-  // maximize/restore) or App bumps the focus nonce (keyboard reopen). The
-  // ResizeObserver also fires on real size changes; fit() is idempotent.
+  // Re-fit when the dock geometry changes (splitter height, maximize/
+  // restore). NO focus here — a splitter ArrowUp nudge or drag must never
+  // steal focus from the separator mid-resize. The ResizeObserver also fires
+  // on real size changes; fit() is idempotent.
   useEffect(() => {
     const term = termRef.current;
     const fit = fitRef.current;
@@ -236,17 +282,32 @@ export function TerminalPane({
     fit.fit();
     const id = sessionRef.current;
     if (id !== null) void window.loom.terminal.resize(id, term.cols, term.rows);
-    term.focus();
-  }, [height, maximized, focusNonce]);
+  }, [height, maximized]);
+
+  // Deliberate focus hand-off ONLY: App bumps the nonce on keyboard (re)open
+  // and on maximize/restore, so focus lands in the terminal exactly when the
+  // user asked for the terminal — never as a resize side effect.
+  useEffect(() => {
+    termRef.current?.focus();
+  }, [focusNonce]);
 
   return (
     <section className="pane terminal" aria-label="Terminal">
-      <div className="pane-head">
+      {/* The title carries the keyboard escape hatch hint (Ctrl+Shift+Tab
+          focuses the header from inside xterm — see the custom key handler). */}
+      <div
+        className="pane-head"
+        title="Terminal — Ctrl+Shift+Tab moves focus out of the terminal"
+      >
         <span>Terminal</span>
+        <span className="sr-only">
+          , Ctrl+Shift+Tab moves focus out of the terminal
+        </span>
         <span className="grow" />
         <button
           type="button"
           className="iconbtn"
+          ref={maxBtnRef}
           onClick={onToggleMaximize}
           aria-pressed={maximized}
           aria-label={maximized ? 'Restore terminal size' : 'Maximize terminal'}

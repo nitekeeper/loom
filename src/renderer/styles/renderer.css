@@ -467,10 +467,11 @@ html[data-platform='darwin'] .win-controls { display: none; }
   grid-column: 1 / -1;
   grid-row: 2;
 }
-/* The column splitters are zero-height (invisible) while row 1 is collapsed —
-   drop them from the tab order too so a maximized dock can't hide focusable
-   but imperceivable separators. */
-.body.terminal-max .splitter:not(.horizontal) { display: none; }
+/* While maximized, row 1 still EXISTS at 0 height — hide everything in it
+   (panes + column splitters) so its content leaves the tab order and the AT
+   tree, and its overflow can never paint over the dock. visibility (not
+   display) so the panes keep their layout/scroll state for instant restore. */
+.body.terminal-max > :not(.pane.terminal) { visibility: hidden; }
 
 /* ============================================================
    Chat resize splitter (FR-54 / WCAG 2.4.7, 2.1.1)

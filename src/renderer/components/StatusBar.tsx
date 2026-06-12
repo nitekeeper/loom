@@ -438,7 +438,7 @@ export function StatusBar({
         onClick={onToggleTerminal}
         aria-pressed={terminalOpen}
         aria-label="Terminal"
-        title="Toggle terminal (Ctrl+`)"
+        title="Toggle terminal (Ctrl/Cmd+`)"
       >
         <TerminalIcon open={terminalOpen} />
       </button>

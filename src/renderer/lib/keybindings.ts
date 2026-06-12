@@ -215,11 +215,26 @@ export function isValidBinding(combo: string): boolean {
   return isValidKeyToken(last);
 }
 
+/** True when `combo` is a valid binding FOR THE GIVEN COMMAND. On top of the
+ *  structural isValidBinding check, toggleTerminal must carry at least one
+ *  modifier: it is the one command the App dispatcher fires even inside
+ *  editable targets (so Ctrl/Cmd+` can close the dock from xterm's own
+ *  textarea) — a bare-key binding (e.g. 'K') would therefore fire, and KILL
+ *  the shell session, on every plain keystroke in any text field. */
+export function bindingAllowedFor(id: CommandId, combo: string): boolean {
+  if (!isValidBinding(combo)) return false;
+  // isValidBinding guarantees every non-final segment is a modifier, so
+  // "has a modifier" reduces to "more than one segment".
+  if (id === 'toggleTerminal' && combo.split('+').length < 2) return false;
+  return true;
+}
+
 /** Merge user overrides onto the defaults, returning the FULL resolved
  *  id -> combo map for all commands. Only override entries for known
- *  command ids whose value is a valid binding are applied; anything else
- *  (unknown id, empty/invalid combo) falls back to the default so a
- *  corrupt persisted map can never blank a command. */
+ *  command ids whose value is a valid binding FOR THAT COMMAND are applied
+ *  (bindingAllowedFor: structural validity + the toggleTerminal modifier
+ *  requirement); anything else (unknown id, empty/invalid combo) falls back
+ *  to the default so a corrupt persisted map can never blank a command. */
 export function resolveBindings(
   overrides: Readonly<Record<string, string>> | null | undefined,
 ): Record<CommandId, string> {
@@ -227,7 +242,7 @@ export function resolveBindings(
   if (!overrides || typeof overrides !== 'object') return resolved;
   for (const id of COMMAND_IDS) {
     const o = overrides[id];
-    if (typeof o === 'string' && isValidBinding(o)) {
+    if (typeof o === 'string' && bindingAllowedFor(id, o)) {
       resolved[id] = o;
     }
   }
