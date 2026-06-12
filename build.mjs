@@ -69,7 +69,11 @@ const mainBuild = {
   target: 'node20',
   // Electron is provided by the runtime; never bundle it.
   // sql.js JS glue is bundled; its .wasm is copied + located at runtime.
-  external: ['electron'],
+  // node-pty is a NATIVE module (terminal pane PTY): kept external and
+  // require()'d lazily in src/main/pty-factory.ts — in dev the CJS require
+  // resolves up to project node_modules/; packaged apps ship it via
+  // electron-builder files + asarUnpack.
+  external: ['electron', 'node-pty'],
 };
 
 const preloadBuild = {

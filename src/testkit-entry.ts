@@ -234,6 +234,23 @@ export type {
   RenderState,
 } from './shared/types.js';
 
+// The PURE terminal session manager behind the loom:terminal:* channels
+// (single PTY session, payload re-validation, coalesced/bounded output pump,
+// kill-on-close). Electron-free AND node-pty-free — the PTY arrives via the
+// injected PtyFactory seam, so the suite drives it with a recording fake.
+// pty-factory.ts (the only node-pty touchpoint) is deliberately NOT exported.
+export {
+  createTerminalManager,
+  defaultShell,
+  OUTPUT_BUFFER_CAP,
+} from './main/terminal.js';
+export type {
+  TerminalManager,
+  PtyFactory,
+  PtyLike,
+  PtySpawnOpts,
+} from './main/terminal.js';
+
 // Pure Linux maximize bounds correction (frameless WM frame-offset fix).
 // Re-exported so the node --test suite can pin the display-selection logic
 // (nearest display by center distance, workArea return, empty-list fallback)
