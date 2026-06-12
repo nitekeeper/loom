@@ -482,16 +482,21 @@ export type GitFileStatus = 'modified' | 'added' | 'untracked' | 'staged';
 
 /** How a file changed on the current branch relative to the base merge-base
  *  (git-diff "Changes" viewer). Mirrors git's name-status M/A/D/R/C codes. The
- *  v1 producer surfaces only added/modified (+ a rename destination, shaped as
- *  added with oldPath set); 'deleted'/'copied' are reserved for forward-compat. */
+ *  producer surfaces added (committed adds AND untracked files) / modified /
+ *  deleted (committed or worktree-deleted) / renamed; 'copied' is reserved for
+ *  forward-compat (the listing runs -M without -C). */
 export type ChangeKind = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
 
-/** One file changed on the current branch vs. the base (default `main`).
- *  Produced from `git diff --name-status -M -z <mergeBaseSha>...HEAD`. `path` is
- *  the root-relative POSIX path of the NEW (HEAD) side, same shape/keying as
- *  FileNode.path; confined to the sandbox root (Law 3). RAW git output — the
- *  renderer MUST escape `path`/`oldPath` before render (Law 1, like
- *  SearchMatch.lineText). */
+/** One file changed on the current branch vs. the base (default `main`) — the
+ *  UNION of committed branch work and uncommitted working-tree changes.
+ *  Produced from the two-dot worktree diff
+ *  `git diff --name-status -M -z <mergeBaseSha> --` (before = merge-base,
+ *  after = CURRENT working tree, naturally deduped) plus
+ *  `git ls-files --others --exclude-standard` for untracked files (listed as
+ *  'added'; .gitignore respected). `path` is the root-relative POSIX path of
+ *  the NEW (worktree) side, same shape/keying as FileNode.path; confined to the
+ *  sandbox root (Law 3). RAW git output — the renderer MUST escape
+ *  `path`/`oldPath` before render (Law 1, like SearchMatch.lineText). */
 export interface ChangedFile {
   path: string;
   changeKind: ChangeKind;
@@ -512,7 +517,9 @@ export interface ChangeSet {
   base: string;
   /** Current branch name (HEAD side), or null when detached/unknown. */
   branch: string | null;
-  /** Every file CREATED or MODIFIED (+ rename dest) on the branch, in git order. */
+  /** Every changed file — committed branch work UNION uncommitted working-tree
+   *  changes (staged + unstaged + untracked), one row per file, in git order
+   *  (untracked rows appended). */
   files: ChangedFile[];
 }
 
@@ -541,10 +548,13 @@ export interface DiffHunk {
 }
 
 /** The before->after diff for ONE changed file (READ_FILE_DIFF). Produced from
- *  `git diff --unified --no-color -M <mergeBaseSha>...HEAD -- <path>`, parsed in
- *  main. Confined to the sandbox root (Law 3); hunk text is inert source (Law 1).
- *  `binary` mirrors FileContent's null-for-binary contract; `truncated` bounds a
- *  giant file (MAX_DIFF_BYTES) — both null out `hunks` and show a placeholder. */
+ *  the two-dot worktree diff `git diff --unified --no-color -M <mergeBaseSha>
+ *  -- <path>` (before = merge-base, after = CURRENT working tree), parsed in
+ *  main; an untracked file is diffed `--no-index` against /dev/null (empty
+ *  before → all additions). Confined to the sandbox root (Law 3); hunk text is
+ *  inert source (Law 1). `binary` mirrors FileContent's null-for-binary
+ *  contract; `truncated` bounds a giant file (MAX_DIFF_BYTES on either side) —
+ *  both null out `hunks` and show a placeholder. */
 export interface FileDiff {
   path: string;
   oldPath: string | null;
@@ -666,9 +676,11 @@ export const IPC = {
   /** send(Record<string,GitFileStatus>) main->renderer — git working-tree
    *  status map; pushed on boot and after every file-change event. */
   GIT_STATUS: 'loom:git:status',
-  /** invoke(): ChangeSet — list every file CREATED/MODIFIED on the current
-   *  branch vs. the base merge-base (three-dot). Confined to the sandbox root
-   *  (Law 3); fail-soft available:false when not a git repo. */
+  /** invoke(): ChangeSet — list every file changed vs. the base merge-base:
+   *  committed branch work UNION uncommitted working-tree changes (staged +
+   *  unstaged + untracked; two-dot worktree diff + ls-files --others). Confined
+   *  to the sandbox root (Law 3); fail-soft available:false when not a git
+   *  repo. */
   GET_CHANGES: 'loom:git:changes',
   /** invoke(path: string): FileDiff — the before->after unified diff for ONE
    *  changed file. `path` is a root-relative POSIX path from a prior

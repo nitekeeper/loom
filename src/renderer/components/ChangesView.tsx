@@ -4,16 +4,17 @@
  * Rendered into the center 1fr grid track (replacing the Viewer) when
  * diffMode is true — the exact SearchView swap idiom, but targeting the
  * Viewer track because a diff is CONTENT, not navigation. Lists every
- * file CREATED or MODIFIED on the current branch vs. the base merge-base
- * (three-dot, committed branch work), each rendered as a READ-ONLY
- * before→after unified diff via <FileDiff> (collapsed-by-default; the
- * per-file diff is fetched lazily on expand).
+ * file changed on the current branch vs. the base merge-base — committed
+ * branch work UNION uncommitted working-tree changes (staged + unstaged
+ * + untracked) — each rendered as a READ-ONLY before→after unified diff
+ * via <FileDiff> (collapsed-by-default; the per-file diff is fetched
+ * lazily on expand).
  *
  * Three terminal states mirror the Viewer:
  *   - loading        — changes not yet fetched (null);
  *   - unavailable    — not a git repo / git missing (available:false);
- *   - empty          — a git repo with no branch changes (the base==HEAD
- *                      default — an honest 'no changes', NOT an error).
+ *   - empty          — a git repo even with the base AND a clean working
+ *                      tree (an honest 'no changes', NOT an error).
  *
  * SECURITY (Law 1): all diff content is escaped at the <FileDiff> sink;
  * this shell renders only React text children (auto-escaped) + fixed
@@ -82,8 +83,9 @@ export function ChangesView({ changes, onClose }: ChangesViewProps): JSX.Element
         <h2 className="changes-empty-title">No changes on this branch</h2>
         <div>
           This branch is even with{' '}
-          <span className="mono">{base.length > 0 ? base : 'the base'}</span> —
-          nothing has been created or modified.
+          <span className="mono">{base.length > 0 ? base : 'the base'}</span>{' '}
+          and the working tree is clean — nothing has been created, modified
+          or deleted.
         </div>
       </div>
     );

@@ -445,9 +445,364 @@ test('GIT-DIFF getFileDiff: a no-trailing-newline file keeps last-line text + dr
 });
 
 /* ------------------------------------------------------------------ *
+ * UNCOMMITTED working-tree changes — the union contract               *
+ * (regression: the v1 producer listed mergeBase...HEAD ONLY, so       *
+ * working directly on the base branch always showed an EMPTY list     *
+ * and uncommitted edits never appeared anywhere)                      *
+ * ------------------------------------------------------------------ */
+test('GIT-DIFF getChanges: ON the base branch with only UNCOMMITTED edits → the modified file IS listed', async () => {
+  const { getChanges } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'edit.txt', 'before\n');
+    w(d, 'keep.txt', 'unchanged\n');
+    commitAll(d, 'base');
+    // STAY on main (mergeBase == HEAD) and edit WITHOUT committing — the bug
+    // made this case permanently empty.
+    w(d, 'edit.txt', 'after\n');
+  });
+  try {
+    const cs = await getChanges(dir);
+    assert.equal(cs.available, true);
+    assert.equal(cs.base, 'main');
+    assert.equal(cs.branch, 'main');
+    const byPath = new Map(cs.files.map((f) => [f.path, f]));
+    assert.ok(byPath.has('edit.txt'), 'the uncommitted modification IS listed');
+    assert.equal(byPath.get('edit.txt').changeKind, 'modified');
+    assert.ok(!byPath.has('keep.txt'), 'an untouched file stays absent');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GIT-DIFF getChanges: an UNTRACKED file is listed as created (added); a .gitignored file is NOT', async () => {
+  const { getChanges } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, '.gitignore', 'ignored.txt\n');
+    w(d, 'a.txt', 'one\n');
+    commitAll(d, 'base');
+    // Untracked (never git-added) + an ignored sibling — porcelain semantics:
+    // the untracked file shows, the ignored one does not.
+    w(d, 'fresh.txt', 'brand new\n');
+    w(d, 'ignored.txt', 'must not appear\n');
+  });
+  try {
+    const cs = await getChanges(dir);
+    assert.equal(cs.available, true);
+    const byPath = new Map(cs.files.map((f) => [f.path, f]));
+    assert.ok(byPath.has('fresh.txt'), 'the untracked file IS listed');
+    assert.equal(byPath.get('fresh.txt').changeKind, 'added', 'untracked shows as created');
+    assert.ok(!byPath.has('ignored.txt'), 'a .gitignore-matched file is NOT listed');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GIT-DIFF getChanges: committed + uncommitted on the SAME branch → the UNION, ONE row per file', async () => {
+  const { getChanges } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'a.txt', 'a-base\n');
+    w(d, 'b.txt', 'b-base\n');
+    commitAll(d, 'base');
+    git(d, ['checkout', '-q', '-b', 'feature']);
+    // COMMITTED branch work: edit a.txt + create committed.txt.
+    w(d, 'a.txt', 'a-committed\n');
+    w(d, 'committed.txt', 'on the branch\n');
+    commitAll(d, 'feature work');
+    // UNCOMMITTED working-tree work: edit a.txt AGAIN (overlap → must dedupe)
+    // and edit b.txt (uncommitted-only).
+    w(d, 'a.txt', 'a-worktree\n');
+    w(d, 'b.txt', 'b-worktree\n');
+  });
+  try {
+    const cs = await getChanges(dir);
+    assert.equal(cs.available, true);
+    assert.equal(cs.branch, 'feature');
+    const paths = cs.files.map((f) => f.path);
+    assert.ok(paths.includes('a.txt'), 'committed+uncommitted overlap file listed');
+    assert.ok(paths.includes('b.txt'), 'uncommitted-only file listed');
+    assert.ok(paths.includes('committed.txt'), 'committed-only file listed');
+    assert.equal(
+      paths.filter((p) => p === 'a.txt').length,
+      1,
+      'a file changed BOTH committed and uncommitted appears exactly ONCE',
+    );
+    assert.equal(new Set(paths).size, paths.length, 'no duplicate rows at all');
+    assert.equal(cs.files.length, 3, 'exactly the three changed files');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GIT-DIFF getFileDiff: an UNCOMMITTED edit shows the WORKING-TREE content as the after side', async () => {
+  const { getChanges, getFileDiff, resolveBaseSha } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'edit.txt', 'alpha\nbeta\ngamma\n');
+    commitAll(d, 'base');
+    // Stay on main; uncommitted worktree edit only.
+    w(d, 'edit.txt', 'alpha\nBETA-WORKTREE\ngamma\n');
+  });
+  try {
+    const resolved = await resolveBaseSha(dir);
+    assert.ok(resolved !== null, 'base resolves');
+    const cs = await getChanges(dir);
+    const row = cs.files.find((f) => f.path === 'edit.txt');
+    assert.ok(row, 'the uncommitted edit is listed');
+    const diff = await getFileDiff(
+      dir, 'edit.txt', resolved.mergeBase, row.changeKind, row.oldPath, row.binary,
+    );
+    assert.ok(Array.isArray(diff.hunks) && diff.hunks.length >= 1, 'at least one hunk');
+    const lines = diff.hunks.flatMap((h) => h.lines);
+    assert.ok(
+      lines.some((l) => l.origin === 'del' && l.text === 'beta'),
+      'the before side is the committed (merge-base) content',
+    );
+    assert.ok(
+      lines.some((l) => l.origin === 'add' && l.text === 'BETA-WORKTREE'),
+      'the after side is the CURRENT WORKING-TREE content',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GIT-DIFF getFileDiff: an UNTRACKED file diffs as ALL additions (empty before)', async () => {
+  const { getChanges, getFileDiff, resolveBaseSha } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'a.txt', 'one\n');
+    commitAll(d, 'base');
+    w(d, 'fresh.txt', 'first\nsecond\n'); // never git-added
+  });
+  try {
+    const resolved = await resolveBaseSha(dir);
+    assert.ok(resolved !== null, 'base resolves');
+    const cs = await getChanges(dir);
+    const row = cs.files.find((f) => f.path === 'fresh.txt');
+    assert.ok(row, 'the untracked file is listed');
+    assert.equal(row.changeKind, 'added');
+    const diff = await getFileDiff(
+      dir, 'fresh.txt', resolved.mergeBase, row.changeKind, row.oldPath, row.binary,
+    );
+    assert.equal(diff.binary, false);
+    assert.equal(diff.truncated, false);
+    assert.ok(Array.isArray(diff.hunks) && diff.hunks.length >= 1, 'at least one hunk');
+    const lines = diff.hunks.flatMap((h) => h.lines);
+    assert.ok(lines.length >= 2, 'both content lines present');
+    assert.ok(lines.every((l) => l.origin === 'add'), 'an untracked file is ALL additions');
+    assert.ok(lines.some((l) => l.text === 'first'), 'worktree content line 1 is the after side');
+    assert.ok(lines.some((l) => l.text === 'second'), 'worktree content line 2 is the after side');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GIT-DIFF getChanges/getFileDiff: a worktree-DELETED file lists as deleted and diffs as all deletions', async () => {
+  const { getChanges, getFileDiff, resolveBaseSha } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'gone.txt', 'doomed line\n');
+    w(d, 'keep.txt', 'stays\n');
+    commitAll(d, 'base');
+    rmSync(path.join(d, 'gone.txt')); // uncommitted worktree deletion
+  });
+  try {
+    const resolved = await resolveBaseSha(dir);
+    const cs = await getChanges(dir);
+    const row = cs.files.find((f) => f.path === 'gone.txt');
+    assert.ok(row, 'the worktree-deleted file IS listed');
+    assert.equal(row.changeKind, 'deleted');
+    const diff = await getFileDiff(
+      dir, 'gone.txt', resolved.mergeBase, row.changeKind, row.oldPath, row.binary,
+    );
+    assert.ok(Array.isArray(diff.hunks) && diff.hunks.length >= 1, 'at least one hunk');
+    const lines = diff.hunks.flatMap((h) => h.lines);
+    assert.ok(
+      lines.some((l) => l.origin === 'del' && l.text === 'doomed line'),
+      'the deleted content shows as deletions',
+    );
+    assert.ok(!lines.some((l) => l.origin === 'add'), 'a deletion has no added lines');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * `git rm --cached` + edited: the file EXISTS on disk, so the row is  *
+ * base→worktree 'modified' (NOT 'deleted' with the disk content       *
+ * silently dropped) — reviewer finding 1.                             *
+ * ------------------------------------------------------------------ */
+test('GIT-DIFF: a `git rm --cached` + edited file is ONE base→worktree modified row (after = disk content)', async () => {
+  const { getChanges, getFileDiff, resolveBaseSha } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'f.txt', 'base content\n');
+    commitAll(d, 'base');
+    // Drop the file from the INDEX but keep it on disk, then edit it: tracked
+    // diff says D, ls-files --others says untracked — but the file EXISTS with
+    // content the viewer must show as the "after" side.
+    git(d, ['rm', '--cached', '-q', 'f.txt']);
+    w(d, 'f.txt', 'worktree content\n');
+  });
+  try {
+    const resolved = await resolveBaseSha(dir);
+    assert.ok(resolved !== null, 'base resolves');
+    const cs = await getChanges(dir);
+    const rows = cs.files.filter((f) => f.path === 'f.txt');
+    assert.equal(rows.length, 1, 'exactly ONE row for the file');
+    assert.equal(
+      rows[0].changeKind,
+      'modified',
+      'a worktree-present file is NEVER deleted — base→worktree modified',
+    );
+    const diff = await getFileDiff(
+      dir, 'f.txt', resolved.mergeBase, rows[0].changeKind, rows[0].oldPath, rows[0].binary,
+    );
+    assert.ok(Array.isArray(diff.hunks) && diff.hunks.length >= 1, 'at least one hunk');
+    const lines = diff.hunks.flatMap((h) => h.lines);
+    assert.ok(
+      lines.some((l) => l.origin === 'del' && l.text === 'base content'),
+      'the before side is the merge-base content',
+    );
+    assert.ok(
+      lines.some((l) => l.origin === 'add' && l.text === 'worktree content'),
+      'the after side is the CURRENT on-disk content (never silently dropped)',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Pin tests (reviewer finding 2) — branches that are already correct  *
+ * ------------------------------------------------------------------ */
+test('GIT-DIFF getChanges/getFileDiff: a STAGED-only change (git add, no commit) is listed and diffs', async () => {
+  const { getChanges, getFileDiff, resolveBaseSha } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'staged.txt', 'old line\n');
+    commitAll(d, 'base');
+    w(d, 'staged.txt', 'new line\n');
+    git(d, ['add', 'staged.txt']); // staged, NOT committed; worktree == index
+  });
+  try {
+    const resolved = await resolveBaseSha(dir);
+    const cs = await getChanges(dir);
+    const row = cs.files.find((f) => f.path === 'staged.txt');
+    assert.ok(row, 'the staged-only change IS listed');
+    assert.equal(row.changeKind, 'modified');
+    const diff = await getFileDiff(
+      dir, 'staged.txt', resolved.mergeBase, row.changeKind, row.oldPath, row.binary,
+    );
+    const lines = diff.hunks.flatMap((h) => h.lines);
+    assert.ok(lines.some((l) => l.origin === 'del' && l.text === 'old line'), 'before = base');
+    assert.ok(lines.some((l) => l.origin === 'add' && l.text === 'new line'), 'after = staged content');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GIT-DIFF getFileDiff: an UNTRACKED BINARY file reclassifies binary:true on expand (Binary files backstop)', async () => {
+  const { getChanges, getFileDiff, resolveBaseSha } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'a.txt', 'one\n');
+    commitAll(d, 'base');
+    writeFileSync(path.join(d, 'blob.bin'), Buffer.from([0, 1, 2, 0, 255, 0, 7, 8])); // untracked
+  });
+  try {
+    const resolved = await resolveBaseSha(dir);
+    const cs = await getChanges(dir);
+    const row = cs.files.find((f) => f.path === 'blob.bin');
+    assert.ok(row, 'the untracked binary is listed');
+    assert.equal(row.changeKind, 'added');
+    // Documented nit: the LIST cannot cheaply classify an untracked binary, so
+    // the row carries binary:false; the per-file diff backstop reclassifies.
+    assert.equal(row.binary, false, 'listing-side flag is false (documented limitation)');
+    const diff = await getFileDiff(
+      dir, 'blob.bin', resolved.mergeBase, row.changeKind, row.oldPath, row.binary,
+    );
+    assert.equal(diff.binary, true, 'the no-index Binary-files backstop reclassifies on expand');
+    assert.equal(diff.hunks, null, 'null hunks — bytes never decoded (Law 1)');
+    assert.equal(diff.truncated, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GIT-DIFF runGit allowExit1: exit 1 is success WITH stdout; exit >= 2 stays a fail-soft error', async () => {
+  const { runGit } = await kit();
+  const dir = makeGitRepo((d) => {
+    w(d, 'a.txt', 'alpha\n');
+    w(d, 'b.txt', 'beta\n');
+    commitAll(d, 'base');
+  });
+  try {
+    // --no-index implies --exit-code: "files differ" is exit 1 + the diff on
+    // stdout. allowExit1 must accept it…
+    const differ = await runGit(
+      dir,
+      ['diff', '--no-color', '--no-index', '--', 'a.txt', 'b.txt'],
+      undefined,
+      true,
+    );
+    assert.equal(differ.ok, true, 'exit 1 with allowExit1 is success');
+    assert.ok(differ.stdout.includes('-alpha'), 'the diff body rode along');
+    assert.ok(differ.stdout.includes('+beta'), 'the diff body rode along');
+    // …but WITHOUT allowExit1 the same exit 1 stays an error (default strict).
+    const strict = await runGit(dir, [
+      'diff', '--no-color', '--no-index', '--', 'a.txt', 'b.txt',
+    ]);
+    assert.equal(strict.ok, false, 'exit 1 without allowExit1 is NOT success');
+    // A MISSING path under --no-index also exits 1 (git conflates "differ" and
+    // "could not access" — stderr carries the error, stdout is EMPTY), so
+    // allowExit1 accepts it with empty stdout: parseUnifiedDiff('') → [] keeps
+    // the downstream benign (an empty no-diff FileDiff, never garbage hunks).
+    const missing = await runGit(
+      dir,
+      ['diff', '--no-color', '--no-index', '--', '/dev/null', 'does-not-exist.txt'],
+      undefined,
+      true,
+    );
+    assert.equal(missing.ok, true, 'missing-path --no-index is exit 1 (git conflates it)');
+    assert.equal(missing.stdout, '', 'but carries NO diff output — degrades to hunks:[]');
+    // And an exit >= 2 (here git's usage error, exit 129) is NEVER masked by
+    // allowExit1 — only EXACTLY exit 1 passes the gate.
+    const fatal = await runGit(dir, ['diff', '--no-index'], undefined, true);
+    assert.equal(fatal.ok, false, 'a fatal git error (exit >= 2) stays fail-soft !ok');
+    assert.equal(fatal.overflow, false, 'and is not misreported as an overflow');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('GIT-DIFF getFileDiff: an untracked file whose --no-index diff overflows maxBuffer → truncated:true', async () => {
+  const { getChanges, getFileDiff, resolveBaseSha } = await kit();
+  // The file itself stays UNDER MAX_DIFF_BYTES (2 MiB) so the worktree-stat
+  // pre-check passes, but the diff output (one '+' marker per line) exceeds
+  // DIFF_MAX_BUFFER (MAX_DIFF_BYTES + 256 KiB): 340 000 lines x 6 bytes =
+  // 2 040 000 file bytes -> ~2 380 000 diff bytes. This drives the no-index
+  // ERR_CHILD_PROCESS_STDIO_MAXBUFFER warn-and-degrade branch.
+  const manyLines = 'abcde\n'.repeat(340000);
+  const dir = makeGitRepo((d) => {
+    w(d, 'a.txt', 'one\n');
+    commitAll(d, 'base');
+    w(d, 'huge.txt', manyLines); // untracked
+  });
+  try {
+    const resolved = await resolveBaseSha(dir);
+    const cs = await getChanges(dir);
+    const row = cs.files.find((f) => f.path === 'huge.txt');
+    assert.ok(row, 'the untracked file is listed');
+    const diff = await getFileDiff(
+      dir, 'huge.txt', resolved.mergeBase, row.changeKind, row.oldPath, row.binary,
+    );
+    assert.equal(diff.truncated, true, 'overflowing no-index output degrades to truncated');
+    assert.equal(diff.hunks, null, 'truncated carries null hunks');
+    assert.equal(diff.binary, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
  * parseNameStatusZ (PURE) — A/M/R/C token shapes + skip-source idiom   *
  * ------------------------------------------------------------------ */
-test('GIT-DIFF parseNameStatusZ (pure): A/M/R/C shapes; rename carries oldPath; D/T skipped', async () => {
+test('GIT-DIFF parseNameStatusZ (pure): A/M/D/R/C shapes; rename carries oldPath; T skipped', async () => {
   const { parseNameStatusZ } = await kit();
   // Mirror `git diff --name-status -M -z` -z framing: every field is its own
   // NUL-terminated token; R/C emit `Rxxx\0old\0new`.
@@ -466,8 +821,8 @@ test('GIT-DIFF parseNameStatusZ (pure): A/M/R/C shapes; rename carries oldPath; 
   assert.equal(byPath.get('src/new.ts').oldPath, 'src/old.ts');
   assert.equal(byPath.get('copy.ts').changeKind, 'copied');
   assert.equal(byPath.get('copy.ts').oldPath, 'base.ts');
-  assert.ok(!byPath.has('gone.txt'), 'a DELETE is skipped in v1');
-  assert.ok(!byPath.has('typechange.txt'), 'a TYPE-change is skipped in v1');
+  assert.equal(byPath.get('gone.txt').changeKind, 'deleted', 'a DELETE surfaces as deleted');
+  assert.ok(!byPath.has('typechange.txt'), 'a TYPE-change is skipped');
   assert.ok(!byPath.has('src/old.ts'), 'the rename SOURCE is not a separate row');
   // No path escapes the root / contains '..' (these are repo-relative).
   for (const r of rows) {

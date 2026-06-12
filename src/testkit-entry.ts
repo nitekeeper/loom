@@ -36,6 +36,9 @@ export {
   resolveFileDiffRequest,
   parseNameStatusZ,
   parseUnifiedDiff,
+  // runGit surfaces ONLY so the suite can pin the allowExit1 gate (a --no-index
+  // "files differ" exit 1 is success with stdout; exit >= 2 stays fail-soft).
+  runGit,
 } from './main/git-diff.js';
 export type { ChangesWithBase, FileDiffRequest } from './main/git-diff.js';
 
@@ -52,7 +55,11 @@ export type { DiffRow, DiffRowClass } from './renderer/lib/diff-view.js';
 // escape in FileDiff.tsx turns that test RED (anti-revert, sdet/F1). DiffBody is
 // a pure presenter (no hooks / no window.loom at render time), so it pulls
 // cleanly into the Node bundle.
-export { DiffBody } from './renderer/components/FileDiff.js';
+// ChangeKindGlyph is the header's change-kind chip (added + badge / deleted −
+// badge / modified dot, NFR-12) — a hook-free pure presenter (DiffBody idiom;
+// the full FileDiff block uses useState, and the testkit bundles its OWN React
+// copy, so a hooks component cannot render under the suite's react-dom/server).
+export { DiffBody, ChangeKindGlyph } from './renderer/components/FileDiff.js';
 
 // The Explorer's dir-row folder glyph (inline SVG, DiffIcon idiom). Re-exported
 // so the node --test tier can renderToStaticMarkup the ACTUAL component and pin

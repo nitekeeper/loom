@@ -141,14 +141,34 @@ export function DiffBody({ diff }: { diff: FileDiffData }): JSX.Element {
   );
 }
 
+/** The header's NON-color change-kind glyph chip: added → green '+' badge;
+ *  deleted → red '−' badge (mirrors the diff-del row color); everything else
+ *  (modified/renamed/copied) → the amber dot. Always paired with the visible
+ *  text label (NFR-12). EXPORTED as a hook-free pure presenter (DiffBody idiom)
+ *  so the node --test tier can renderToStaticMarkup the REAL production glyph
+ *  and pin the deleted≠modified distinction (anti-revert). */
+export function ChangeKindGlyph({ file }: FileDiffProps): JSX.Element {
+  if (file.changeKind === 'added') {
+    return (
+      <span className="badge-git-added" aria-hidden="true">
+        +
+      </span>
+    );
+  }
+  if (file.changeKind === 'deleted') {
+    return (
+      <span className="badge-git-deleted" aria-hidden="true">
+        −
+      </span>
+    );
+  }
+  return <span className="dot-git-modified" aria-hidden="true" />;
+}
+
 export function FileDiff({ file }: FileDiffProps): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const diff = useFileDiff(file.path, expanded);
   const kindLabel = changeKindLabel(file);
-  // The added sigil reuses the green .badge-git-added chip; modified/renamed use
-  // the amber .dot-git-modified dot — both paired with a text label (NFR-12).
-  const isAdded = file.changeKind === 'added';
-
   // A stable, escaped-by-React path crumb. The basename is bolded; the dir
   // prefix is dimmed. React text children auto-escape (Law 1) — the path is
   // attacker-influenced bytes rendered as data, never markup.
@@ -179,13 +199,7 @@ export function FileDiff({ file }: FileDiffProps): JSX.Element {
           <b>{basename}</b>
         </span>
         {/* Non-color change-kind cue: a glyph chip AND a text label. */}
-        {isAdded ? (
-          <span className="badge-git-added" aria-hidden="true">
-            +
-          </span>
-        ) : (
-          <span className="dot-git-modified" aria-hidden="true" />
-        )}
+        <ChangeKindGlyph file={file} />
         <span className="changes-file-kind" aria-hidden="true">
           {file.binary ? `${kindLabel} · binary` : kindLabel}
         </span>

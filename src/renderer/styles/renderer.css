@@ -621,6 +621,13 @@ html:not([data-platform='linux']) .win-resize { display: none; }
   color: #5fce7a; background: color-mix(in oklab, #5fce7a 16%, transparent);
   padding: 0px 4px; border-radius: 4px; margin-left: auto;
 }
+.badge-git-deleted {
+  /* The Changes-list deleted chip — mirrors .badge-git-added's shape with the
+     diff-del red (#d06a6a) so a deleted row reads distinctly from modified. */
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: 0;
+  color: #d06a6a; background: color-mix(in oklab, #d06a6a 16%, transparent);
+  padding: 0px 4px; border-radius: 4px; margin-left: auto;
+}
 .badge-git-staged {
   font-family: var(--font-mono); font-size: 8.5px; font-weight: 700; letter-spacing: .04em;
   color: #60aaee; background: color-mix(in oklab, #60aaee 16%, transparent);

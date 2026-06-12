@@ -1,10 +1,25 @@
 /* ============================================================
  * Loom — git-diff "Changes" layer (Electron-FREE sibling to git.ts)
  * ------------------------------------------------------------
- * Lists every file CREATED or MODIFIED on the current branch vs. the
- * base merge-base (three-dot `<mergeBaseSha>...HEAD`, committed branch
- * work) and produces a READ-ONLY before→after unified diff per file for
- * the renderer's "Changes" viewer.
+ * Lists every file changed on the current branch vs. the base
+ * merge-base — the UNION of committed branch work AND uncommitted
+ * working-tree changes (staged + unstaged + untracked, .gitignore
+ * respected) — and produces a READ-ONLY before→after unified diff per
+ * file for the renderer's "Changes" viewer. The tracked side is the
+ * two-dot worktree diff `git diff <mergeBaseSha> --` (before =
+ * merge-base, after = CURRENT working tree), which naturally dedupes a
+ * file changed both in commits and in the worktree to ONE row; untracked
+ * files come from `git ls-files --others --exclude-standard` and show as
+ * created (empty before). On the base branch itself (mergeBase == HEAD)
+ * uncommitted edits therefore still appear — the old three-dot
+ * `<mergeBase>...HEAD` producer was permanently empty there.
+ *
+ * INTENDED behavior (not an oversight): an UNCOMMITTED `mv` shows as a
+ * 'deleted' old path + an 'added' (untracked) new path, NOT as one
+ * 'renamed' row — the new path has no index entry, so git's -M
+ * similarity pairing cannot see it; only a committed (or staged) rename
+ * pairs into 'renamed'. This matches `git status` porcelain semantics
+ * for an unstaged move.
  *
  * LAW 1 (nothing executes): this module returns RAW git output as DATA
  * — file paths (ChangedFile.path/oldPath) and DiffHunk line text are
@@ -34,7 +49,7 @@
  * shared types only) so it is unit-testable without a display.
  * ============================================================ */
 import { execFile } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   MAX_DIFF_BYTES,
@@ -63,11 +78,17 @@ type GitRun =
 
 /** Run git with a FIXED argv array and NO shell, resolving to a GitRun rather
  *  than rejecting — so every caller stays fail-soft. `maxBuffer` defaults to the
- *  metadata size; pass DIFF_MAX_BUFFER for a content-bearing call. */
-function runGit(
+ *  metadata size; pass DIFF_MAX_BUFFER for a content-bearing call. `allowExit1`
+ *  treats a clean exit code 1 (NOT a kill/timeout, NOT an overflow) as success
+ *  with whatever stdout was produced — `git diff --no-index` implies
+ *  `--exit-code`, so "files differ" is exit 1 carrying the diff we want.
+ *  Exported ONLY so the unit suite can pin the allowExit1 gate (exit 1 ok /
+ *  exit >= 2 still fail-soft) directly; production callers live in this file. */
+export function runGit(
   root: string,
   args: readonly string[],
   maxBuffer: number = META_MAX_BUFFER,
+  allowExit1 = false,
 ): Promise<GitRun> {
   return new Promise((resolve) => {
     execFile(
@@ -76,9 +97,19 @@ function runGit(
       { cwd: root, timeout: GIT_TIMEOUT_MS, maxBuffer },
       (err, stdout) => {
         if (err) {
-          const overflow =
-            (err as NodeJS.ErrnoException).code ===
-            'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+          const code: unknown = (err as { code?: unknown }).code;
+          const overflow = code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+          if (
+            allowExit1 &&
+            !overflow &&
+            code === 1 &&
+            err.signal == null &&
+            err.killed !== true
+          ) {
+            // --no-index "files differ" — exit 1 IS the success path here.
+            resolve({ ok: true, stdout });
+            return;
+          }
           resolve({ ok: false, overflow });
           return;
         }
@@ -96,9 +127,9 @@ function posixify(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\//, '');
 }
 
-/** Map a git name-status letter to a ChangeKind. The v1 producer keeps only
- *  A/M/R-dest (created-or-modified shaped); D (delete) and T (type-change) are
- *  filtered out by the caller, and 'deleted'/'copied' stay in the type for
+/** Map a git name-status letter to a ChangeKind. A/M/R-dest plus D (a file
+ *  deleted on the branch or rm'd in the working tree shows as 'deleted');
+ *  T (type-change) stays filtered, and 'copied' stays in the type for
  *  forward-compat. The status token may carry a similarity score (e.g. 'R097'),
  *  so we switch on the leading letter only. */
 function changeKindFor(statusLetter: string): ChangeKind | null {
@@ -107,6 +138,8 @@ function changeKindFor(statusLetter: string): ChangeKind | null {
       return 'added';
     case 'M':
       return 'modified';
+    case 'D':
+      return 'deleted';
     case 'R':
       return 'renamed';
     case 'C':
@@ -117,7 +150,7 @@ function changeKindFor(statusLetter: string): ChangeKind | null {
       // test, which hand-feeds a synthetic `C` token).
       return 'copied';
     default:
-      return null; // D / T / U / unknown — not surfaced in v1
+      return null; // T / U / unknown — not surfaced
   }
 }
 
@@ -128,8 +161,8 @@ function changeKindFor(statusLetter: string): ChangeKind | null {
  * score) followed by ONE path, OR — for a rename/copy — TWO NUL-separated paths
  * (old then new). Mirrors parsePortcelain's skip-a-source-token idiom
  * (git.ts:58-60): for R/C we consume the NEXT token as the destination and
- * carry the first as `oldPath`. D/T are skipped (v1 surfaces created/modified
- * only). The `binary` flag is folded in later by getChanges from the numstat
+ * carry the first as `oldPath`. T is skipped; D surfaces as 'deleted'. The
+ * `binary` flag is folded in later by getChanges from the numstat
  * pass — it is always false here.
  */
 export function parseNameStatusZ(stdout: string): ChangedFile[] {
@@ -163,7 +196,7 @@ export function parseNameStatusZ(stdout: string): ChangedFile[] {
       // `<status>\0<path>` — a single path follows.
       const raw = tokens[i] ?? '';
       i += 1;
-      if (kind === null) continue; // D/T/U — consumed its path, then skipped
+      if (kind === null) continue; // T/U — consumed its path, then skipped
       const path = posixify(raw);
       if (path.length === 0) continue;
       out.push({ path, changeKind: kind, oldPath: null, binary: false });
@@ -267,7 +300,7 @@ export async function resolveBaseSha(
 }
 
 /** A ChangeSet plus the merge-base SHA it was computed against. The SHA is the
- *  per-file-diff input (`<mergeBase>...HEAD`); it is NOT part of the
+ *  per-file-diff input (the diff's "before" side); it is NOT part of the
  *  IPC-serialized ChangeSet (the renderer never needs it), so the handler reads
  *  it from here to avoid resolving the base a SECOND time per file expand. Null
  *  when the repo is unavailable / has no base. */
@@ -277,13 +310,18 @@ export interface ChangesWithBase {
 }
 
 /**
- * List every file CREATED or MODIFIED (+ a rename destination) on the current
- * branch vs. the base merge-base (three-dot `<mergeBaseSha>...HEAD`) AND return
- * the resolved merge-base SHA alongside it so a caller fetching per-file diffs
- * does not have to re-resolve the base. Fail-soft: a non-git dir / git-missing /
- * no-base all resolve to a benign ChangeSet (mergeBase:null) rather than
- * throwing. `available:true` with `files:[]` is the CORRECT default when the
- * branch is even with the base (base==HEAD) — an empty list is not an error.
+ * List every file changed vs. the base merge-base — the UNION of committed
+ * branch work AND uncommitted working-tree changes — AND return the resolved
+ * merge-base SHA alongside it so a caller fetching per-file diffs does not have
+ * to re-resolve the base. Tracked changes come from the two-dot worktree diff
+ * `git diff <mergeBaseSha> --` (committed + staged + unstaged in ONE deduped
+ * pass; after = working tree); untracked files come from
+ * `git ls-files --others --exclude-standard` (.gitignore respected) and are
+ * appended as 'added' rows. Fail-soft: a non-git dir / git-missing / no-base all
+ * resolve to a benign ChangeSet (mergeBase:null) rather than throwing.
+ * `available:true` with `files:[]` is the CORRECT default when the branch is
+ * even with the base AND the working tree is clean — an empty list is not an
+ * error.
  */
 export async function listChangesWithBase(root: string): Promise<ChangesWithBase> {
   const empty: ChangeSet = { available: false, base: '', branch: null, files: [] };
@@ -307,12 +345,17 @@ export async function listChangesWithBase(root: string): Promise<ChangesWithBase
     branch = name.length > 0 ? name : null;
   }
 
-  const range = `${mergeBase}...HEAD`;
+  // TWO-DOT worktree diff: a single commit arg compares <mergeBase> against the
+  // CURRENT WORKING TREE, so committed branch work AND uncommitted (staged +
+  // unstaged) edits land in ONE naturally-deduped listing whose "after" side is
+  // what is on disk right now. (The old three-dot `<mergeBase>...HEAD` listed
+  // committed work only — permanently empty when working directly on the base.)
+  const range = mergeBase;
 
   // name-status list. `-c core.quotepath=false` + `-z` suppress git's octal path
   // quoting; `-M` enables rename detection; the trailing `--` ends options so a
   // pathological ref/path can never be read as a flag (defense in depth — the
-  // range here is already a SHA range).
+  // range here is already a SHA).
   const nameStatus = await runGit(root, [
     '-c',
     'core.quotepath=false',
@@ -344,14 +387,55 @@ export async function listChangesWithBase(root: string): Promise<ChangesWithBase
     binary: binaryPaths.has(f.path),
   }));
 
+  // UNTRACKED (never-added) files — invisible to `git diff`, so they ride in
+  // from `ls-files --others --exclude-standard` (porcelain `??` semantics:
+  // .gitignore respected, every file listed individually). Each shows as
+  // created ('added', empty before). Deduped against the tracked rows — and
+  // when an untracked path COLLIDES with a tracked 'deleted' row (the
+  // `git rm --cached` shape: dropped from the index, still ON DISK), the row
+  // flips to 'modified': the file exists in the worktree, so the honest
+  // before→after is base→disk, never "deleted" with the disk content silently
+  // dropped (getFileDiff renders that pair via its index-absent branch).
+  // `binary` stays false on untracked rows: the per-file diff's `Binary files`
+  // backstop reclassifies an untracked binary on expand (Law 1 holds — its
+  // bytes are never decoded either way). Fail-soft: an ls-files error just
+  // means no untracked rows.
+  const untracked = await runGit(root, [
+    '-c',
+    'core.quotepath=false',
+    'ls-files',
+    '--others',
+    '--exclude-standard',
+    '-z',
+  ]);
+  if (untracked.ok) {
+    const rowIndex = new Map(files.map((f, i) => [f.path, i]));
+    for (const tok of untracked.stdout.split('\0')) {
+      const path = posixify(tok);
+      if (path.length === 0) continue;
+      const existing = rowIndex.get(path);
+      if (existing !== undefined) {
+        const row = files[existing];
+        if (row !== undefined && row.changeKind === 'deleted') {
+          // On disk (ls-files --others saw it) AND tracked-diff says D: the
+          // rm --cached shape — surface as base→worktree modified.
+          files[existing] = { ...row, changeKind: 'modified' };
+        }
+        continue;
+      }
+      rowIndex.set(path, files.length);
+      files.push({ path, changeKind: 'added', oldPath: null, binary: false });
+    }
+  }
+
   return { changeSet: { available: true, base, branch, files }, mergeBase };
 }
 
 /**
- * List every file CREATED or MODIFIED (+ a rename destination) on the current
- * branch vs. the base merge-base. Thin wrapper over listChangesWithBase that
- * drops the merge-base SHA — the GET_CHANGES handler's shape (the renderer never
- * needs the SHA). Fail-soft, never throws.
+ * List every file changed vs. the base merge-base — committed branch work UNION
+ * uncommitted working-tree changes (staged + unstaged + untracked). Thin wrapper
+ * over listChangesWithBase that drops the merge-base SHA — the GET_CHANGES
+ * handler's shape (the renderer never needs the SHA). Fail-soft, never throws.
  */
 export async function getChanges(root: string): Promise<ChangeSet> {
   return (await listChangesWithBase(root)).changeSet;
@@ -487,17 +571,21 @@ export function parseUnifiedDiff(stdout: string): DiffHunk[] {
  * The handler MUST have already re-confined `relPath` (and a rename's oldPath)
  * via sandbox.resolveInRoot (Law 3) — this function trusts its caller for
  * containment but still passes every path to git ONLY as a positional arg after
- * `--` (no interpolation, no shell). Pre-checks BOTH blob sizes via
- * `git cat-file -s HEAD:<path>` AND `git cat-file -s <mergeBase>:<oldPath??path>`
- * so a file that is multi-megabyte on EITHER the head OR the base side
- * short-circuits to `truncated:true` (null hunks) before the diff is ever
- * buffered (honoring the MAX_DIFF_BYTES "base OR head" contract). A `binary`
- * file (flagged by the LIST) short-circuits to `binary:true` (null hunks) — its
- * bytes are never decoded (Law 1). For a renamed/copied file the OLD path is
- * added to the pathspec so git's -M pairing can render the real old→new delta
- * (without it a rename renders as an all-additions new file). NEVER throws; any
- * git error degrades to a no-diff FileDiff (binary:false, truncated:false,
- * hunks:[]).
+ * `--` (no interpolation, no shell). The "after" side is the CURRENT WORKING
+ * TREE (two-dot `git diff <mergeBase> -- <path>`), so uncommitted edits render;
+ * the "before" side is the merge-base blob (== committed-only old content when
+ * on the base branch, where mergeBase == HEAD). An UNTRACKED file (changeKind
+ * 'added' with no index entry) is diffed `--no-index` against /dev/null — a
+ * pure all-additions created-file view. Pre-checks BOTH side sizes — the base
+ * blob via `git cat-file -s <mergeBase>:<oldPath??path>` AND the worktree file
+ * via fs stat — so a file multi-megabyte on EITHER side short-circuits to
+ * `truncated:true` (null hunks) before the diff is ever buffered (the
+ * MAX_DIFF_BYTES "either side" contract). A `binary` file (flagged by the LIST)
+ * short-circuits to `binary:true` (null hunks) — its bytes are never decoded
+ * (Law 1). For a renamed/copied file the OLD path is added to the pathspec so
+ * git's -M pairing can render the real old→new delta (without it a rename
+ * renders as an all-additions new file). NEVER throws; any git error degrades
+ * to a no-diff FileDiff (binary:false, truncated:false, hunks:[]).
  */
 export async function getFileDiff(
   root: string,
@@ -521,38 +609,131 @@ export async function getFileDiff(
     return { ...result, binary: true, hunks: null };
   }
 
-  // Pre-check BOTH blob sizes so a giant file never floods the highlighter,
-  // honoring the MAX_DIFF_BYTES "base OR head" contract (types.ts): a file small
-  // at HEAD but multi-megabyte at the base (e.g. a near-total deletion) must
-  // truncate too. cat-file -s prints the blob size in bytes; if EITHER side
-  // exceeds the cap ⇒ truncated. The base blob lives at the merge-base SHA under
-  // the OLD path for a rename (oldPath), else the same relPath. `<sha>:<path>`
-  // is a single POSITIONAL arg — NO interpolation, NO shell; the base is a SHA so
-  // no ref name reaches git here. A missing blob (e.g. HEAD:<path> for a pure
-  // base-side case, or base:<path> for a freshly-created file) just !ok's and is
-  // skipped — the other side or the diff backstop still bounds it.
+  // Pre-check BOTH side sizes so a giant file never floods the highlighter,
+  // honoring the MAX_DIFF_BYTES "either side" contract (types.ts). The BEFORE
+  // side is the base blob (`git cat-file -s <mergeBase>:<oldPath??path>` — a
+  // single POSITIONAL arg, NO interpolation, NO shell; the base is a SHA so no
+  // ref name reaches git). The AFTER side is now the WORKING TREE, so its size
+  // is a plain fs stat of the (handler-confined, Law 3) on-disk file — a
+  // worktree-deleted / missing file just fails the stat and is skipped. A
+  // missing base blob (a freshly-created file) likewise !ok's and is skipped —
+  // the other side or the diff maxBuffer backstop still bounds it.
   const basePath = oldPath ?? relPath;
-  const sizeChecks = await Promise.all([
-    runGit(root, ['cat-file', '-s', `HEAD:${relPath}`]),
+  const [worktreeSize, baseSize] = await Promise.all([
+    stat(join(root, relPath)).then(
+      (s) => s.size,
+      () => null,
+    ),
     runGit(root, ['cat-file', '-s', `${mergeBase}:${basePath}`]),
   ]);
-  for (const size of sizeChecks) {
-    if (size.ok) {
-      const bytes = Number(size.stdout.trim());
-      if (Number.isFinite(bytes) && bytes > MAX_DIFF_BYTES) {
-        return { ...result, truncated: true, hunks: null };
-      }
+  if (worktreeSize !== null && worktreeSize > MAX_DIFF_BYTES) {
+    return { ...result, truncated: true, hunks: null };
+  }
+  if (baseSize.ok) {
+    const bytes = Number(baseSize.stdout.trim());
+    if (Number.isFinite(bytes) && bytes > MAX_DIFF_BYTES) {
+      return { ...result, truncated: true, hunks: null };
     }
   }
 
-  // The unified diff for this one path. `-M` keeps rename detection, but git's
-  // similarity pairing only fires when BOTH the old and new path are VISIBLE to
-  // the diff: restricting the pathspec to just the new path makes git treat a
-  // renamed-and-edited file as a freshly-created file (an all-additions diff
-  // against /dev/null), losing the real before→after delta. So for a rename/copy
-  // we include the OLD path in the pathspec too. The handler has ALREADY
-  // resolveInRoot-vetted both paths (Law 3); both ride as POSITIONAL args AFTER
-  // `--` (no interpolation, no shell). The SHA range sits BEFORE `--`.
+  // An INDEX-ABSENT file is (fully or partly) invisible to `git diff <commit>`,
+  // so detect it up front (`ls-files -z -- <path>` prints nothing) for the two
+  // kinds the listing can hand us:
+  //   - 'added' (untracked): diff `--no-index` against /dev/null — the
+  //     canonical empty-before → worktree-after created-file view;
+  //   - 'modified' (the `git rm --cached`-then-kept-on-disk shape the listing
+  //     flipped from D): the two-dot diff alone would show a bogus all-deletions
+  //     "delete" while the file EXISTS on disk — so COMBINE the base-side
+  //     deletion diff with a /dev/null→worktree `--no-index` addition diff into
+  //     one full base→worktree rewrite (parseUnifiedDiff's between-files
+  //     boundary reset parses the concatenation safely).
+  // `--no-index` implies `--exit-code` (1 = files differ), so runGit's
+  // allowExit1 treats that as the success it is. Every path is
+  // handler-confined (Law 3) and rides as a positional arg after `--`. A
+  // binary file emits only a `Binary files ... differ` line, caught by the
+  // backstop below.
+  if (changeKind === 'added' || changeKind === 'modified') {
+    const indexEntry = await runGit(root, ['ls-files', '-z', '--', relPath]);
+    const notInIndex = indexEntry.ok && indexEntry.stdout.length === 0;
+    if (notInIndex) {
+      const noIndexArgs = [
+        '-c',
+        'core.quotepath=false',
+        'diff',
+        '--unified=3',
+        '--no-color',
+        '--no-index',
+        '--',
+        '/dev/null',
+        relPath,
+      ];
+      if (changeKind === 'added') {
+        const noIndex = await runGit(root, noIndexArgs, DIFF_MAX_BUFFER, true);
+        if (!noIndex.ok) {
+          if (noIndex.overflow) {
+            console.warn(
+              `[git-diff] diff output for "${relPath}" exceeded maxBuffer; shown as too large`,
+            );
+            return { ...result, truncated: true, hunks: null };
+          }
+          return { ...result, hunks: [] };
+        }
+        if (/^Binary files /m.test(noIndex.stdout)) {
+          return { ...result, binary: true, hunks: null };
+        }
+        return { ...result, hunks: parseUnifiedDiff(noIndex.stdout) };
+      }
+      // 'modified' + index-absent: base→worktree as deletion-of-base +
+      // addition-of-disk-content. Both halves are bounded by DIFF_MAX_BUFFER
+      // and the size pre-checks above.
+      const [baseSide, worktreeSide] = await Promise.all([
+        runGit(
+          root,
+          [
+            '-c',
+            'core.quotepath=false',
+            'diff',
+            '--unified=3',
+            '--no-color',
+            mergeBase,
+            '--',
+            relPath,
+          ],
+          DIFF_MAX_BUFFER,
+        ),
+        runGit(root, noIndexArgs, DIFF_MAX_BUFFER, true),
+      ]);
+      if (!baseSide.ok || !worktreeSide.ok) {
+        const overflowed =
+          (!baseSide.ok && baseSide.overflow) ||
+          (!worktreeSide.ok && worktreeSide.overflow);
+        if (overflowed) {
+          console.warn(
+            `[git-diff] diff output for "${relPath}" exceeded maxBuffer; shown as too large`,
+          );
+          return { ...result, truncated: true, hunks: null };
+        }
+        return { ...result, hunks: [] };
+      }
+      const combined = baseSide.stdout + worktreeSide.stdout;
+      if (/^Binary files /m.test(combined)) {
+        return { ...result, binary: true, hunks: null };
+      }
+      return { ...result, hunks: parseUnifiedDiff(combined) };
+    }
+  }
+
+  // The unified diff for this one path — TWO-DOT vs the WORKING TREE (a single
+  // commit arg), so the "after" side is what is on disk right now (uncommitted
+  // edits included; a worktree deletion renders as all-deletions). `-M` keeps
+  // rename detection, but git's similarity pairing only fires when BOTH the old
+  // and new path are VISIBLE to the diff: restricting the pathspec to just the
+  // new path makes git treat a renamed-and-edited file as a freshly-created
+  // file (an all-additions diff against /dev/null), losing the real
+  // before→after delta. So for a rename/copy we include the OLD path in the
+  // pathspec too. The handler has ALREADY resolveInRoot-vetted both paths
+  // (Law 3); both ride as POSITIONAL args AFTER `--` (no interpolation, no
+  // shell). The SHA sits BEFORE `--`.
   const pathspec =
     oldPath !== null && oldPath !== relPath ? [oldPath, relPath] : [relPath];
   const diff = await runGit(
@@ -564,7 +745,7 @@ export async function getFileDiff(
       '--unified=3',
       '--no-color',
       '-M',
-      `${mergeBase}...HEAD`,
+      mergeBase,
       '--',
       ...pathspec,
     ],

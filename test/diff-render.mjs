@@ -263,3 +263,51 @@ test('DIFF-RENDER LAW 1 (REAL sink): DiffBody renders a hostile line ESCAPED —
     'no element carries an onerror handler — the bytes are inert text, not markup',
   );
 });
+
+/* ------------------------------------------------------------------ *
+ * Change-kind glyphs (NFR-12, reviewer finding 4) — the header chip:  *
+ * added → green '+' badge; deleted → its own red '−' badge (NOT the   *
+ * amber "modified" dot); modified keeps the amber dot. Rendered via   *
+ * the REAL production presenter (ChangeKindGlyph — hook-free, the     *
+ * DiffBody idiom; the full FileDiff block carries useState and cannot *
+ * SSR across the testkit's bundled React copy).                       *
+ * ------------------------------------------------------------------ */
+test('DIFF-RENDER ChangeKindGlyph: a deleted row gets a DISTINCT deleted glyph, not the modified dot', async () => {
+  const { ChangeKindGlyph } = await kit();
+  const row = (changeKind) => ({
+    path: 'some/file.txt',
+    changeKind,
+    oldPath: null,
+    binary: false,
+  });
+
+  const addedHtml = renderToStaticMarkup(
+    React.createElement(ChangeKindGlyph, { file: row('added') }),
+  );
+  assert.match(addedHtml, /badge-git-added/, 'added keeps the green + badge');
+  assert.doesNotMatch(addedHtml, /badge-git-deleted/);
+
+  const modifiedHtml = renderToStaticMarkup(
+    React.createElement(ChangeKindGlyph, { file: row('modified') }),
+  );
+  assert.match(modifiedHtml, /dot-git-modified/, 'modified keeps the amber dot');
+  assert.doesNotMatch(modifiedHtml, /badge-git-deleted/);
+
+  const deletedHtml = renderToStaticMarkup(
+    React.createElement(ChangeKindGlyph, { file: row('deleted') }),
+  );
+  assert.match(
+    deletedHtml,
+    /badge-git-deleted/,
+    'deleted renders its OWN glyph chip (red −), not the modified dot',
+  );
+  assert.doesNotMatch(
+    deletedHtml,
+    /dot-git-modified/,
+    'deleted must NOT reuse the amber modified dot',
+  );
+  assert.match(deletedHtml, /−|&#x2212;|&minus;/, 'the deleted chip carries a − glyph');
+  // The chip is decorative for AT (the FileDiff header's aria-label + visible
+  // text label carry the kind, NFR-12) — pin the aria-hidden contract.
+  assert.match(deletedHtml, /aria-hidden="true"/, 'the glyph chip is aria-hidden');
+});

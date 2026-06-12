@@ -251,9 +251,10 @@ class IpcWiringImpl implements IpcWiring {
       return Object.fromEntries(map);
     });
 
-    // List every file CREATED/MODIFIED on the current branch vs. the base
-    // merge-base (three-dot). main resolves rootPath itself — the renderer
-    // passes NO directory. Fail-soft inside getChanges (never throws).
+    // List every file changed vs. the base merge-base — committed branch work
+    // UNION uncommitted working-tree changes (staged + unstaged + untracked).
+    // main resolves rootPath itself — the renderer passes NO directory.
+    // Fail-soft inside getChanges (never throws).
     ipcMain.handle(IPC.GET_CHANGES, (): Promise<ChangeSet> =>
       getChanges(this.deps.rootPath),
     );
