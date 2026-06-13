@@ -95,6 +95,42 @@ test('MD-WIDTH: precedence is hint > stored > default', async () => {
   assert.equal(resolveInitialMdWidth(null, null), 'fit');
 });
 
+test('MD-WIDTH: toggleWidthMode flips fit↔full (involutive over the closed set)', async () => {
+  const { toggleWidthMode } = await kit();
+  assert.equal(toggleWidthMode('fit'), 'full');
+  assert.equal(toggleWidthMode('full'), 'fit');
+  // Involutive: toggling twice returns to the start (the quick-toggle contract:
+  // header button / Ctrl+Shift+W presses always alternate, never get stuck).
+  assert.equal(toggleWidthMode(toggleWidthMode('fit')), 'fit');
+  assert.equal(toggleWidthMode(toggleWidthMode('full')), 'full');
+});
+
+test('MD-WIDTH: the toggleReadingWidth command exists with default Ctrl+Shift+W', async () => {
+  const { COMMANDS, DEFAULT_BINDINGS } = await kit();
+  const spec = COMMANDS.find((c) => c.id === 'toggleReadingWidth');
+  assert.ok(spec, 'a toggleReadingWidth command is registered');
+  assert.equal(spec.label, 'Toggle reading width', 'label matches the spec');
+  assert.equal(spec.defaultBinding, 'Ctrl+Shift+W', 'default binding is Ctrl/Cmd+Shift+W');
+  assert.equal(
+    DEFAULT_BINDINGS.toggleReadingWidth,
+    'Ctrl+Shift+W',
+    'resolved default carries the combo',
+  );
+});
+
+test('MD-WIDTH: Ctrl+Shift+W is collision-free and not reserved', async () => {
+  const { DEFAULT_BINDINGS, findConflict, isReserved } = await kit();
+  // No OTHER command's default already claims the combo …
+  assert.equal(
+    findConflict(DEFAULT_BINDINGS, 'Ctrl+Shift+W', 'toggleReadingWidth'),
+    null,
+    'Ctrl+Shift+W conflicts with no other default binding',
+  );
+  // … and the app shell does not reserve it (a reserved combo would make the
+  // command permanently dead — the dispatcher intercepts reserved combos first).
+  assert.equal(isReserved('Ctrl+Shift+W'), false, 'Ctrl+Shift+W is not shell-reserved');
+});
+
 test('MD-WIDTH: the parse→coerce→resolve chain is consistent end to end', async () => {
   const { parseMdWidthHint, coerceStoredMdWidth, resolveInitialMdWidth } = await kit();
   // A `?mdwidth=full` capture over a 'fit'-persisted user ⇒ full (e2e boots full).

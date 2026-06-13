@@ -1,8 +1,10 @@
 /* ============================================================
  * Loom — RENDERED-markdown reading-column width mode (pure logic)
  * ------------------------------------------------------------
- * The Viewer's RENDERED (.md) reading column has two width modes:
- *   'fit'  — the comfortable predefined measure (CSS max-width:792px).
+ * The Viewer's reading column has two width modes:
+ *   'fit'  — the comfortable predefined measure (CSS max-width:120ch — 120
+ *            characters of the CONTENT's own font, so prose and code each get
+ *            their own natural 120-character measure).
  *   'full' — the column fills the Viewer width (CSS max-width:none),
  *            keeping the side padding so text never glues to the edges.
  *
@@ -25,7 +27,7 @@
  * NEVER interpolated into markup, so there is no HTML sink here.
  * ============================================================ */
 
-/** The two RENDERED-markdown reading-column width modes. */
+/** The two Viewer reading-column width modes. */
 export type WidthMode = 'fit' | 'full';
 
 /** Persisted localStorage key for the chosen width mode ('fit'/'full').
@@ -33,8 +35,16 @@ export type WidthMode = 'fit' | 'full';
 export const MD_WIDTH_KEY = 'loom.viewer.mdWidth';
 
 /** Default mode when nothing is persisted (first run / fresh install): the
- *  comfortable predefined 792px measure. */
+ *  comfortable predefined 120ch measure. */
 export const MD_WIDTH_DEFAULT: WidthMode = 'fit';
+
+/** Flip a width mode to the other one (fit↔full). Pure + total over the closed
+ *  set, and involutive (toggle twice ⇒ back where you started) — the single
+ *  decision behind BOTH quick-toggle routes (the Viewer-header button and the
+ *  rebindable toggleReadingWidth command, default Ctrl+Shift+W). */
+export function toggleWidthMode(mode: WidthMode): WidthMode {
+  return mode === 'fit' ? 'full' : 'fit';
+}
 
 /** True only for the two valid modes — the single closed-set gate the hint
  *  + stored coercion both apply (anything else ⇒ null, never a CSS value). */

@@ -37,7 +37,8 @@ export type CommandId =
   | 'togglePause'
   | 'openSearch'
   | 'copyRendered'
-  | 'toggleTerminal';
+  | 'toggleTerminal'
+  | 'toggleReadingWidth';
 
 /** A command entry shown in the Shortcuts panel. */
 export interface CommandSpec {
@@ -60,6 +61,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'foldAll', label: 'Fold all regions', defaultBinding: 'Ctrl+K' },
   { id: 'unfoldAll', label: 'Unfold all regions', defaultBinding: 'Ctrl+Shift+K' },
   { id: 'copyRendered', label: 'Copy rendered content', defaultBinding: 'Ctrl+Shift+C' },
+  { id: 'toggleReadingWidth', label: 'Toggle reading width', defaultBinding: 'Ctrl+Shift+W' },
   { id: 'toggleTheme', label: 'Toggle theme', defaultBinding: 'Ctrl+T' },
   { id: 'togglePause', label: 'Pause / resume live feed', defaultBinding: 'Ctrl+.' },
 ] as const;

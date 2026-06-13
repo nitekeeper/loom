@@ -205,7 +205,7 @@ export { insertNode, removeNode, makeNode } from './renderer/lib/filetree.js';
 export { decideEscapeClose } from './renderer/lib/closefile.js';
 export type { EscapeCloseAction, EscapeCloseFacts } from './renderer/lib/closefile.js';
 
-// Pure RENDERED-markdown width-mode resolution (the Viewer's 792px "fit" vs
+// Pure Viewer width-mode resolution (the 120ch "fit" measure vs
 // "full" reading column). Re-exported so the node --test suite can pin the
 // hint parse, stored coercion, and the hint>stored>default precedence without
 // a DOM/localStorage. The impure wrappers (readInitialMdWidth/persistMdWidth)
@@ -214,6 +214,7 @@ export {
   parseMdWidthHint,
   coerceStoredMdWidth,
   resolveInitialMdWidth,
+  toggleWidthMode,
   MD_WIDTH_KEY,
   MD_WIDTH_DEFAULT,
 } from './renderer/lib/md-width.js';
