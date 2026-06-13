@@ -1,21 +1,24 @@
 /* ============================================================
- * Loom — TIER 2 e2e: RENDERED-markdown reading-column width (Settings panel)
+ * Loom — TIER 2 e2e: Viewer reading-column width (Settings + quick toggle)
  * ------------------------------------------------------------
  * This is the ONLY layer that can prove the width-mode feature END TO END
  * against a REAL Chromium layout engine:
  *
- *   Settings panel → Viewer → Reading width radios ("Fixed (792px)" / "Full
- *   width", RENDERED .md applies regardless of file)
+ *   Settings panel → Viewer → Reading width radios ("Fixed (120 ch)" / "Full
+ *   width"), the Viewer-head quick toggle (.reading-width-btn), and the
+ *   rebindable toggleReadingWidth command (default Ctrl/Cmd+Shift+W)
  *      → App-lifted useState<WidthMode> + persistMdWidth (localStorage)
  *      → data-mdwidth attribute on <section class="pane viewer">
- *      → CSS: .md max-width:792px ('fit') vs .viewer[data-mdwidth="full"] .md
- *        max-width:none ('full')  (src/renderer/styles/renderer.css)
+ *      → CSS: .md/.code max-width:120ch ('fit') vs the
+ *        .viewer[data-mdwidth="full"] max-width:none bypasses ('full')
+ *        (src/renderer/styles/renderer.css)
  *      → the capture-only ?mdwidth=full|fit hint (parseMdWidthHint), seeded by
  *        main's --md-width capture flag (src/main/main.ts indexUrl)
  *
- * The control was MOVED out of the Viewer head into the Settings panel (gear →
- * Settings → Viewer → Reading width); the old in-head .md-width-btn toggle is
- * GONE (test 4 below asserts its absence).
+ * The ORIGINAL in-head .md-width-btn control was MOVED into the Settings panel
+ * and is GONE (test 4 below asserts its absence); the NEW .reading-width-btn
+ * quick toggle (tests 6–8) is a DIFFERENT control that drives the same
+ * App-lifted state as the Settings radios.
  *
  * The node --test unit suite (test/md-width.mjs) proves the PURE resolution
  * (hint parse, stored coercion, hint>stored>default precedence) in isolation,
@@ -30,14 +33,14 @@
  * and measures the REAL bounding boxes. Mirrors copy-rendered.e2e.ts.
  *
  * WHY each test FAILS FOR THE RIGHT REASON:
- *   1. Default is 'fit': if the predefined 792px measure regressed (e.g. the
+ *   1. Default is 'fit': if the predefined 120ch measure regressed (e.g. the
  *      max-width was dropped or the default flipped to 'full'), the .md box
  *      would already span ~the full viewer width on open and the constrained-
  *      measure assertion (.md narrower than the pane by a clear margin) fails.
  *      Selecting "Full width" sets data-mdwidth="full"; if the override rule
  *      regressed (or the radio stopped lifting the mode), the .md box would NOT
  *      grow and the "wider than before, ~pane width" assertion fails. Selecting
- *      "Fixed (792px)" again restores the constrained measure.
+ *      "Fixed (120 ch)" again restores the constrained measure.
  *   2. Persistence across FILES: re-opening another .md must keep 'full' (it was
  *      persisted to localStorage); if persistMdWidth regressed, the re-opened
  *      file would snap back to 'fit' (fail).
@@ -51,6 +54,18 @@
  *      SAME app with the SAME userData dir and NO --md-width hint — so 'full' can
  *      ONLY come from the rehydrated localStorage. If persistence regressed, the
  *      relaunch would boot the default 'fit' (fail).
+ *   6. Header quick toggle: clicking .reading-width-btn must flip data-mdwidth
+ *      fit→full→fit AND mirror the state in aria-pressed (pressed = full-width
+ *      on) AND persist each flip to localStorage. If the button stopped lifting
+ *      the mode (or aria-pressed/persistence regressed), the attribute /
+ *      pressed-state / stored-value assertions fail.
+ *   7. Ctrl+Shift+W: the rebindable toggleReadingWidth command must flip the
+ *      mode from the keyboard (outside editable targets) and persist it. If the
+ *      dispatcher entry regressed, data-mdwidth never flips (fail).
+ *   8. Source-code files follow the mode too: in 'fit' the .code grid is capped
+ *      (clearly narrower than the wide pane); toggling to 'full' grows it to
+ *      (≈) the pane. If the .code 120ch cap or its full bypass regressed, the
+ *      box-width assertions fail.
  * ============================================================ */
 import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { _electron as electron } from 'playwright';
@@ -68,21 +83,31 @@ const MAIN_ENTRY = path.join(PROJECT_ROOT, 'dist', 'main.cjs');
 
 /* ---- Fixture content ----------------------------------------------------- */
 // A long single paragraph so the rendered .md has real horizontal extent to
-// measure: in 'fit' the centered 792px column is clearly NARROWER than the
+// measure: in 'fit' the centered 120ch column is clearly NARROWER than the
 // Viewer pane; in 'full' it spans the pane (minus the kept side padding).
 const PARA = Array.from({ length: 12 }, () =>
   'The quick brown fox jumps over the lazy dog and keeps on running well past the margin.',
 ).join(' ');
 const DOC_MD = [`# Width Fixture`, '', PARA, ''].join('\n');
 const DOC2_MD = [`# Second Doc`, '', PARA, ''].join('\n');
+// A SOURCE fixture (renders in the .code grid, not .md) so test 8 can prove the
+// reading-width mode now governs source/plaintext files too. Plain statements —
+// content is irrelevant to the box measure (the .code grid is a block box, so
+// its width is container-governed and the 120ch cap applies regardless).
+const CODE_JS = Array.from(
+  { length: 30 },
+  (_, i) => `const value${i} = ${i}; // a perfectly ordinary line of source`,
+).join('\n');
 
-/** Make a fresh temp sandbox dir with two .md fixtures. Returns the dir + their
- *  root-relative POSIX paths (the Explorer data-row-path / sandbox contract). */
-function makeFixtureDir(): { dir: string; doc: string; doc2: string } {
+/** Make a fresh temp sandbox dir with two .md fixtures + one .js source
+ *  fixture. Returns the dir + their root-relative POSIX paths (the Explorer
+ *  data-row-path / sandbox contract). */
+function makeFixtureDir(): { dir: string; doc: string; doc2: string; code: string } {
   const dir = mkdtempSync(path.join(tmpdir(), 'loom-e2e-mdwidth-'));
   writeFileSync(path.join(dir, 'doc.md'), DOC_MD);
   writeFileSync(path.join(dir, 'doc2.md'), DOC2_MD);
-  return { dir, doc: 'doc.md', doc2: 'doc2.md' };
+  writeFileSync(path.join(dir, 'code.js'), CODE_JS);
+  return { dir, doc: 'doc.md', doc2: 'doc2.md', code: 'code.js' };
 }
 
 /* ---- Per-launch localStorage isolation -----------------------------------
@@ -105,18 +130,19 @@ function makeUserDataDir(): string {
 /* ---- Layout headroom -----------------------------------------------------
  * CRITICAL for the box-width assertions: at the DEFAULT 3-pane layout the app
  * launches 1440×900 (src/main/main.ts) with Explorer 248px + Chat 400px, so the
- * Viewer pane is only ~792px — i.e. the SAME as the 792px 'fit' measure. At that
- * width BOTH modes cap .md at the ~792px pane, so 'fit' shows no empty band and
- * the change produces no measurable growth — the core assertions could not hold.
+ * Viewer pane is only ~792px — NARROWER than the 120ch 'fit' measure (~860px of
+ * the 14.5px prose font / ~900px of the 12.5px code font). At that width BOTH
+ * modes cap the content at the pane, so 'fit' shows no empty band and the
+ * change produces no measurable growth — the core assertions could not hold.
  *
  * So every box-measuring test frees horizontal space: HIDE the Chat (--chat-
  * hidden frees its 400px track) and NARROW the Explorer to its 180px minimum
  * (--explorer-w 180). We must KEEP the Explorer visible — it is the only way to
  * click a file row (the tree is NOT rendered when --explorer-hidden), and the
  * launch() helper waits on a live treeitem. The Viewer pane is then ~1440-180 =
- * ~1260px, so 792px is CLEARLY narrower than the pane and Full visibly grows .md
- * to (≈) the full pane. This only frees measurement headroom; it does not change
- * the feature under test. */
+ * ~1260px, so the ~860–900px 120ch measure is CLEARLY narrower than the pane and
+ * Full visibly grows the content to (≈) the full pane. This only frees
+ * measurement headroom; it does not change the feature under test. */
 const WIDE_PANE_ARGS = ['--chat-hidden', '--explorer-w', '180'] as const;
 
 /** Launch the built app rooted at `dir`, wait for the first window + the live
@@ -159,6 +185,30 @@ async function mdWidthAttr(page: Page): Promise<string | null> {
   return page.locator('.pane.viewer').getAttribute('data-mdwidth');
 }
 
+/** The persisted width mode straight from the renderer's localStorage
+ *  ('loom.viewer.mdWidth' — md-width.ts MD_WIDTH_KEY). Used by the quick-toggle
+ *  tests to prove the button/shortcut routes persist exactly like the radios. */
+async function storedMdWidth(page: Page): Promise<string | null> {
+  return page.evaluate(() => window.localStorage.getItem('loom.viewer.mdWidth'));
+}
+
+/** Click a SOURCE file row in the Explorer and wait for the Viewer's .code
+ *  grid (the source render path, NOT .md) — test 8's subject. */
+async function openSourceFile(page: Page, relPath: string): Promise<void> {
+  const row = page.locator(`.pane.explorer .row[data-row-path="${relPath}"]`);
+  await row.click();
+  await page.waitForSelector('.pane.viewer .code', { timeout: 15_000 });
+}
+
+/** The rendered .code content-box width and its Viewer pane width (px) —
+ *  the source-file analogue of measure(). */
+async function measureCode(page: Page): Promise<{ code: number; pane: number }> {
+  const codeBox = await page.locator('.pane.viewer .code').boundingBox();
+  const paneBox = await page.locator('.pane.viewer').boundingBox();
+  if (!codeBox || !paneBox) throw new Error('missing bounding box for .code / .pane.viewer');
+  return { code: codeBox.width, pane: paneBox.width };
+}
+
 /** The rendered .md content-box width and its Viewer pane width (px). Used to
  *  prove 'fit' is a constrained measure NARROWER than the pane, while 'full'
  *  fills (≈) the pane. */
@@ -180,7 +230,7 @@ async function openSettings(page: Page): Promise<void> {
 /** The exact accessible names of the two reading-width radios (must match the
  *  visible labels — SettingsPanel renders them as the radios' names). */
 const WIDTH_RADIO_NAME: Record<WidthMode, RegExp> = {
-  fit: /^Fixed \(792px\)$/,
+  fit: /^Fixed \(120 ch\)$/,
   full: /^Full width$/,
 };
 
@@ -207,16 +257,16 @@ test.beforeAll(() => {
 });
 
 /* ------------------------------------------------------------------ *
- * 1. DEFAULT is the predefined 792px "fit" measure; Settings → full   *
+ * 1. DEFAULT is the predefined 120ch "fit" measure; Settings → full   *
  * ------------------------------------------------------------------ */
-test('1: default is the constrained 792px measure; Settings grows the .md to full width', async () => {
+test('1: default is the constrained 120ch measure; Settings grows the .md to full width', async () => {
   const { dir, doc } = makeFixtureDir();
   // Fresh userData dir ⇒ guaranteed-empty localStorage: the default-'fit'
   // assertion below cannot be poisoned by a 'full' persisted by an aborted
   // sibling test or prior run.
   const ud = makeUserDataDir();
   // Hide Chat + narrow Explorer so the Viewer pane (~1260px) is genuinely WIDER
-  // than the 792px 'fit' measure — see WIDE_PANE_ARGS.
+  // than the ~860px 120ch 'fit' measure — see WIDE_PANE_ARGS.
   const { app, page } = await launch(dir, WIDE_PANE_ARGS, ud);
   try {
     await openMarkdownFile(page, doc);
@@ -259,7 +309,7 @@ test('2: switching to full width sticks across files (persisted)', async () => {
   // switching, so it must start from a guaranteed-empty localStorage — a 'full'
   // left by a sibling/prior run would make the first assertion false.
   const ud = makeUserDataDir();
-  // Same headroom so 'full' lands at (≈) the wide pane, not capped at ~792px.
+  // Same headroom so 'full' lands at (≈) the wide pane, not capped at ~860px.
   const { app, page } = await launch(dir, WIDE_PANE_ARGS, ud);
   try {
     await openMarkdownFile(page, doc);
@@ -381,6 +431,120 @@ test('5: the chosen full-width mode survives an app restart (localStorage rehydr
       }
     }
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(ud, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * 6. The Viewer-head QUICK TOGGLE flips fit↔full (+aria, +persist)    *
+ * ------------------------------------------------------------------ */
+// The .reading-width-btn drives the SAME App-lifted state as the Settings
+// radios: each click must flip data-mdwidth, mirror the mode in aria-pressed
+// (pressed = full-width ON), update the discoverability title, and persist the
+// flip to localStorage (the restart mechanism test 5 proves end to end).
+test('6: the header reading-width button toggles fit↔full with aria-pressed + persistence', async () => {
+  const { dir, doc } = makeFixtureDir();
+  const ud = makeUserDataDir();
+  const { app, page } = await launch(dir, WIDE_PANE_ARGS, ud);
+  try {
+    await openMarkdownFile(page, doc);
+    const btn = page.locator('.pane.viewer .reading-width-btn');
+
+    // Default: 'fit' — the toggle is visible and reads NOT pressed (full off).
+    await expect(btn).toBeVisible();
+    await expect(btn).toHaveAttribute('aria-pressed', 'false');
+    await expect(btn).toHaveAttribute('title', /fixed \(120 ch\).*Ctrl\/Cmd\+Shift\+W/);
+    expect(await mdWidthAttr(page)).toBe('fit');
+
+    // Click → 'full': attribute, pressed state, AND the persisted value flip.
+    await btn.click();
+    expect(await mdWidthAttr(page)).toBe('full');
+    await expect(btn).toHaveAttribute('aria-pressed', 'true');
+    await expect(btn).toHaveAttribute('title', /full.*Ctrl\/Cmd\+Shift\+W/);
+    expect(await storedMdWidth(page)).toBe('full');
+
+    // Click again → back to 'fit' (involutive), persisted again.
+    await btn.click();
+    expect(await mdWidthAttr(page)).toBe('fit');
+    await expect(btn).toHaveAttribute('aria-pressed', 'false');
+    expect(await storedMdWidth(page)).toBe('fit');
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(ud, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * 7. Ctrl+Shift+W (toggleReadingWidth command) flips fit↔full         *
+ * ------------------------------------------------------------------ */
+// The rebindable toggleReadingWidth command (default Ctrl/Cmd+Shift+W) goes
+// through the App keyboard dispatcher — the second quick route to the same
+// state. Pressed outside editable targets it must flip the mode and persist it;
+// the header button's aria-pressed must follow (one shared state, two surfaces).
+test('7: Ctrl+Shift+W toggles the reading width from the keyboard', async () => {
+  const { dir, doc } = makeFixtureDir();
+  const ud = makeUserDataDir();
+  const { app, page } = await launch(dir, WIDE_PANE_ARGS, ud);
+  try {
+    await openMarkdownFile(page, doc);
+    expect(await mdWidthAttr(page)).toBe('fit');
+
+    // Focus is on the just-clicked Explorer treeitem — a non-editable target,
+    // so the dispatcher handles the combo (and preventDefaults it).
+    await page.keyboard.press('Control+Shift+W');
+    expect(await mdWidthAttr(page)).toBe('full');
+    expect(await storedMdWidth(page)).toBe('full');
+    // The header toggle reflects the keyboard-driven change (shared state).
+    await expect(page.locator('.pane.viewer .reading-width-btn')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    // Press again → back to 'fit' (involutive), persisted.
+    await page.keyboard.press('Control+Shift+W');
+    expect(await mdWidthAttr(page)).toBe('fit');
+    expect(await storedMdWidth(page)).toBe('fit');
+  } finally {
+    await app.close();
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(ud, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * 8. SOURCE files follow the mode too (.code capped at 120ch in fit)  *
+ * ------------------------------------------------------------------ */
+// NEW BEHAVIOR (deliberate extension): the width mode now governs EVERY content
+// type, not just rendered markdown. A source file's .code grid must be capped
+// (120ch of ITS OWN 12.5px mono font ≈ ~900px, clearly narrower than the
+// ~1260px wide pane) and centered in 'fit', then grow to (≈) the pane in 'full'
+// via the same data-mdwidth attribute the .md column follows.
+test('8: a source file is capped at the 120ch measure in fit and grows to full width', async () => {
+  const { dir, code } = makeFixtureDir();
+  const ud = makeUserDataDir();
+  const { app, page } = await launch(dir, WIDE_PANE_ARGS, ud);
+  try {
+    await openSourceFile(page, code);
+
+    // Default 'fit': the .code grid is clearly NARROWER than the wide pane —
+    // if the new .code 120ch cap regressed (or never applied to SOURCE files),
+    // the block box would span ~the whole pane and this fails.
+    expect(await mdWidthAttr(page)).toBe('fit');
+    const fit = await measureCode(page);
+    expect(fit.code).toBeLessThan(fit.pane - 40);
+
+    // Toggle to 'full' via the header button (also proves the button renders
+    // for SOURCE files, not just markdown): the cap drops, .code spans the pane.
+    await page.locator('.pane.viewer .reading-width-btn').click();
+    expect(await mdWidthAttr(page)).toBe('full');
+    const full = await measureCode(page);
+    expect(full.code).toBeGreaterThan(fit.code);
+    expect(full.code).toBeGreaterThan(full.pane - 80);
+    expect(full.code).toBeLessThanOrEqual(full.pane);
+  } finally {
+    await app.close();
     rmSync(dir, { recursive: true, force: true });
     rmSync(ud, { recursive: true, force: true });
   }
