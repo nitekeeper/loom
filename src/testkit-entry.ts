@@ -217,6 +217,8 @@ export {
   toggleWidthMode,
   MD_WIDTH_KEY,
   MD_WIDTH_DEFAULT,
+  MD_WIDTH_ANNOUNCE_FIT,
+  MD_WIDTH_ANNOUNCE_FULL,
 } from './renderer/lib/md-width.js';
 export type { WidthMode } from './renderer/lib/md-width.js';
 

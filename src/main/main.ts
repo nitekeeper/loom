@@ -89,9 +89,9 @@ interface CaptureArgs {
   /** Capture-only flag to start a SOURCE file with all top-level folds
    *  collapsed (so a headless screenshot can show the folded state). */
   foldAll: boolean;
-  /** Capture-only RENDERED-markdown reading-column width mode override
+  /** Capture-only Viewer reading-column width mode override
    *  ('full' | 'fit'), or null to keep localStorage/default. Lets a headless
-   *  screenshot render either the predefined 792px measure or full width. */
+   *  screenshot render either the predefined 120ch measure or full width. */
   mdWidth: string | null;
   /** Capture-only flag to open the Keyboard Shortcuts panel on boot (so a
    *  headless screenshot can prove the modal). */

@@ -105,6 +105,14 @@ test('MD-WIDTH: toggleWidthMode flips fit↔full (involutive over the closed set
   assert.equal(toggleWidthMode(toggleWidthMode('full')), 'full');
 });
 
+test('MD-WIDTH: the shared announcement constants exist and carry the agreed copy', async () => {
+  const { MD_WIDTH_ANNOUNCE_FIT, MD_WIDTH_ANNOUNCE_FULL } = await kit();
+  // The single announcement source App.tsx + SettingsPanel.tsx both consume —
+  // pinned so the copy cannot silently drift or blank out on a refactor.
+  assert.equal(MD_WIDTH_ANNOUNCE_FIT, 'Reading width set to fixed, 120-character measure.');
+  assert.equal(MD_WIDTH_ANNOUNCE_FULL, 'Reading width set to full width.');
+});
+
 test('MD-WIDTH: the toggleReadingWidth command exists with default Ctrl+Shift+W', async () => {
   const { COMMANDS, DEFAULT_BINDINGS } = await kit();
   const spec = COMMANDS.find((c) => c.id === 'toggleReadingWidth');

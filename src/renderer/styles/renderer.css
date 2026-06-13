@@ -1079,8 +1079,9 @@ mark.search-hit {
      governs EVERY content type consistently. The rule sits on .code ITSELF so
      the ch unit resolves against the CODE font declared here (12.5px mono ⇒
      ~120 monospace columns), not the prose font. Lines longer than the cap
-     still overflow into the .viewer-body horizontal scroll, exactly as they
-     overflow the pane today — folding/gutter geometry is untouched. */
+     scroll within their own .ln-wrap row (the per-row overflow-x:auto below),
+     exactly as they handle pane overflow today — folding/gutter geometry is
+     untouched. */
   max-width: 120ch;
   margin-inline: auto;
 }

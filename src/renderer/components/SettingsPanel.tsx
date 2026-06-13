@@ -44,6 +44,7 @@ import type {
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
 } from 'react';
+import { MD_WIDTH_ANNOUNCE_FIT, MD_WIDTH_ANNOUNCE_FULL } from '../lib/md-width.js';
 import type { WidthMode } from '../lib/md-width.js';
 import type { Theme } from '../../shared/types.js';
 
@@ -145,11 +146,9 @@ export function SettingsPanel({
     (mode: WidthMode): void => {
       if (mode === mdWidth) return;
       onMdWidthChange(mode);
-      announce(
-        mode === 'full'
-          ? 'Reading width set to full width.'
-          : 'Reading width set to fixed, 120 characters.',
-      );
+      // Shared announcement copy (md-width.ts) — identical to the App-side
+      // button/shortcut announcement so the two surfaces can never drift.
+      announce(mode === 'full' ? MD_WIDTH_ANNOUNCE_FULL : MD_WIDTH_ANNOUNCE_FIT);
     },
     [mdWidth, onMdWidthChange, announce],
   );

@@ -50,7 +50,13 @@ import {
   TERMINAL_MIN_HEIGHT,
   TERMINAL_OPEN_KEY,
 } from '../lib/terminal-pane.js';
-import { readInitialMdWidth, persistMdWidth, toggleWidthMode } from '../lib/md-width.js';
+import {
+  readInitialMdWidth,
+  persistMdWidth,
+  toggleWidthMode,
+  MD_WIDTH_ANNOUNCE_FIT,
+  MD_WIDTH_ANNOUNCE_FULL,
+} from '../lib/md-width.js';
 import type { WidthMode } from '../lib/md-width.js';
 import { installGlobalAnchorGuard } from '../lib/anchor-guard.js';
 
@@ -973,9 +979,7 @@ export function App(): JSX.Element {
     const next = toggleWidthMode(mdWidth);
     setMdWidthMode(next);
     setStatusMessage(
-      next === 'full'
-        ? 'Reading width set to full width.'
-        : 'Reading width set to fixed, 120 characters.',
+      next === 'full' ? MD_WIDTH_ANNOUNCE_FULL : MD_WIDTH_ANNOUNCE_FIT,
     );
   }, [mdWidth, setMdWidthMode]);
 

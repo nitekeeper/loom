@@ -968,7 +968,12 @@ function ViewerContent({
             FULL-WIDTH IS ON ('full') and false meaning the fixed 120ch measure
             ('fit') — so AT reads "Full width, toggle button, pressed/not
             pressed", which maps 1:1 onto the mode. The Settings radios reflect
-            the same App-lifted state, so the two surfaces never diverge. */}
+            the same App-lifted state, so the two surfaces never diverge.
+            DELIBERATELY ungated (unlike the render-state-gated copy/fold
+            siblings): the mode is GLOBAL and sticky, so toggling it from an
+            image/binary view — where it has no visible effect — still
+            meaningfully presets the next text file, and the control keeps a
+            stable header position across every content type. */}
         <button
           type="button"
           className="reading-width-btn"

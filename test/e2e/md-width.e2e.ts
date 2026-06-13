@@ -72,6 +72,7 @@ import { _electron as electron } from 'playwright';
 import { existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { MD_WIDTH_ANNOUNCE_FULL } from '../../src/renderer/lib/md-width.js';
 import type { WidthMode } from '../../src/renderer/lib/md-width.js';
 
 /* ---- Build prerequisite ------------------------------------------------- */
@@ -463,6 +464,8 @@ test('6: the header reading-width button toggles fit↔full with aria-pressed + 
     await expect(btn).toHaveAttribute('aria-pressed', 'true');
     await expect(btn).toHaveAttribute('title', /full.*Ctrl\/Cmd\+Shift\+W/);
     expect(await storedMdWidth(page)).toBe('full');
+    // The polite live region announced the change (SC 4.1.3 — shared copy).
+    await expect(page.locator('[role="status"]', { hasText: MD_WIDTH_ANNOUNCE_FULL })).toHaveCount(1);
 
     // Click again → back to 'fit' (involutive), persisted again.
     await btn.click();
@@ -496,6 +499,8 @@ test('7: Ctrl+Shift+W toggles the reading width from the keyboard', async () => 
     await page.keyboard.press('Control+Shift+W');
     expect(await mdWidthAttr(page)).toBe('full');
     expect(await storedMdWidth(page)).toBe('full');
+    // The polite live region announced the keyboard-driven change (SC 4.1.3).
+    await expect(page.locator('[role="status"]', { hasText: MD_WIDTH_ANNOUNCE_FULL })).toHaveCount(1);
     // The header toggle reflects the keyboard-driven change (shared state).
     await expect(page.locator('.pane.viewer .reading-width-btn')).toHaveAttribute(
       'aria-pressed',

@@ -46,6 +46,16 @@ export function toggleWidthMode(mode: WidthMode): WidthMode {
   return mode === 'fit' ? 'full' : 'fit';
 }
 
+/** Polite live-region announcement copy for a width-mode change — the SINGLE
+ *  source shared by App.tsx (header button + Ctrl/Cmd+Shift+W command) and
+ *  SettingsPanel.tsx (radios) so the phrasing can never drift between the
+ *  surfaces. "120-character measure" (not "120 characters") is deliberate:
+ *  CSS `ch` is the width of the font's '0' glyph, so proportional prose fits
+ *  MORE than 120 average glyphs and the code cap includes the gutter columns —
+ *  the cap is a measure named in ch units, not an exact character count. */
+export const MD_WIDTH_ANNOUNCE_FIT = 'Reading width set to fixed, 120-character measure.';
+export const MD_WIDTH_ANNOUNCE_FULL = 'Reading width set to full width.';
+
 /** True only for the two valid modes — the single closed-set gate the hint
  *  + stored coercion both apply (anything else ⇒ null, never a CSS value). */
 function isWidthMode(raw: string | null): raw is WidthMode {
