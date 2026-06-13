@@ -24,8 +24,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
-import React from 'react';
+import React, { act } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { createRoot } from 'react-dom/client';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const TESTKIT = path.join(root, 'dist', 'testkit.cjs');
@@ -310,4 +311,178 @@ test('DIFF-RENDER ChangeKindGlyph: a deleted row gets a DISTINCT deleted glyph, 
   // The chip is decorative for AT (the FileDiff header's aria-label + visible
   // text label carry the kind, NFR-12) — pin the aria-hidden contract.
   assert.match(deletedHtml, /aria-hidden="true"/, 'the glyph chip is aria-hidden');
+});
+
+/* ------------------------------------------------------------------ *
+ * ChangesView header Split toggle (M2 — the composable diff+file split). *
+ * The ONLY header-level affordance that surfaces the new diff+file       *
+ * capability, so its aria-pressed correctness + label-in-name must be    *
+ * pinned. ChangesView is hook-free in its loading/unavailable/empty      *
+ * states (no <FileDiff> children, which carry useState), so it SSRs      *
+ * cleanly via renderToStaticMarkup under the testkit's bundled React.    *
+ * ------------------------------------------------------------------ */
+test('DIFF-RENDER ChangesView Split toggle: aria-pressed tracks splitView, label-in-name holds, icon present', async () => {
+  const { ChangesView } = await kit();
+  // Empty (clean working tree) state ⇒ no FileDiff children ⇒ hook-free SSR.
+  const emptyChanges = { available: true, base: 'main', files: [] };
+  const noop = () => {};
+
+  // Split OFF ⇒ aria-pressed="false".
+  const offHtml = renderToStaticMarkup(
+    React.createElement(ChangesView, {
+      changes: emptyChanges,
+      onClose: noop,
+      splitView: false,
+      onToggleSplit: noop,
+    }),
+  );
+  // The Split toggle exists and carries its mirrored class + icon. Match by
+  // TOKEN presence in the class list (not the exact byte-identical attribute
+  // string) so a benign refactor — adding a class, reordering, interleaving an
+  // attribute — does not turn this RED; the meaningful contract is "the diff-pane
+  // Split toggle (.changes-split-btn) is present", not the className ordering.
+  assert.match(offHtml, /class="[^"]*\bchanges-split-btn\b[^"]*"/, 'the ChangesView header Split toggle is present');
+  assert.match(offHtml, /class="[^"]*\bsplit-view-btn\b[^"]*"/, 'it carries the shared split-view-btn affordance class');
+  assert.match(offHtml, /<svg[^>]*>[\s\S]*<\/svg>/, 'the mirrored SplitIcon is rendered');
+  // aria-pressed reflects split OFF.
+  assert.match(offHtml, /aria-pressed="false"/, 'split OFF ⇒ aria-pressed="false"');
+  // SC 2.5.3 label-in-name: the visible text "Split" is the accessible name (no
+  // aria-label override on this button, so the visible <span>Split</span> IS the
+  // name) — pin the visible label is present.
+  assert.match(offHtml, /<span>Split<\/span>/, 'visible text "Split" present (= accessible name, label-in-name)');
+
+  // Split ON ⇒ aria-pressed="true" (the diff+file split is rendered).
+  const onHtml = renderToStaticMarkup(
+    React.createElement(ChangesView, {
+      changes: emptyChanges,
+      onClose: noop,
+      splitView: true,
+      onToggleSplit: noop,
+    }),
+  );
+  assert.match(onHtml, /aria-pressed="true"/, 'split ON ⇒ aria-pressed="true" (diff+file split rendered)');
+  // The toggle has NO per-pane aria-label (unlike the duplicated Viewer toggles)
+  // — it is the single diff-pane control, so its accessible name stays the bare
+  // visible "Split". Assert no aria-label is emitted on the changes Split button.
+  // Key off the .changes-split-btn token (not the exact class string) so the
+  // button is found regardless of class ordering / added attributes.
+  const changesBtn = onHtml.match(/<button[^>]*\bchanges-split-btn\b[^>]*>/);
+  assert.ok(changesBtn, 'the changes Split button tag is found');
+  assert.doesNotMatch(changesBtn[0], /aria-label=/, 'the single diff Split toggle keeps its visible-text name (no aria-label)');
+  // ACTIVATION CONTRACT (req #1): it is a real <button type="button"> so a click,
+  // Enter, and Space all natively activate its onClick (= onToggleSplit), and
+  // type="button" keeps it from submitting any ancestor form. renderToStaticMarkup
+  // cannot DISPATCH a click, so the actual onClick -> onToggleSplit FIRING is
+  // asserted in the dedicated click test BELOW (a real react-dom/client mount +
+  // dispatched click), not here. (tests-finding: the prior rationale assumed a
+  // react-dom/client mount would mismatch the bundled React; it does NOT for this
+  // hook-free shell — `react.element` is a globally-REGISTERED Symbol.for, so the
+  // node_modules react-dom mounts the bundle's element tree and wires its events.)
+  assert.match(changesBtn[0], /\btype="button"/, 'the diff Split toggle is a type="button" control (native click/Enter/Space activation)');
+});
+
+/* ------------------------------------------------------------------ *
+ * ChangesView Split toggle — ONCLICK WIRING (req #1).                 *
+ * The structural test above proves the button exists + carries the    *
+ * right aria/label/type; THIS one proves its onClick is actually wired *
+ * to the onToggleSplit prop (a regression that dropped the handler or  *
+ * wired it to onClose would pass every structural assertion yet break  *
+ * the feature, tests-finding). ChangesView's empty state is hook-free, *
+ * so a real react-dom/client mount works even though the testkit       *
+ * bundles its OWN React: a React element is tagged with                *
+ * Symbol.for('react.element') (a GLOBAL registry symbol, identical     *
+ * across instances), so the node_modules react-dom recognizes + mounts *
+ * the bundled element tree and attaches its event handlers. The click  *
+ * is dispatched as a real DOM MouseEvent and the passed spy must fire  *
+ * EXACTLY once — and only for the Split button, never onClose.         *
+ * ------------------------------------------------------------------ */
+test('DIFF-RENDER ChangesView Split toggle: a click invokes onToggleSplit (NOT onClose) — onClick wiring (req #1)', async () => {
+  const { ChangesView } = await kit();
+  const emptyChanges = { available: true, base: 'main', files: [] };
+
+  // A fresh jsdom document for this mount (the suite is otherwise DOM-free; this
+  // single test owns its own window so it never leaks globals to the others).
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    pretendToBeVisual: true,
+  });
+  const prev = {
+    window: globalThis.window,
+    document: globalThis.document,
+    navigator: globalThis.navigator,
+    actEnv: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.navigator = dom.window.navigator;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+  let toggleFired = 0;
+  let closeFired = 0;
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  try {
+    await act(async () => {
+      root.render(
+        React.createElement(ChangesView, {
+          changes: emptyChanges,
+          onClose: () => {
+            closeFired += 1;
+          },
+          splitView: false,
+          onToggleSplit: () => {
+            toggleFired += 1;
+          },
+        }),
+      );
+    });
+
+    const btn = container.querySelector('.changes-split-btn');
+    assert.ok(btn, 'the Split toggle is mounted');
+    assert.equal(btn.tagName, 'BUTTON', 'it is a real <button>');
+
+    await act(async () => {
+      btn.dispatchEvent(
+        new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }),
+      );
+    });
+
+    assert.equal(toggleFired, 1, 'a click invokes onToggleSplit exactly once');
+    assert.equal(closeFired, 0, 'the click does NOT invoke onClose (correct handler wired)');
+  } finally {
+    await act(async () => {
+      root.unmount();
+    });
+    // Restore the prior globals so the rest of the (DOM-free) suite is untouched.
+    globalThis.window = prev.window;
+    globalThis.document = prev.document;
+    globalThis.navigator = prev.navigator;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = prev.actEnv;
+  }
+});
+
+test('DIFF-RENDER ChangesView Split toggle: present in EVERY terminal state (loading / unavailable / empty)', async () => {
+  const { ChangesView } = await kit();
+  const noop = () => {};
+  // The header (and its Split toggle) is shared by all three hook-free states so
+  // the diff+file split is reachable from the header regardless of git state.
+  const states = [
+    null, // loading
+    { available: false, base: '', files: [] }, // not a git repo
+    { available: true, base: 'main', files: [] }, // clean working tree
+  ];
+  for (const changes of states) {
+    const html = renderToStaticMarkup(
+      React.createElement(ChangesView, {
+        changes,
+        onClose: noop,
+        splitView: false,
+        onToggleSplit: noop,
+      }),
+    );
+    assert.match(
+      html,
+      /class="[^"]*\bchanges-split-btn\b[^"]*"/,
+      `Split toggle present for changes=${JSON.stringify(changes)}`,
+    );
+  }
 });

@@ -109,6 +109,29 @@ function ReadingWidthIcon(): JSX.Element {
   );
 }
 
+/** Split-pane glyph for the split-view toggle (a rectangle divided into two
+ *  columns by a vertical seam). ReadingWidthIcon idiom: inline SVG, viewBox 24,
+ *  stroke=currentColor, strokeWidth 2, aria-hidden — decorative; the accessible
+ *  name comes from the button's visible text. */
+function SplitIcon(): JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" ry="2" />
+      <path d="M12 4v16" />
+    </svg>
+  );
+}
+
 /** Checkmark glyph shown transiently after a successful copy. Decorative. */
 function CheckIcon(): JSX.Element {
   return (
@@ -708,7 +731,42 @@ export function Viewer({
   targetLine,
   mdWidth,
   onToggleMdWidth,
+  splitView,
+  onToggleSplit,
+  splitRole,
+  splitActive,
+  onActivate,
 }: ViewerProps): JSX.Element {
+  // Shared split-pane wiring for BOTH the empty and populated <section>s: the
+  // split-pane modifier classes (role + active accent border) and the activate
+  // handler (a pointer-down / focus-in on the pane makes it the active one so
+  // the next Explorer pick lands here). No-ops when not rendered in a split.
+  const splitClass = splitRole
+    ? ` viewer-split-pane viewer-pane-${splitRole}` + (splitActive ? ' active' : '')
+    : '';
+  const activateProps = splitRole
+    ? { onPointerDownCapture: onActivate, onFocusCapture: onActivate }
+    : {};
+  // A11Y: in a split, give each file pane a DISTINCT accessible name (so an AT
+  // user can tell the two "File viewer" regions apart) AND a programmatic active
+  // marker (aria-current) that tracks which pane the next Explorer pick fills —
+  // the accent ring is then not the ONLY active cue (SC 1.3.1/1.4.1). The single
+  // (non-split) pane keeps the plain name + no aria-current, byte-for-byte
+  // today's. The diff (ChangesView) pane is intentionally NOT a doc target, so
+  // it gets none of this. Computed once, shared by the empty + populated headers.
+  // aria-current uses the "location" token (the defined "this is the current
+  // location / you are here" value), NOT the bare boolean form: this <section> is
+  // a region landmark (it carries an aria-label), and aria-current="true" on a
+  // landmark is non-standard usage that some AT announce oddly — "location" is the
+  // closest defined token for "the active reading pane" and maps cleanly (a-nit).
+  const paneAriaProps = splitRole
+    ? {
+        'aria-label':
+          splitRole === 'left' ? 'File viewer (left pane)' : 'File viewer (right pane)',
+        'aria-current': splitActive ? ('location' as const) : undefined,
+      }
+    : { 'aria-label': 'File viewer' };
+
   // Empty state — reinforce the principle (FR-42).
   if (content === null) {
     return (
@@ -718,9 +776,35 @@ export function Viewer({
       // programmatically conveyed — not styled text alone.
       // data-mdwidth is applied here too (as on the populated branch) so the
       // CSS measure is governed consistently regardless of which branch renders.
-      <section className="pane viewer" aria-label="File viewer" data-mdwidth={mdWidth}>
+      <section
+        className={'pane viewer' + splitClass}
+        data-mdwidth={mdWidth}
+        {...paneAriaProps}
+        {...activateProps}
+      >
         <div className="viewer-head">
           <span className="crumb">no file selected</span>
+          {/* The DEFAULT single-pane empty state is byte-for-byte today's (just
+              the breadcrumb + EMPTY ghost chip) — a DELIBERATE constraint (spec:
+              "single doc … must behave EXACTLY as before"). So the reading-width
+              + Split toggles are omitted here intentionally; entering the split
+              with no file open stays reachable via the rebindable Ctrl/Cmd+\
+              command (and is listed in the Shortcuts panel with its live
+              binding). Consequence for App.closeSplit's focus rescue: when split
+              closes onto an EMPTY single pane, `.pane.viewer .split-view-btn` has
+              no match, so the rescue falls through to the Explorer's active
+              treeitem (then document.body) — a valid, non-stranding target. Only
+              WHEN this empty pane is part of a split do the toggles appear, so a
+              comparison pane can be opened/closed before a file is picked. */}
+          {splitRole && (
+            <ViewerHeadToggles
+              mdWidth={mdWidth}
+              onToggleMdWidth={onToggleMdWidth}
+              splitView={splitView}
+              onToggleSplit={onToggleSplit}
+              splitRole={splitRole}
+            />
+          )}
           {/* UX-04: a muted right-aligned ghost chip (styled like
               .render-tag.none) keeps the header's two-ended shape stable
               between the empty and populated states. Purely decorative —
@@ -729,6 +813,20 @@ export function Viewer({
           <span className="render-tag none viewer-empty-tag" aria-hidden="true">
             EMPTY
           </span>
+          {/* The split RIGHT pane keeps a close (×) even when empty so the
+              comparison pane can be dismissed (turns split off) before a file
+              is picked. onClose for the right pane is App's closeSplit. */}
+          {splitRole === 'right' && (
+            <button
+              type="button"
+              className="iconbtn viewer-close viewer-close-split"
+              aria-label="Close split reading pane"
+              title="Close split reading pane"
+              onClick={onClose}
+            >
+              <CloseIcon />
+            </button>
+          )}
         </div>
         <div className="empty-viewer">
           <h2 className="empty-viewer-title">No file selected</h2>
@@ -750,7 +848,81 @@ export function Viewer({
       targetLine={targetLine}
       mdWidth={mdWidth}
       onToggleMdWidth={onToggleMdWidth}
+      splitView={splitView}
+      onToggleSplit={onToggleSplit}
+      splitRole={splitRole}
+      splitClass={splitClass}
+      activateProps={activateProps}
+      paneAriaProps={paneAriaProps}
     />
+  );
+}
+
+/** The Viewer head's reading-width + split toggle buttons — shared verbatim by
+ *  the empty and populated headers so the two surfaces never diverge. Both are
+ *  GLOBAL toggles (sticky across files), so they render on EVERY content type. */
+function ViewerHeadToggles({
+  mdWidth,
+  onToggleMdWidth,
+  splitView,
+  onToggleSplit,
+  splitRole,
+}: {
+  mdWidth: WidthMode;
+  onToggleMdWidth(): void;
+  splitView: boolean;
+  onToggleSplit(): void;
+  /** This pane's split role, when rendered inside a split — disambiguates the
+   *  otherwise-identical Split toggle so an AT user can tell the two panes'
+   *  buttons apart. undefined for the single pane (constant name = visible
+   *  text). */
+  splitRole?: 'left' | 'right';
+}): JSX.Element {
+  return (
+    <>
+      {/* Reading-width quick toggle — flips the reading column fit↔full for
+          EVERY content type (the data-mdwidth attribute on the <section>
+          governs both the .md and the .code measure). ARIA: a TOGGLE button
+          whose constant accessible name is its visible text ("Full width" —
+          SC 2.5.3 label-in-name), aria-pressed=true ⇒ FULL-WIDTH IS ON. */}
+      <button
+        type="button"
+        className="reading-width-btn"
+        aria-pressed={mdWidth === 'full'}
+        title={`Reading width: ${
+          mdWidth === 'full' ? 'full' : 'fixed (120 ch)'
+        } (Ctrl/Cmd+Shift+W)`}
+        onClick={() => onToggleMdWidth()}
+      >
+        <ReadingWidthIcon />
+        <span>Full width</span>
+      </button>
+      {/* Split reading pane toggle — opens/closes the side-by-side compare
+          pane. Mirrors the reading-width-btn idiom (real <button>, keyboard-
+          operable, shortcut in the title). ARIA: a TOGGLE button; in the single
+          pane its accessible name IS its visible text ("Split" — SC 2.5.3
+          label-in-name). In a split BOTH panes render this button, so it carries
+          a per-pane aria-label ("Split reading pane (left/right pane)") to keep
+          the two distinguishable for AT navigation — the visible word "Split"
+          stays a substring so label-in-name (SC 2.5.3) still holds.
+          aria-pressed=true ⇒ split IS ON. Shared with the rebindable Ctrl/Cmd+\\
+          command. */}
+      <button
+        type="button"
+        className="split-view-btn"
+        aria-pressed={splitView}
+        aria-label={
+          splitRole
+            ? `Split reading pane (${splitRole} pane)`
+            : undefined
+        }
+        title={`Split reading pane: ${splitView ? 'on' : 'off'} (Ctrl/Cmd+\\)`}
+        onClick={() => onToggleSplit()}
+      >
+        <SplitIcon />
+        <span>Split</span>
+      </button>
+    </>
   );
 }
 
@@ -764,6 +936,12 @@ function ViewerContent({
   targetLine,
   mdWidth,
   onToggleMdWidth,
+  splitView,
+  onToggleSplit,
+  splitRole,
+  splitClass,
+  activateProps,
+  paneAriaProps,
 }: {
   content: FileContent;
   onClose(): void;
@@ -772,6 +950,24 @@ function ViewerContent({
   targetLine: { path: string; line: number; nonce: number } | null;
   mdWidth: WidthMode;
   onToggleMdWidth(): void;
+  splitView: boolean;
+  onToggleSplit(): void;
+  splitRole?: 'left' | 'right';
+  /** Precomputed split modifier classes (role + active accent border). */
+  splitClass: string;
+  /** Precomputed activate handlers (pointer-down / focus-in), or {} when not
+   *  rendered in a split. */
+  activateProps: {
+    onPointerDownCapture?(): void;
+    onFocusCapture?(): void;
+  };
+  /** Precomputed pane accessible name + active marker (aria-label per-pane in a
+   *  split, aria-current on the active one) — shared verbatim with the empty
+   *  header so the two surfaces never diverge. */
+  paneAriaProps: {
+    'aria-label': string;
+    'aria-current'?: 'location';
+  };
 }): JSX.Element {
   const { dispatch, meta, text, path } = content;
   const { kind, renderState, safetyBanner } = dispatch;
@@ -936,8 +1132,15 @@ function ViewerContent({
 
   return (
     // Same named region as the empty state (A11Y-CLOSE-04) so the Viewer is a
-    // consistently locatable landmark whether or not a file is open.
-    <section className="pane viewer" aria-label="File viewer" data-mdwidth={mdWidth}>
+    // consistently locatable landmark whether or not a file is open. In a
+    // split, splitClass adds the role + active accent border, and activateProps
+    // makes a pointer-down / focus-in here select this pane as the active one.
+    <section
+      className={'pane viewer' + splitClass}
+      data-mdwidth={mdWidth}
+      {...paneAriaProps}
+      {...activateProps}
+    >
       <div className="viewer-head">
         <Breadcrumb path={path} />
         {/* Copy rendered — RENDERED (.md) files only. Copies the CLEANED,
@@ -958,34 +1161,17 @@ function ViewerContent({
             <span>{copied ? 'Copied' : 'Copy rendered'}</span>
           </button>
         )}
-        {/* Reading-width quick toggle — flips the reading column fit↔full for
-            EVERY content type (the data-mdwidth attribute on this <section>
-            governs both the .md and the .code measure). Mirrors the
-            copy-rendered-btn idiom: real <button type="button">, keyboard-
-            operable, shortcut documented in the title. ARIA: this is a TOGGLE
-            button whose constant accessible name is its visible text ("Full
-            width" — SC 2.5.3 label-in-name), with aria-pressed=true meaning
-            FULL-WIDTH IS ON ('full') and false meaning the fixed 120ch measure
-            ('fit') — so AT reads "Full width, toggle button, pressed/not
-            pressed", which maps 1:1 onto the mode. The Settings radios reflect
-            the same App-lifted state, so the two surfaces never diverge.
-            DELIBERATELY ungated (unlike the render-state-gated copy/fold
-            siblings): the mode is GLOBAL and sticky, so toggling it from an
-            image/binary view — where it has no visible effect — still
-            meaningfully presets the next text file, and the control keeps a
-            stable header position across every content type. */}
-        <button
-          type="button"
-          className="reading-width-btn"
-          aria-pressed={mdWidth === 'full'}
-          title={`Reading width: ${
-            mdWidth === 'full' ? 'full' : 'fixed (120 ch)'
-          } (Ctrl/Cmd+Shift+W)`}
-          onClick={() => onToggleMdWidth()}
-        >
-          <ReadingWidthIcon />
-          <span>Full width</span>
-        </button>
+        {/* Reading-width + split-view quick toggles (every content type) —
+            shared verbatim with the empty header (ViewerHeadToggles) so the two
+            surfaces never diverge. Both are GLOBAL, sticky toggles, so they
+            render on EVERY render state and keep a stable header position. */}
+        <ViewerHeadToggles
+          mdWidth={mdWidth}
+          onToggleMdWidth={onToggleMdWidth}
+          splitView={splitView}
+          onToggleSplit={onToggleSplit}
+          splitRole={splitRole}
+        />
         {/* SC 4.1.3: announce the successful copy politely so the action is
             perceivable to assistive tech regardless of focus location. */}
         <span className="sr-only" role="status" aria-live="polite">
@@ -1014,15 +1200,19 @@ function ViewerContent({
         >
           {renderState}
         </span>
-        {/* Close the open file → empty Viewer state (FR-42). Only rendered with
-            a file open (this branch); the empty state below omits it. Reuses
-            the .iconbtn affordances for a visible :focus-visible ring (FR-54).
-            Esc is documented in the title so the keyboard path is discoverable. */}
+        {/* Close affordance. For the single pane (and the split LEFT pane) this
+            closes the open file → empty Viewer state (FR-42); Esc is documented
+            in the title. For the split RIGHT pane it turns split OFF and returns
+            to the single pane (spec §7) — a distinct accessible name so AT
+            conveys the different outcome. Reuses the .iconbtn affordances for a
+            visible :focus-visible ring (FR-54). */}
         <button
           type="button"
-          className="iconbtn viewer-close"
-          aria-label="Close file"
-          title="Close file (Esc)"
+          className={
+            'iconbtn viewer-close' + (splitRole === 'right' ? ' viewer-close-split' : '')
+          }
+          aria-label={splitRole === 'right' ? 'Close split reading pane' : 'Close file'}
+          title={splitRole === 'right' ? 'Close split reading pane' : 'Close file (Esc)'}
           onClick={onClose}
         >
           <CloseIcon />
@@ -1069,4 +1259,20 @@ export interface ViewerProps {
    *  with the rebindable Ctrl/Cmd+Shift+W command — persists + announces).
    *  Wired to the header reading-width button. */
   onToggleMdWidth(): void;
+  /** Whether the split reading pane (side-by-side compare) is ON. Drives the
+   *  header split-toggle button's aria-pressed. Default false ⇒ single pane. */
+  splitView: boolean;
+  /** Toggle the split reading pane on/off (the App-owned toggle, shared with
+   *  the rebindable Ctrl/Cmd+\\ command). Wired to the header split button. */
+  onToggleSplit(): void;
+  /** This Viewer's role when rendered inside the split — 'left' or 'right' —
+   *  or undefined for the single (non-split) pane. Drives the active-pane
+   *  visual indicator + activation wiring. */
+  splitRole?: 'left' | 'right';
+  /** True when this split pane is the ACTIVE one (an Explorer selection opens
+   *  here). Paints the subtle accent active border. Ignored when not split. */
+  splitActive?: boolean;
+  /** Make this split pane the active one (on click / focus-in). Ignored when
+   *  not split. */
+  onActivate?(): void;
 }
