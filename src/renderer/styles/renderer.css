@@ -178,6 +178,17 @@ button, [role="button"], [role="treeitem"], [role="tab"], a, [tabindex] {
   .win-ctl {
     border-color: ButtonText;
   }
+  /* The active split-pane indicator is a box-shadow inset ring, which
+     forced-colors strips entirely — so the at-rest "which pane is active" cue
+     would vanish in High Contrast. Re-pin it with an OUTLINE (forced-colors
+     preserves outline), inset via a negative offset so it matches the
+     box-shadow's no-layout-shift intent. Uses system Highlight, mirroring the
+     focus-ring + icon-button border fallbacks above. (CSS-finding: HC active
+     pane.) */
+  .viewer-split-pane.active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }
 
 /* ============================================================
@@ -576,6 +587,99 @@ html[data-platform='darwin'] .win-controls { display: none; }
 /* Row-axis variant for the terminal-dock splitter drag. */
 .win.dragging-row { user-select: none; cursor: row-resize; }
 .win.dragging-row .body { transition: none; }
+
+/* ============================================================
+   Split reading pane (center track, vertical split)
+   ------------------------------------------------------------
+   When split is on, the center 1fr Viewer track holds a
+   .viewer-split-wrap sub-grid of two reading panes divided by an
+   IN-FLOW vertical divider: [left | divider | right]. The left
+   pane's share is --viewer-split (a unitless fraction set on .body
+   by App, clamped in lib/viewer-split.ts so neither pane collapses);
+   the right pane takes the rest. Default off ⇒ a single Viewer, so
+   none of these rules apply and the layout is byte-for-byte today's.
+   ============================================================ */
+.viewer-split-wrap {
+  display: grid;
+  /* The two panes share the wrap MINUS the divider (--viewer-divider-w, fed
+     from the single TS constant VIEWER_DIVIDER_W); the left pane takes
+     --viewer-split of THAT splittable width, the divider its own width, the
+     right pane the remainder (1fr). Reserving the divider out of the panes'
+     shared 100% (rather than charging its 8px to the right 1fr) keeps the
+     divider out of the floor math. minmax(0, …) lets each pane actually shrink.
+     NOTE: the VIEWER_PANE_MIN (240px) floor is NOT a CSS min-width here (a
+     min-width would clip/overflow the wrap once the track drops below 2*min +
+     divider); it is enforced in JS by clampSplitRatio, which the App re-runs on
+     window resize AND via a ResizeObserver on this wrap so EVERY track-width
+     change (Explorer/Chat drag/toggle, terminal dock) re-clamps the ratio. So
+     the floor is a JS invariant the grid lays out — not a CSS-alone guarantee. */
+  grid-template-columns:
+    minmax(0, calc(var(--viewer-split, 0.5) * (100% - var(--viewer-divider-w, 8px))))
+    var(--viewer-divider-w, 8px)
+    minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* SOLO wrap (diffMode ON, split OFF): the wrap holds ONLY the diff pane and lays
+   it out FULL WIDTH — a single 1fr column with no divider/right tracks. The diff
+   lives at a stable JSX position inside .viewer-split-wrap in BOTH the solo and
+   split layouts so toggling the split never remounts it (F1); the solo modifier
+   makes the full-width case render byte-for-byte like the pre-split full-width
+   Changes (one column filling the center 1fr track). */
+.viewer-split-wrap--solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+/* Each split pane fills its grid cell and clips its own overflow so the two
+   reading columns scroll independently. (display:flex/flex-direction:column
+   come from the base .pane rule — not repeated here.) */
+.viewer-split-wrap > .pane.viewer {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* The LEFT pane carries the inter-pane border so the seam reads as a divider
+   even at rest (the divider's own 2px line sits over it on hover/focus). The
+   branch Changes viewer can occupy the LEFT half (split + diffMode: diff LEFT,
+   file RIGHT), so it carries the SAME seam — it lands in the first grid column
+   by source order, no role class needed. Its own .pane.viewer.changes rule
+   already gives it flex-column + overflow:hidden, and .changes-list scrolls
+   independently, so it fits the left cell exactly like a Viewer (the grid
+   `> .pane.viewer` rule below also pins min-width:0 so neither half collapses).
+   The :not(.viewer-split-wrap--solo) guard keeps the seam OFF the full-width
+   solo diff (split OFF, diffMode ON) so that case stays byte-for-byte today's
+   border-less full-width Changes. */
+.viewer-split-pane.viewer-pane-left,
+.viewer-split-wrap:not(.viewer-split-wrap--solo) > .pane.viewer.changes { border-right: 1px solid var(--border-soft); }
+/* Active-pane indicator: a subtle accent inset ring on the active pane so the
+   user sees which pane the next Explorer pick fills. Reuses the theme accent;
+   inset so it never shifts layout (SC 1.4.1 — paired with the header toggle's
+   aria cues, not color-only). */
+.viewer-split-pane.active { box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--accent) 55%, transparent); }
+
+/* The in-flow VERTICAL divider between the two panes. It reuses the base
+   .splitter affordances (2px seam, hover/drag accent, focus-visible bar+halo)
+   but is a GRID ITEM, not absolutely positioned — so it must reset the abspos
+   geometry the base rule sets and live in its own divider column. Its width
+   reads the SAME --viewer-divider-w the grid reserves, so the seam and the
+   reserved track are always the same width. */
+.splitter.viewer-split-divider {
+  position: relative;
+  top: auto; bottom: auto; left: auto; right: auto;
+  transform: none;
+  width: var(--viewer-divider-w, 8px);
+  align-self: stretch;
+  z-index: 1;
+}
+/* This divider is an IN-FLOW grid item inside .viewer-split-wrap, which is
+   overflow:hidden — so unlike the abspos column/row splitters (whose halos sit
+   outside any clipping ancestor), the base focus halo's 2px box-shadow at the
+   ::before's top/bottom edges (top:0; bottom:0) would be shaved by the wrap clip.
+   Inset the seam ::before by 2px top/bottom so its full 2px focus halo lands
+   INSIDE the clipped box — pixel-parity with the other splitters' unclipped
+   focus ring (css-nit). The seam stays effectively full-height (a 2px inset on a
+   tall divider is imperceptible at rest); only the focus halo benefits. */
+.splitter.viewer-split-divider::before { top: 2px; bottom: 2px; }
 
 /* ============================================================
    Linux frameless edge-resize handles (WindowResizeHandles.tsx)
@@ -1012,6 +1116,50 @@ mark.search-hit {
 .crumb { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-dim); display: flex; gap: 4px; align-items: center; }
 .crumb b { color: var(--text); font-weight: 600; }
 .crumb .sl { color: var(--text-faint); }
+/* Narrow-pane squeeze (split panes can drag to VIEWER_PANE_MIN = 240px, below
+   the single pane's old 320px floor): the breadcrumb ABSORBS the FIRST squeeze
+   so the fixed-width right-edge controls keep their full size as long as the row
+   fits. The crumb shrinks (flex:1 1 auto + min-width:0) and its trailing segment
+   ellipsizes; every header CONTROL is pinned (flex:0 0 auto) so it never shrinks.
+   Applies to BOTH the file panes' .crumb and the diff pane's .changes-crumb.
+
+   CSS-finding (Major): the crumb squeeze alone does NOT guarantee the controls
+   are never clipped — once the SUM of the pinned controls (copy-rendered +
+   reading-width + split + fold-all + render-tag + close + gaps + padding) itself
+   exceeds the 240px pane width, the crumb has already collapsed to 0 and the
+   RIGHTMOST controls (render-tag, the close ×) would be sheared off by the pane's
+   overflow:hidden. The squeeze is the FIRST line of defence (keeps the row intact
+   while it fits); the `.viewer-head { overflow-x: auto }` below is the SECOND —
+   it lets the residual overflow SCROLL horizontally within the header so the
+   close/render-tag stay reachable for pointer users even at the 240px floor,
+   instead of being clipped off-screen. Esc/Tab already keep them keyboard-
+   reachable (the buttons stay in the DOM); this restores the pointer + visual-
+   discoverability path the crumb squeeze could not cover on its own. */
+.viewer-head .crumb,
+.viewer-head .changes-crumb { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.viewer-head .crumb > b,
+.viewer-head .crumb > span,
+.viewer-head .changes-crumb > b {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.viewer-head > .render-tag,
+.viewer-head > .copy-rendered-btn,
+.viewer-head > .reading-width-btn,
+.viewer-head > .split-view-btn,
+.viewer-head > .fold-all-btn,
+.viewer-head > .iconbtn { flex: 0 0 auto; }
+/* SECOND line of defence (CSS-finding Major): when the pinned controls' summed
+   width still exceeds the pane (≤240px split floor), let the header itself scroll
+   horizontally so the rightmost controls (render-tag + close) stay reachable
+   instead of being clipped by the pane's overflow:hidden. A no-op at comfortable
+   widths (nothing overflows ⇒ no scrollbar appears); only engages at the floor. */
+.viewer-head { overflow-x: auto; overflow-y: hidden; }
+/* Pin the diff pane's leading branch glyph so the now-squeezable .changes-crumb
+   shrinks its <b> label (which ellipsizes) and NEVER the icon — mirrors the way
+   the file-pane header controls are all flex:0 0 auto. The SVG carries intrinsic
+   size, but this makes the guard explicit rather than relying on replaced-element
+   min-content sizing (css-nit). */
+.viewer-head .changes-crumb > .changes-head-icon { flex: 0 0 auto; }
 .render-tag {
   margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
   letter-spacing: .04em; padding: 3px 9px; border-radius: 6px;
@@ -1191,25 +1339,27 @@ mark.search-hit {
    shares the exact same affordances; the Settings panel's radio group
    (.set-radio) remains the canonical control over the same lifted state. */
 .copy-rendered-btn,
-.reading-width-btn {
+.reading-width-btn,
+.split-view-btn {
   display: inline-flex; align-items: center; gap: 6px;
   font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
   letter-spacing: .03em; color: var(--text-dim);
   background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 6px; padding: 3px 9px; cursor: pointer;
 }
-.copy-rendered-btn svg, .reading-width-btn svg { flex: 0 0 auto; }
-.copy-rendered-btn:hover, .reading-width-btn:hover { color: var(--text); background: var(--panel-3); }
-.copy-rendered-btn:focus-visible, .reading-width-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.copy-rendered-btn svg, .reading-width-btn svg, .split-view-btn svg { flex: 0 0 auto; }
+.copy-rendered-btn:hover, .reading-width-btn:hover, .split-view-btn:hover { color: var(--text); background: var(--panel-3); }
+.copy-rendered-btn:focus-visible, .reading-width-btn:focus-visible, .split-view-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .copy-rendered-btn.copied {
   color: var(--live);
   border-color: color-mix(in oklab, var(--live) 40%, transparent);
   background: color-mix(in oklab, var(--live) 12%, transparent);
 }
-/* Pressed (= full-width ON) state of the reading-width toggle: the accent
+/* Pressed (= ON) state of the reading-width + split-view toggles: the accent
    tint mirrors the .fold-all-btn/.copied "active" treatment so aria-pressed
    has a VISIBLE analogue, not a color-only hover difference (SC 1.4.1). */
-.reading-width-btn[aria-pressed="true"] {
+.reading-width-btn[aria-pressed="true"],
+.split-view-btn[aria-pressed="true"] {
   color: var(--accent);
   border-color: color-mix(in oklab, var(--accent) 40%, transparent);
   background: color-mix(in oklab, var(--accent) 12%, transparent);

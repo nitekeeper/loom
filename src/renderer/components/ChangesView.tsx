@@ -30,6 +30,36 @@ export interface ChangesViewProps {
   /** Close the Changes viewer → return to the previously-selected file's
    *  Viewer (re-click the toggle / Esc / the × button). */
   onClose(): void;
+  /** Whether the split reading pane is ON. Drives the header Split toggle's
+   *  aria-pressed (true ⇒ this diff sits in the LEFT half beside a file pane). */
+  splitView: boolean;
+  /** Toggle the split on/off (App-owned, shared with the Ctrl/Cmd+\ command).
+   *  ENTERING the split puts a normal file pane beside this diff; EXITING
+   *  returns the diff to full width. */
+  onToggleSplit(): void;
+}
+
+/** Split-pane glyph for the header Split toggle — a rectangle split into two
+ *  columns by a vertical seam. Mirrors Viewer's SplitIcon (inline SVG, viewBox
+ *  24, currentColor stroke, aria-hidden — decorative; the button's visible text
+ *  carries the name) so the diff header's toggle reads identically. */
+function SplitIcon(): JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="4" width="18" height="16" rx="2" ry="2" />
+      <path d="M12 4v16" />
+    </svg>
+  );
 }
 
 /** A small branch glyph for the header — decorative (aria-hidden); the region's
@@ -56,7 +86,12 @@ function BranchIcon(): JSX.Element {
   );
 }
 
-export function ChangesView({ changes, onClose }: ChangesViewProps): JSX.Element {
+export function ChangesView({
+  changes,
+  onClose,
+  splitView,
+  onToggleSplit,
+}: ChangesViewProps): JSX.Element {
   const base = changes?.base ?? '';
   const files = changes?.files ?? [];
   const crumb = base.length > 0 ? `Changes vs ${base}` : 'Changes';
@@ -120,6 +155,24 @@ export function ChangesView({ changes, onClose }: ChangesViewProps): JSX.Element
         >
           {files.length} {files.length === 1 ? 'file' : 'files'}
         </span>
+        {/* Split reading pane toggle — mirrors the Viewer header Split toggle
+            (same .split-view-btn affordances, icon, label, aria-pressed + the
+            shared Ctrl/Cmd+\ shortcut in the title). Turning it ON puts a normal
+            file pane beside this diff (diff LEFT, file RIGHT); turning it OFF
+            returns the diff to full width. ARIA: a TOGGLE button whose constant
+            accessible name is its visible text ("Split" — SC 2.5.3
+            label-in-name), aria-pressed=true ⇒ the split IS on. This is an
+            ADDITION to the header chrome — the diff body markup is untouched. */}
+        <button
+          type="button"
+          className="split-view-btn changes-split-btn"
+          aria-pressed={splitView}
+          title={`Split reading pane: ${splitView ? 'on' : 'off'} (Ctrl/Cmd+\\)`}
+          onClick={() => onToggleSplit()}
+        >
+          <SplitIcon />
+          <span>Split</span>
+        </button>
         {/* Close → back to the previously-selected file's Viewer. Reuses the
             .iconbtn .viewer-close affordances (focus-visible ring); Esc is
             documented in the title so the keyboard path is discoverable. */}

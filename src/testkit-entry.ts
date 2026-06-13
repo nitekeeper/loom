@@ -69,6 +69,16 @@ export type { DiffRow, DiffRowClass } from './renderer/lib/diff-view.js';
 // copy, so a hooks component cannot render under the suite's react-dom/server).
 export { DiffBody, ChangeKindGlyph } from './renderer/components/FileDiff.js';
 
+// The branch "Changes" viewer SHELL. Re-exported so the node --test tier can
+// renderToStaticMarkup the REAL component in its hook-free states (changes=null
+// / unavailable / empty — no <FileDiff> children, which DO carry useState) and
+// pin the NEW header Split toggle's contract: aria-pressed tracks splitView, the
+// visible text "Split" equals the accessible name (SC 2.5.3 label-in-name), and
+// the SplitIcon is present — the only header affordance that surfaces the
+// composable diff+file split (M2). The diff BODY markup is proven separately via
+// DiffBody/buildDiffRows; this pins only the added header control.
+export { ChangesView } from './renderer/components/ChangesView.js';
+
 // The Explorer's dir-row folder glyph (inline SVG, DiffIcon idiom). Re-exported
 // so the node --test tier can renderToStaticMarkup the ACTUAL component and pin
 // the SVG contract (aria-hidden, currentColor stroke) + the absence of the
@@ -289,6 +299,30 @@ export {
   TERMINAL_HEIGHT_KEY,
   TERMINAL_OPEN_KEY,
 } from './renderer/lib/terminal-pane.js';
+
+// Pure split reading-pane geometry (the side-by-side compare panes' ratio
+// clamp + persistence keys + active-pane resolution). Re-exported so the node
+// --test suite can pin the clamp range (each pane keeps VIEWER_PANE_MIN /
+// degenerate-width centre pin), the stored-ratio coercion, the persisted key
+// names, and the active-pane/selection logic without a DOM. The stateful
+// consumer (useViewerSplit + ColSplitter) stays in App.tsx; only the pure fns
+// + constants + type surface here. Mirrors the terminal-pane export above.
+export {
+  clampSplitRatio,
+  coerceStoredRatio,
+  paneForSelection,
+  effectiveActivePane,
+  activePaneOnSplitOn,
+  isSplitRendered,
+  nudgeRatio,
+  VIEWER_PANE_MIN,
+  VIEWER_DIVIDER_W,
+  VIEWER_SPLIT_DEFAULT,
+  VIEWER_SPLIT_STEP,
+  VIEWER_SPLIT_KEY,
+  VIEWER_SPLIT_RATIO_KEY,
+} from './renderer/lib/viewer-split.js';
+export type { ActivePane } from './renderer/lib/viewer-split.js';
 
 // The PURE terminal session manager behind the loom:terminal:* channels
 // (single PTY session, payload re-validation, coalesced/bounded output pump,

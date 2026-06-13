@@ -58,6 +58,20 @@ import {
   MD_WIDTH_ANNOUNCE_FULL,
 } from '../lib/md-width.js';
 import type { WidthMode } from '../lib/md-width.js';
+import {
+  clampSplitRatio,
+  coerceStoredRatio,
+  paneForSelection,
+  effectiveActivePane,
+  activePaneOnSplitOn,
+  isSplitRendered,
+  nudgeRatio,
+  VIEWER_DIVIDER_W,
+  VIEWER_SPLIT_DEFAULT,
+  VIEWER_SPLIT_KEY,
+  VIEWER_SPLIT_RATIO_KEY,
+} from '../lib/viewer-split.js';
+import type { ActivePane } from '../lib/viewer-split.js';
 import { installGlobalAnchorGuard } from '../lib/anchor-guard.js';
 
 /** Subscribe a React component to the store via useSyncExternalStore. */
@@ -535,6 +549,142 @@ function useTerminalHeight(): {
   return { height, setHeight };
 }
 
+/* ============================================================
+ * Split reading pane (center track, vertical split — FR-54 idiom)
+ * ------------------------------------------------------------
+ * The VERTICAL analog of the bottom-dock terminal pane: when split
+ * is ON the center Viewer track divides into two reading panes
+ * (left | divider | right) so two documents can be compared side by
+ * side. The split is driven by the `--viewer-split` custom property
+ * on `.body` (the left pane's fraction of the splittable width),
+ * clamped by the pure helpers in lib/viewer-split.ts so neither pane
+ * collapses; the ratio AND the on/off state persist in localStorage.
+ * Default is a SINGLE pane (split off) — byte-for-byte today.
+ * ============================================================ */
+
+/** Read the live splittable center-track width (px) for the split-ratio clamp.
+ *  Prefers the REAL two-pane `.viewer-split-wrap` (the FULL center track the two
+ *  panes share) when split is mounted; else the single `.pane.viewer`; else the
+ *  window width pre-mount — so the lazy init / first toggle never divides by a
+ *  zero-width or half-width track. (querySelector on `.pane.viewer` would return
+ *  the LEFT pane in a split, which is only half the track — the wrap is the right
+ *  host.) The `:not(.viewer-split-wrap--solo)` guard SKIPS the solo (full-width
+ *  diff, split OFF) wrap: it has NO divider column, so the VIEWER_DIVIDER_W
+ *  subtraction in viewerSplitWidthNow() would wrongly shave 8px off the true
+ *  track. Skipping it falls through to the `.pane.viewer` branch (the diff pane
+ *  IS a `.pane.viewer.changes`), which measures the full track with no divider to
+ *  charge — closing the latent gap if a future caller clamps the ratio in the
+ *  solo diff state (css-nit). */
+function viewerWidthNow(): number {
+  if (typeof document !== 'undefined') {
+    const wrap = document.querySelector(
+      '.viewer-split-wrap:not(.viewer-split-wrap--solo)',
+    );
+    if (wrap instanceof HTMLElement && wrap.clientWidth > 0) {
+      return wrap.clientWidth;
+    }
+    const pane = document.querySelector('.pane.viewer');
+    if (pane instanceof HTMLElement && pane.clientWidth > 0) {
+      return pane.clientWidth;
+    }
+  }
+  return typeof window !== 'undefined' && window.innerWidth > 0
+    ? window.innerWidth
+    : 1440;
+}
+
+/** The CURRENT splittable width (px) the two panes actually share: the center
+ *  track minus the in-flow divider (VIEWER_DIVIDER_W). The grid gives the panes
+ *  `(100% − divider)` and the divider its own width, so BOTH the ratio clamp
+ *  and the drag px→fraction conversion must measure against this — else the
+ *  right pane resolves ~8px under VIEWER_PANE_MIN at the upper bound (the
+ *  divider would be silently charged to one pane). Never negative. */
+function viewerSplitWidthNow(): number {
+  return Math.max(0, viewerWidthNow() - VIEWER_DIVIDER_W);
+}
+
+/** Clamp a candidate split ratio against the CURRENT splittable width. */
+function clampSplitRatioNow(ratio: number): number {
+  return clampSplitRatio(ratio, viewerSplitWidthNow());
+}
+
+/** Read the persisted split ratio from localStorage, or null when unset. */
+function readPersistedSplitRatio(): number | null {
+  try {
+    return coerceStoredRatio(window.localStorage.getItem(VIEWER_SPLIT_RATIO_KEY));
+  } catch {
+    return null;
+  }
+}
+
+/** Compute the initial split ratio: persisted, else default — clamped. */
+function initialSplitRatio(): number {
+  const persisted = readPersistedSplitRatio();
+  return clampSplitRatioNow(persisted ?? VIEWER_SPLIT_DEFAULT);
+}
+
+/** Read the persisted split-view on/off state, or null when unset (default
+ *  off — a single pane). */
+function readPersistedSplitView(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(VIEWER_SPLIT_KEY);
+    if (raw === null) return null;
+    return raw === '1';
+  } catch {
+    return null;
+  }
+}
+
+/** Compute the initial split-view state: persisted, else off (single pane). */
+function initialSplitView(): boolean {
+  return readPersistedSplitView() ?? false;
+}
+
+/** Manage the resizable split ratio: state + persistence + re-clamp. Mirror of
+ *  useTerminalHeight on the column axis (a fraction, not px). Returns the live
+ *  ratio, a clamped+persisting setter, and `reclamp` — a re-clamp-against-the-
+ *  current-track callback the caller wires to a ResizeObserver on the wrap so the
+ *  VIEWER_PANE_MIN floor stays REAL no matter WHAT shrinks the center track. */
+function useViewerSplit(): {
+  ratio: number;
+  setRatio: (next: number, persist: boolean) => void;
+  reclamp: () => void;
+} {
+  // Lazy init so the localStorage read happens once, pre-paint.
+  const [ratio, setRatioState] = useState<number>(() => initialSplitRatio());
+
+  const setRatio = useCallback((next: number, persist: boolean): void => {
+    const clamped = clampSplitRatioNow(next);
+    setRatioState(clamped);
+    if (persist) {
+      try {
+        window.localStorage.setItem(VIEWER_SPLIT_RATIO_KEY, String(clamped));
+      } catch {
+        /* localStorage may be unavailable; the ratio still applies in-session. */
+      }
+    }
+  }, []);
+
+  // Re-clamp the LIVE ratio against the CURRENT splittable track width so neither
+  // pane collapses below VIEWER_PANE_MIN. A no-op when already in range (the
+  // clamp is idempotent), and it never persists — the user's stored ratio is
+  // preserved; this only constrains what is APPLIED for the current track width.
+  const reclamp = useCallback((): void => {
+    setRatioState((r) => clampSplitRatioNow(r));
+  }, []);
+
+  // Re-clamp when the window shrinks so neither pane collapses below its floor.
+  // (The ResizeObserver below catches track-only shrinks — Explorer/Chat
+  // drag/toggle, terminal dock — that dispatch NO window 'resize'; this covers
+  // the window-level case and any pre-mount width change.)
+  useEffect(() => {
+    window.addEventListener('resize', reclamp);
+    return () => window.removeEventListener('resize', reclamp);
+  }, [reclamp]);
+
+  return { ratio, setRatio, reclamp };
+}
+
 /** Which pane edge a Splitter controls. 'left' = Explorer right edge
  *  (drag right widens), 'right' = Chat left edge (drag left widens). */
 type SplitterEdge = 'left' | 'right';
@@ -786,6 +936,131 @@ function RowSplitter({
   );
 }
 
+interface ColSplitterProps {
+  /** Current split ratio (left pane's fraction 0..1) — drives aria-valuenow. */
+  ratio: number;
+  /** Clamped+persisting ratio setter. */
+  setRatio: (next: number, persist: boolean) => void;
+  /** Accessible label for the divider. */
+  ariaLabel: string;
+}
+
+/** The split reading-pane's draggable VERTICAL divider — the column-axis
+ *  analog of RowSplitter, sitting BETWEEN the two reading panes. Pointer drag
+ *  (capture-based) maps clientX delta over the center track to a fraction:
+ *  dragging RIGHT widens the LEFT pane (ratio += delta/trackWidth). ArrowRight
+ *  widens the left pane / ArrowLeft narrows it by VIEWER_SPLIT_STEP; Home = all
+ *  to the right pane's min (left max), End = all to the left pane's min — the
+ *  clamp keeps both panes usable. role="separator" with aria-orientation
+ *  "vertical" (per APG the orientation names the SEPARATOR's axis, like the
+ *  column splitters). Live-updates during drag, persists on release — the
+ *  RowSplitter persist-on-end pattern. */
+function ColSplitter({ ratio, setRatio, ariaLabel }: ColSplitterProps): JSX.Element {
+  const [dragging, setDragging] = useState(false);
+  // Drag origin, captured on pointerdown so the move math is delta-based. We
+  // also capture the live center-track width so the px→fraction conversion is
+  // stable for the whole drag.
+  const origin = useRef<{ x: number; r: number; w: number } | null>(null);
+
+  const onPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      // Primary button / pen / touch only; ignore secondary clicks.
+      if (e.button !== 0) return;
+      e.preventDefault();
+      // Capture the SPLITTABLE width (track − divider) so a px drag delta maps
+      // to a fraction of the same width the grid lays the panes out against.
+      origin.current = { x: e.clientX, r: ratio, w: viewerSplitWidthNow() };
+      setDragging(true);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      document.querySelector('.win')?.classList.add('dragging');
+    },
+    [ratio],
+  );
+
+  const onPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      const o = origin.current;
+      if (o === null || o.w <= 0) return;
+      const delta = e.clientX - o.x;
+      // Dragging RIGHT widens the left pane: add the fractional delta.
+      setRatio(o.r + delta / o.w, false); // live, un-persisted update
+    },
+    [setRatio],
+  );
+
+  const endDrag = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      if (origin.current === null) return;
+      origin.current = null;
+      setDragging(false);
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* capture may already be released (lostpointercapture). */
+      }
+      document.querySelector('.win')?.classList.remove('dragging');
+      // Persist the settled ratio.
+      setRatio(ratio, true);
+    },
+    [setRatio, ratio],
+  );
+
+  const onKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+      // Home/End convention — INTENTIONALLY consistent with Splitter (Home=max
+      // width / End=min width) and RowSplitter (Home=max height / End=min
+      // height): "Home grows the PRIMARY pane to its max, End shrinks it to its
+      // min." Here the primary pane is the LEFT one, so Home ⇒ ratio toward 1
+      // (left to max) and End ⇒ ratio toward 0 (left to min). The clamp keeps
+      // the OTHER pane at VIEWER_PANE_MIN at both ends, so 1/0 are upper/lower
+      // requests, not literal full-collapse.
+      let next: number | null = null;
+      switch (e.key) {
+        case 'ArrowRight': // the left pane grows rightward, so right widens it
+          next = nudgeRatio(ratio, 'inc');
+          break;
+        case 'ArrowLeft':
+          next = nudgeRatio(ratio, 'dec');
+          break;
+        case 'Home': // left (primary) pane to its max (clamp keeps the right floor)
+          next = 1;
+          break;
+        case 'End': // left (primary) pane to its min
+          next = 0;
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      setRatio(next, true);
+    },
+    [ratio, setRatio],
+  );
+
+  // Whole-percent value so AT announces "50 percent" not a long fraction
+  // (APG window-splitter guidance — A11Y-EXP-03 / SC 1.3.1).
+  const pct = Math.round(ratio * 100);
+
+  return (
+    <div
+      className={'splitter viewer-split-divider' + (dragging ? ' dragging' : '')}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={ariaLabel}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct}
+      aria-valuetext={`${pct} percent`}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onLostPointerCapture={endDrag}
+      onKeyDown={onKeyDown}
+    />
+  );
+}
+
 /** Read the capture-only `?shortcuts` hint (presence ⇒ open the Keyboard
  *  Shortcuts panel on boot for a headless proof screenshot). `?shortcuts`
  *  (no value) or `=1`/`=true` ⇒ open; `=0`/`=false` ⇒ closed. Parallel to
@@ -874,6 +1149,23 @@ export function App(): JSX.Element {
   }, [theme]);
 
   const content = useFileContent(vm?.selected ?? null, vm?.fileRev ?? 0);
+
+  // ---- Split reading pane (compare two documents side by side) ----
+  // Default OFF (a single pane) — when off the behavior is byte-for-byte
+  // today's. `splitView` + the ratio persist; `selectedRight` is the RIGHT
+  // pane's document (App-local, NOT in the store, which owns only the left
+  // `vm.selected`); `activePane` decides which pane an Explorer pick fills.
+  // A SECOND useFileContent resolves the right pane's content (re-reads on the
+  // same global fileRev so a disk edit refreshes it like the left pane).
+  const [splitView, setSplitView] = useState<boolean>(() => initialSplitView());
+  const [selectedRight, setSelectedRight] = useState<string | null>(null);
+  const [activePane, setActivePane] = useState<ActivePane>('left');
+  const { ratio: splitRatio, setRatio: setSplitRatio, reclamp: reclampSplit } =
+    useViewerSplit();
+  const rightContent = useFileContent(
+    splitView ? selectedRight : null,
+    vm?.fileRev ?? 0,
+  );
 
   // Resizable chat width (FR-54). Hook lives above the early return so the
   // hook order stays stable across the pre-boot / booted renders.
@@ -983,6 +1275,79 @@ export function App(): JSX.Element {
     );
   }, [mdWidth, setMdWidthMode]);
 
+  // ---- Split reading-pane toggles (header button + toggleSplitView command) ----
+  // Latest split state in a ref so the toggle reads it without side effects
+  // inside a state updater (StrictMode-safe — the toggleTerminal idiom).
+  const splitViewRef = useRef(splitView);
+  splitViewRef.current = splitView;
+
+  // Turn split OFF → restore the single (left) pane exactly: drop the right
+  // doc, reset the active pane to 'left', persist the off state, announce.
+  // Shared by the header × on the right pane, the header toggle, and the
+  // toggleSplitView command. FOCUS RESCUE (SC 2.4.3, the closeFileFromButton /
+  // toggleTerminal idiom): the right pane (its × button) and the divider both
+  // UNMOUNT when split closes, so a close triggered from any of them — the
+  // right pane's ×, Ctrl+\ while focus is on the divider or inside the right
+  // pane — would strand focus on a detached node (falling back to document.body).
+  // After the single pane re-renders (rAF) move focus to a surviving element:
+  // the single pane's header Split toggle if a file is open (it re-mounts in the
+  // populated header), else the Explorer's active treeitem, else the body —
+  // always a valid target. Plain document.querySelector is sufficient (there is
+  // exactly one Explorer / single Viewer once split is off).
+  const closeSplit = useCallback((): void => {
+    try {
+      window.localStorage.setItem(VIEWER_SPLIT_KEY, '0');
+    } catch {
+      /* localStorage may be unavailable; the state still applies in-session. */
+    }
+    setSplitView(false);
+    setSelectedRight(null);
+    setActivePane('left');
+    setStatusMessage('Split reading pane closed');
+    requestAnimationFrame(() => {
+      const target =
+        document.querySelector<HTMLElement>('.pane.viewer .split-view-btn') ??
+        document.querySelector<HTMLElement>(
+          '.pane.explorer [role="treeitem"][tabindex="0"]',
+        );
+      (target ?? document.body).focus();
+    });
+  }, []);
+
+  // Toggle split on/off. Turning ON sets the active pane to 'right' so the
+  // user's NEXT Explorer pick naturally fills the empty comparison side
+  // (spec §4 — activePaneOnSplitOn). Turning OFF routes through closeSplit so
+  // the single-pane layout is restored exactly. Persists + announces.
+  const toggleSplitView = useCallback((): void => {
+    if (splitViewRef.current) {
+      closeSplit();
+      return;
+    }
+    try {
+      window.localStorage.setItem(VIEWER_SPLIT_KEY, '1');
+    } catch {
+      /* localStorage may be unavailable; the state still applies in-session. */
+    }
+    setActivePane(activePaneOnSplitOn());
+    setSplitView(true);
+    setStatusMessage('Split reading pane opened — pick a file for the right pane');
+    // ENTER focus rescue (spec §3/§4 — symmetric with closeSplit's EXIT rescue):
+    // after the right pane mounts (rAF), move focus INTO it so a keyboard/AT user
+    // lands in the pane they are told to fill — for BOTH the two-doc reading split
+    // and the diff+file split (this is the only split-on path; the header buttons
+    // and the Ctrl/Cmd+\ command all route through here). The freshly-mounted
+    // right pane always renders a focusable control even when empty (its Split
+    // toggle + the close-split ×), so target that; fall back to the pane section,
+    // then document.body — never stranded.
+    requestAnimationFrame(() => {
+      const right = document.querySelector<HTMLElement>('.viewer-pane-right');
+      const target =
+        right?.querySelector<HTMLElement>('.split-view-btn, .viewer-close-split') ??
+        right;
+      (target ?? document.body).focus();
+    });
+  }, [closeSplit]);
+
   // Fold-command signal lifted to the Viewer/CodeView (foldAll / unfoldAll
   // shortcuts). An incrementing nonce so each press fires exactly once; the
   // intent picks fold vs unfold. CodeView no-ops when the file isn't foldable.
@@ -1051,6 +1416,27 @@ export function App(): JSX.Element {
   const openSearchMatch = useCallback(
     (path: string, line: number): void => {
       store.selectFile(path);
+      // A search-reveal targets the store-selected (LEFT/single) Viewer, which is
+      // HIDDEN behind ChangesView while diffMode is on (the diff occupies the same
+      // center track; in a diff+file split the right pane gets targetLine=null).
+      // So the reveal flash would land nowhere and the file would change silently
+      // behind the diff. Drop diffMode so the revealed line surfaces in a real
+      // Viewer — exactly the precedent the Explorer onSelect already sets when it
+      // opens a file while diffMode is on (regression-finding). setDiffMode(false)
+      // directly (NOT closeChanges) so focus/announcement are owned by the reveal.
+      //
+      // DIFF+FILE NOTE (correctness-finding): unlike the Explorer onSelect — which
+      // routes a pick to the RIGHT (file) pane via effectiveActivePane while a
+      // diff+file split is rendered — a search-reveal here DELIBERATELY drops
+      // diffMode and surfaces the line in the LEFT/store Viewer instead. The right
+      // pane has no targetLine reveal pipeline (it is content-only, targetLine=null
+      // by construction), so routing a LINE reveal into it would require a whole
+      // new right-pane reveal mechanism — a speculative extra beyond the diff+file
+      // capability (§7). Collapsing to a two-doc reading split (revealed file LEFT,
+      // prior selectedRight RIGHT) surfaces the line in a real Viewer and never
+      // strands focus, so it is the correct minimal behavior; the diff is restored
+      // with one Ctrl/Cmd+Shift+G when the user wants it back.
+      setDiffMode(false);
       const name = path.split('/').filter(Boolean).pop() ?? path;
       setStatusMessage(`Opened ${name} at line ${line}`);
       targetLineNonceRef.current += 1;
@@ -1068,6 +1454,16 @@ export function App(): JSX.Element {
   const openSearchFile = useCallback(
     (path: string): void => {
       store.selectFile(path);
+      // Same reasoning as openSearchMatch: surface the opened file in a real
+      // Viewer rather than leaving it hidden behind ChangesView (the Explorer
+      // onSelect precedent). A whole-file open while diffMode is on must show the
+      // file, not silently change the store selection behind the diff. DIFF+FILE
+      // (correctness-finding): like openSearchMatch, this intentionally drops
+      // diffMode (revealed file -> LEFT/store Viewer) rather than routing into the
+      // RIGHT file pane the way Explorer onSelect does — kept symmetric with the
+      // line-reveal path so search has ONE predictable surface, and avoiding a
+      // speculative right-pane search-routing path (§7).
+      setDiffMode(false);
       const name = path.split('/').filter(Boolean).pop() ?? path;
       setStatusMessage(`Opened ${name}`);
       // A11Y-FN-01: mark this file row as the live "current item". Drop any prior
@@ -1135,10 +1531,32 @@ export function App(): JSX.Element {
   const changesToggleRef = useRef<HTMLButtonElement>(null);
 
   // Open the Changes viewer and fetch the listing once (v1 = fetch-on-open).
+  // FOCUS RESCUE (SC 2.4.3 + spec §3/§4): when a two-doc reading split is ALREADY
+  // on, flipping diffMode true swaps the LEFT <Viewer> for ChangesView (the left
+  // pane UNMOUNTS) while the RIGHT file pane is reused. If focus was on any
+  // left-pane control (its ×, the Split / reading-width / copy / fold buttons —
+  // all keyboard-reachable, then this fires via the StatusBar toggle or
+  // Ctrl/Cmd+Shift+G), it would strand on document.body. So, mirroring
+  // toggleSplitView's ENTER idiom, after the diff+file split paints (rAF) move
+  // focus INTO the right (file) pane — the one document target now (the diff is
+  // not), satisfying §3's "leave the RIGHT file pane focused on entering diff+
+  // file" for THIS entry path too (toggleSplitView already covers the full-width-
+  // Changes -> Ctrl+\ path). When split is OFF this is skipped entirely so the
+  // full-width-Changes case keeps its existing behavior (focus stays put; close
+  // returns to changesToggleRef) — byte-for-byte today's.
   const openChanges = useCallback((): void => {
     setDiffMode(true);
     setStatusMessage('Changes opened');
     void store.loadChanges();
+    if (splitViewRef.current) {
+      requestAnimationFrame(() => {
+        const right = document.querySelector<HTMLElement>('.viewer-pane-right');
+        const target =
+          right?.querySelector<HTMLElement>('.split-view-btn, .viewer-close-split') ??
+          right;
+        (target ?? document.body).focus();
+      });
+    }
   }, [store]);
 
   // Close the Changes viewer → back to the selected file's Viewer. Restore focus
@@ -1206,6 +1624,7 @@ export function App(): JSX.Element {
     setChatWidth,
     setExplorerWidth,
   ]);
+
   // The always-visible StatusBar toggle button — focus lands here when the
   // Explorer collapses out from under the keyboard (no lost focus / no trap).
   const explorerToggleRef = useRef<HTMLButtonElement>(null);
@@ -1215,6 +1634,32 @@ export function App(): JSX.Element {
   // The body element — used to detect whether focus was inside the Explorer
   // at collapse time so we only steal focus when we actually orphaned it.
   const bodyRef = useRef<HTMLDivElement>(null);
+
+  // Keep the VIEWER_PANE_MIN floor REAL no matter what shrinks the center track
+  // (css-finding): the CSS grid columns are minmax(0, …) with NO min-width floor,
+  // so the 240px floor is enforced ENTIRELY by clampSplitRatio — which only re-
+  // fired on window 'resize' and divider drag. But the center track ALSO shrinks
+  // when the Explorer/Chat splitter is dragged, when Explorer/Chat is shown/
+  // hidden, or when the terminal dock opens — none of which dispatch a window
+  // 'resize', so the ratio was never re-clamped and both halves could starve
+  // below 240px (e.g. drag Chat wide until the track hits ~320px). A
+  // ResizeObserver on the wrap re-clamps the LIVE ratio on EVERY track-width
+  // change (it measures the same .viewer-split-wrap clientWidth the clamp reads),
+  // closing the gap for ALL causes at once. Only attached while the split is on
+  // (the wrap with two panes exists exactly then); re-runs on splitView so it
+  // tracks the wrap mount/unmount. Guarded for environments without
+  // ResizeObserver (it always exists in Electron's Chromium; the guard keeps the
+  // module SSR-safe). reclampSplit is idempotent + non-persisting, so observing
+  // can never loop or clobber the user's stored ratio.
+  useEffect(() => {
+    if (!splitView) return;
+    if (typeof ResizeObserver === 'undefined') return;
+    const wrap = bodyRef.current?.querySelector<HTMLElement>('.viewer-split-wrap');
+    if (!wrap) return;
+    const ro = new ResizeObserver(() => reclampSplit());
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [splitView, reclampSplit]);
 
   // Keep the latest collapsed state in a ref so the toggle can read it without
   // side effects inside the state updater (StrictMode-safe).
@@ -1398,8 +1843,24 @@ export function App(): JSX.Element {
         defaultPrevented: e.defaultPrevented,
         hasOpenFile: selectedRef.current !== null,
         editableTarget: isEditableTarget(e.target),
+        // Only the LEFT/single pane's × is the file-close button whose focus
+        // must be rescued on close. The split RIGHT pane's × is a "close split"
+        // control (.viewer-close-split) — it does NOT unmount on a file close,
+        // so it must not be treated as the close-file button here.
+        //
+        // !diffMode guard (regression-nit hardening): ChangesView's close button
+        // is a plain `.viewer-close` (no .viewer-close-split), so it MATCHES the
+        // selector. Today the Changes-first Escape handler above intercepts every
+        // Escape while diffMode is on, so this path never runs with the diff ×
+        // focused — but if a user REBINDS closeFile OFF Escape, focus on the diff
+        // × + a (hidden) store file open would otherwise close the WRONG (hidden)
+        // store doc. Gate the match on !diffMode so the diff close button is never
+        // treated as the file-close target; the Changes-first handler already owns
+        // closing in diffMode.
         focusOnCloseButton:
-          active instanceof Element && active.closest('.viewer-close') !== null,
+          !diffMode &&
+          active instanceof Element &&
+          active.closest('.viewer-close:not(.viewer-close-split)') !== null,
       });
       if (action === 'ignore') return false;
       if (action === 'close-rescue-focus') {
@@ -1410,7 +1871,7 @@ export function App(): JSX.Element {
       }
       return true;
     },
-    [store, closeFileFromButton],
+    [store, closeFileFromButton, diffMode],
   );
 
   /* ============================================================
@@ -1464,6 +1925,18 @@ export function App(): JSX.Element {
       // the close-file path uses (A11Y-CLOSE-05): if a future Escape consumer
       // (e.g. a tooltip) preventDefaults WITHOUT stopPropagation, a consumed
       // Escape must not also close the viewer.
+      //
+      // INTENTIONAL PRIORITY (a-finding, SC 3.2.x): in a diff+file split a real
+      // document lives in the RIGHT pane, so Escape from inside it ALSO closes
+      // Changes (Changes-first, mirroring the search-pane priority) and focus
+      // returns to the StatusBar Changes toggle (closeChanges' rescue). This is a
+      // DELIBERATE trade-off, not a stray focus jump: the only fall-through here
+      // is runCloseFileCommand -> store.closeFile(), which acts on the LEFT/store
+      // document (hidden behind the diff in this state) — NOT the right pane's
+      // App-local doc — so scoping Escape out of the right pane would close the
+      // WRONG (hidden) file. Closing Changes first surfaces a real Viewer and
+      // never strands focus, which is the predictable, correct outcome here. (§7:
+      // no per-pane Escape routing — that would be a speculative extra.)
       if (
         e.key === 'Escape' &&
         diffMode &&
@@ -1550,6 +2023,12 @@ export function App(): JSX.Element {
           // open, since the mode is sticky across files and restarts.
           toggleMdWidth();
           break;
+        case 'toggleSplitView':
+          // Open/close the second (side-by-side compare) reading pane. Global
+          // like toggleReadingWidth — opening sets the right pane active so the
+          // next Explorer pick fills it; closing restores the single pane.
+          toggleSplitView();
+          break;
         case 'togglePause':
           void store.togglePause();
           break;
@@ -1575,6 +2054,7 @@ export function App(): JSX.Element {
     fireFoldCommand,
     fireCopyCommand,
     toggleMdWidth,
+    toggleSplitView,
     openShortcuts,
     runCloseFileCommand,
     openSearch,
@@ -1591,6 +2071,27 @@ export function App(): JSX.Element {
       </div>
     );
   }
+
+  // The EFFECTIVE split state — split is logically on AND actually rendered.
+  // splitView and diffMode are now COMPOSABLE: when split is on AND diffMode is
+  // on, the center track holds the diff pane (LEFT) beside a normal file pane
+  // (RIGHT) — the split is genuinely rendered. So the split renders whenever
+  // splitView is on, regardless of diffMode (the earlier N2 fix
+  // `splitView && !diffMode` no longer holds — the diff no longer owns the
+  // whole track in a split). This is what the Split toggle's aria-pressed must
+  // reflect (it now reads "pressed" in the diff+file split too): every header
+  // Split toggle (Viewer + ChangesView) reads this so the pressed state tracks
+  // whether the split is TRULY rendered, including the diffMode case. Routed
+  // through the pure isSplitRendered helper (NOT an inline `splitView`) so the
+  // anti-N2-revert is PINNED by a DOM-free test (it returns true for BOTH
+  // (true,false) and (true,true)) — re-introducing `splitView && !diffMode`
+  // would turn that test RED rather than silently breaking the diff+file split.
+  const splitRendered = isSplitRendered(splitView, diffMode);
+  // The pane an Explorer pick / the active accent ring targets. While a diff+
+  // file split is rendered the diff occupies the LEFT half and is NOT a document
+  // target, so this is FORCED to the RIGHT (file) pane (effectiveActivePane);
+  // otherwise the stored activePane stands (single doc / two-doc reading split).
+  const liveActivePane = effectiveActivePane(splitView, diffMode, activePane);
 
   return (
     <div className="win">
@@ -1647,12 +2148,26 @@ export function App(): JSX.Element {
           // row classes compose freely with the column-hiding classes above.
           (terminalOpen ? ' terminal-open' : '') +
           (terminalOpen && terminalMax ? ' terminal-max' : '')
+          // NOTE: the split reading-pane layout lives entirely on the
+          // .viewer-split-wrap grid (left | divider | right, using --viewer-split
+          // inherited from .body's inline style) — the center track mounts that
+          // wrap when the split is rendered. There is no `.body.viewer-split`
+          // selector, so no state class is added to .body (the former one was a
+          // dead/no-op hook with no CSS consumer; §7 — no speculative extras).
         }
         style={
           {
             ['--explorer-w' as string]: explorerWidth + 'px',
             ['--chat-w' as string]: chatWidth + 'px',
             ['--terminal-h' as string]: terminalHeight + 'px',
+            // The left pane's fraction of the splittable center width (the
+            // remainder goes to the right pane); ignored when split is off.
+            ['--viewer-split' as string]: splitRatio,
+            // Divider width fed from the SINGLE TS constant (VIEWER_DIVIDER_W),
+            // read by BOTH the .viewer-split-wrap grid (which reserves it out of
+            // the panes' shared 100%) and the .viewer-split-divider width — so
+            // the layout and the ratio-clamp geometry can never drift.
+            ['--viewer-divider-w' as string]: VIEWER_DIVIDER_W + 'px',
           } as CSSProperties
         }
       >
@@ -1686,7 +2201,13 @@ export function App(): JSX.Element {
           <Explorer
             rootName={vm.rootName}
             tree={vm.tree}
-            selected={vm.selected}
+            // The "you are here" marker tracks the ACTIVE pane: when split is
+            // on and the right pane is active, the Explorer reflects the right
+            // pane's document, so the user sees which file the next pick targets.
+            // Off (or left active) ⇒ the store's selected (today's behavior).
+            selected={
+              splitView && liveActivePane === 'right' ? selectedRight : vm.selected
+            }
             // Lazily fetch a folder's children the first time it is expanded
             // (idempotent in the store) so subfolders are never read until the
             // user opens them.
@@ -1697,19 +2218,40 @@ export function App(): JSX.Element {
             // any other path selects it. Explorer just calls onSelect(path) on
             // click/Enter/Space, so the toggle lives here. Focus stays on the
             // treeitem (it is not unmounted), and aria-selected goes false
-            // because vm.selected becomes null (SC 4.1.2). Both branches
-            // announce to the polite live region so the state change is
+            // because the active pane's selection becomes null (SC 4.1.2). Both
+            // branches announce to the polite live region so the state change is
             // perceivable regardless of focus location (SC 4.1.3 /
             // A11Y-CLOSE-02 / UX-05); the selected row also carries a "close"
             // affordance (title + aria-label suffix) so the toggle-off is
             // discoverable, not a silent accidental action (UX-01 / SC 3.2.4).
+            //
+            // SPLIT: when split is on, a selection opens into the ACTIVE pane
+            // (paneForSelection). The RIGHT pane is App-local state; the LEFT
+            // pane (and the single-pane default) still flow through the store.
             onSelect={(path) => {
+              // Route to the LIVE active pane: while a diff+file split is
+              // rendered the diff owns the LEFT half and is NOT a doc target, so
+              // effectiveActivePane forces the pick into the RIGHT (file) pane —
+              // it can never land behind the diff. Otherwise the stored active
+              // pane (or 'left' when split is off) stands.
+              const target = paneForSelection(splitView, liveActivePane);
+              const name = path.split('/').filter(Boolean).pop() ?? path;
+              if (target === 'right') {
+                // Right pane: toggle closed on re-select, else open it there.
+                if (path === selectedRight) {
+                  setSelectedRight(null);
+                  setStatusMessage('Right pane closed');
+                } else {
+                  setSelectedRight(path);
+                  setStatusMessage(`Opened ${name} in the right pane`);
+                }
+                return;
+              }
               if (path === vm.selected) {
                 store.closeFile();
                 setStatusMessage('File closed');
               } else {
                 store.selectFile(path);
-                const name = path.split('/').filter(Boolean).pop() ?? path;
                 // The Changes viewer occupies the SAME center 1fr track as the
                 // Viewer (unlike SearchView, which swaps the explorer column),
                 // so a file genuinely opened from the Explorer while diffMode is
@@ -1730,13 +2272,161 @@ export function App(): JSX.Element {
             gitStatus={vm.gitStatus}
           />
         )}
-        {/* Center 1fr track: the branch Changes viewer REPLACES the Viewer when
-            diffMode is true (the SearchView swap idiom, targeting the Viewer
-            track because a diff is CONTENT). ChangesView reuses the .pane.viewer
-            placement so NO grid-template change is needed; closing returns to the
-            previously-selected file's Viewer. */}
+        {/* Center 1fr track. The spec's REQUIRED DESIGN words splitView as the
+            OUTER condition with diffMode composed inside; we INVERT that — diffMode
+            is the outer condition and splitView composes inside. This is a
+            DELIBERATE deviation from the literal wording, not an accident: the net
+            4-combination matrix (single doc / two-doc split / full-width Changes /
+            diff+file split) is byte-for-byte identical to the required behavior,
+            AND diffMode-outer keeps ChangesView at one STABLE JSX position inside
+            .viewer-split-wrap so the Ctrl+\ solo<->split toggle never remounts it
+            (already-expanded FileDiff blocks survive the toggle, F1). A literal
+            splitView-outer structure would move ChangesView between two branches
+            and remount it on every split toggle — strictly worse for the
+            no-regression goal. So splitView composes INSIDE diffMode here.
+
+            DIFF ON: the track ALWAYS holds a .viewer-split-wrap whose FIRST child
+            is the branch Changes viewer — at one STABLE JSX position so toggling
+            the split never changes ChangesView's DOM parent and never remounts it
+            (so already-expanded FileDiff blocks survive Ctrl+\, M-finding F1).
+            When split is also ON the wrap gets the divider + the App-local file
+            pane on the RIGHT (diff LEFT, file RIGHT); when split is OFF the wrap
+            collapses to a single full-width column (`--solo`) holding only the
+            diff — byte-for-byte today's full-width Changes, just inside a
+            single-column grid that lays out identically.
+
+            DIFF OFF: splitView selects the two-doc reading split [left | divider
+            | right] or a single Viewer — both byte-for-byte today's, untouched
+            by the diff composability above. The diff+file wrap above renders the
+            divider + right Viewer as FLAT gated children at the SAME positional
+            slots (idx 1 + 2) this two-doc wrap uses, so React reuses the right
+            <Viewer> across the two-doc<->diff+file transition (no scroll/fold/focus
+            loss) — only ChangesView (idx 0) ever remounts. */}
         {diffMode ? (
-          <ChangesView changes={vm.changes} onClose={closeChanges} />
+          <div
+            // The --solo modifier (full-width, no divider/right tracks) is keyed
+            // off `splitRendered` — the SINGLE pure source of "is the split truly
+            // rendered" (isSplitRendered) — NOT an inline `splitView`. In the
+            // diffMode branch splitRendered === splitView, so this is identical
+            // today; routing it (AND the divider/right-pane mount gates below)
+            // through splitRendered makes the one helper genuinely GOVERN BOTH the
+            // pane MOUNT and the aria-pressed prop, so the VSPLIT-SEL anti-revert
+            // test (which pins isSplitRendered(true,true)===true) actually guards
+            // the mount conditional it claims to — re-introducing the N2
+            // `splitView && !diffMode` in the helper would now turn the right pane
+            // off here too, not just flip aria-pressed (tests-finding).
+            className={'viewer-split-wrap' + (splitRendered ? '' : ' viewer-split-wrap--solo')}
+          >
+            {/* The branch Changes viewer (the diff pane) — the STABLE first child
+                in BOTH the solo (full-width) and split (diff LEFT) layouts, so it
+                is never unmounted across the Ctrl+\ split toggle (F1). It is NOT a
+                document target, so it carries no active-pane ring (the FILE pane
+                owns the active state). aria-pressed on its header Split toggle
+                reads `splitRendered` (the single "is the split truly rendered"
+                source, shared with the Viewer toggles) so it reflects whether the
+                split is truly rendered — now true in the diff+file split. */}
+            <ChangesView
+              changes={vm.changes}
+              onClose={closeChanges}
+              splitView={splitRendered}
+              onToggleSplit={toggleSplitView}
+            />
+            {/* The divider + RIGHT file pane mount ONLY when the split is on; in
+                solo mode they are absent and the wrap is a single column. Rendered
+                as FLAT gated children (NOT wrapped in a Fragment) so the right
+                Viewer keeps a STABLE positional slot (idx 2) shared with the
+                two-doc reading split below: React then REUSES the same right
+                <Viewer> instance across the two-doc<->diff+file transition
+                (opening/closing Changes while split is on), preserving its scroll
+                position, source fold state, and in-pane focus — only ChangesView
+                (idx 0) remounts as intended (M-finding: an asymmetric Fragment at
+                idx 1 here vs the flat [left|divider|right] below would force a type
+                mismatch that remounts the right pane). */}
+            {splitRendered && (
+              <ColSplitter
+                ratio={splitRatio}
+                setRatio={setSplitRatio}
+                // a-finding: in the diff+file split the LEFT half is the diff, not
+                // a reading pane, so the divider's accessible name names what it
+                // actually resizes here (diff | file) rather than the generic
+                // two-doc "reading panes" label used by the reading split below.
+                ariaLabel="Resize diff and file panes"
+              />
+            )}
+            {/* RIGHT half — the App-local file pane. Its × turns split OFF and
+                returns to the full-width diff (spec §7). The diff occupies the
+                LEFT half, so this is the FORCED active/selection target
+                (liveActivePane === 'right'): an Explorer pick opens here, never
+                behind the diff. The fold/copy commands target it; targetLine is
+                left-only (the store drives the reveal) so it is null here. */}
+            {splitRendered && (
+              <Viewer
+                content={rightContent}
+                onClose={closeSplit}
+                foldCommand={liveActivePane === 'right' ? foldCommand : null}
+                copyCommand={liveActivePane === 'right' ? copyCommand : null}
+                targetLine={null}
+                mdWidth={mdWidth}
+                onToggleMdWidth={toggleMdWidth}
+                splitView={splitRendered}
+                onToggleSplit={toggleSplitView}
+                splitRole="right"
+                splitActive={liveActivePane === 'right'}
+                onActivate={() => setActivePane('right')}
+              />
+            )}
+          </div>
+        ) : /* DIFF OFF: the two-doc reading split mounts on `splitRendered` (the
+              single isSplitRendered source) — identical to `splitView` here since
+              diffMode is false, but routed through the helper so EVERY split mount
+              decision (this two-doc wrap + the diff+file divider/right gates above)
+              flows from the one source the VSPLIT-SEL anti-revert test pins
+              (tests-finding). */
+          splitRendered ? (
+          <div className="viewer-split-wrap">
+            {/* LEFT half — the store's selected document. Its × closes the file
+                (today's behavior); clicking/focusing it makes it active. The
+                fold/copy keyboard commands target the ACTIVE pane; the
+                search-reveal targetLine always points at the store-selected
+                (left) file, so it only flows to the left Viewer. */}
+            <Viewer
+              content={content}
+              onClose={closeFileFromButton}
+              foldCommand={liveActivePane === 'left' ? foldCommand : null}
+              copyCommand={liveActivePane === 'left' ? copyCommand : null}
+              targetLine={targetLine}
+              mdWidth={mdWidth}
+              onToggleMdWidth={toggleMdWidth}
+              splitView={splitRendered}
+              onToggleSplit={toggleSplitView}
+              splitRole="left"
+              splitActive={liveActivePane === 'left'}
+              onActivate={() => setActivePane('left')}
+            />
+            <ColSplitter
+              ratio={splitRatio}
+              setRatio={setSplitRatio}
+              ariaLabel="Resize reading panes"
+            />
+            {/* RIGHT half — the App-local comparison file pane. Its × turns split
+                OFF and returns to the single pane (spec §7). The fold/copy
+                commands target it only when it is active; targetLine is left-only
+                (the store drives the reveal). */}
+            <Viewer
+              content={rightContent}
+              onClose={closeSplit}
+              foldCommand={liveActivePane === 'right' ? foldCommand : null}
+              copyCommand={liveActivePane === 'right' ? copyCommand : null}
+              targetLine={null}
+              mdWidth={mdWidth}
+              onToggleMdWidth={toggleMdWidth}
+              splitView={splitRendered}
+              onToggleSplit={toggleSplitView}
+              splitRole="right"
+              splitActive={liveActivePane === 'right'}
+              onActivate={() => setActivePane('right')}
+            />
+          </div>
         ) : (
           <Viewer
             content={content}
@@ -1746,6 +2436,8 @@ export function App(): JSX.Element {
             targetLine={targetLine}
             mdWidth={mdWidth}
             onToggleMdWidth={toggleMdWidth}
+            splitView={splitRendered}
+            onToggleSplit={toggleSplitView}
           />
         )}
         {!explorerHidden && (
