@@ -39,7 +39,10 @@ export type CommandId =
   | 'copyRendered'
   | 'toggleTerminal'
   | 'toggleReadingWidth'
-  | 'toggleSplitView';
+  | 'toggleSplitView'
+  | 'toggleChanges'
+  | 'openSettings'
+  | 'toggleMaximizeTerminal';
 
 /** A command entry shown in the Shortcuts panel. */
 export interface CommandSpec {
@@ -57,6 +60,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'toggleExplorer', label: 'Toggle file explorer', defaultBinding: 'Ctrl+B' },
   { id: 'toggleChat', label: 'Toggle agent chat', defaultBinding: 'Ctrl+J' },
   { id: 'toggleTerminal', label: 'Toggle terminal', defaultBinding: 'Ctrl+`' },
+  { id: 'toggleMaximizeTerminal', label: 'Toggle terminal maximize', defaultBinding: 'Ctrl+Shift+M' },
+  { id: 'toggleChanges', label: 'Toggle changes view', defaultBinding: 'Ctrl+Shift+G' },
   { id: 'openSearch', label: 'Search file contents', defaultBinding: 'Ctrl+Shift+F' },
   { id: 'closeFile', label: 'Close file', defaultBinding: 'Escape' },
   { id: 'foldAll', label: 'Fold all regions', defaultBinding: 'Ctrl+K' },
@@ -66,6 +71,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'toggleSplitView', label: 'Toggle split reading pane', defaultBinding: 'Ctrl+\\' },
   { id: 'toggleTheme', label: 'Toggle theme', defaultBinding: 'Ctrl+T' },
   { id: 'togglePause', label: 'Pause / resume live feed', defaultBinding: 'Ctrl+.' },
+  { id: 'openSettings', label: 'Open settings', defaultBinding: 'Ctrl+Shift+,' },
 ] as const;
 
 /** Resolved default bindings as a plain id -> combo record. Frozen so a
@@ -105,12 +111,63 @@ const MODIFIER_KEYS: ReadonlySet<string> = new Set([
   'AltGraph',
 ]);
 
+/** US-layout shifted PUNCTUATION glyph -> its unshifted base token. When Shift
+ *  is held, the physical punctuation/number keys report their SHIFTED glyph in
+ *  KeyboardEvent.key (e.g. the comma key reports '<', the 2 key reports '@'), so
+ *  the same physical chord would canonicalize to different tokens with vs.
+ *  without Shift — and a default written with the BASE glyph (e.g. the
+ *  openSettings default 'Ctrl+Shift+,') would be UNREACHABLE: the obvious
+ *  Shift+comma keypress produces 'Ctrl+Shift+<', matching no command. Folding
+ *  the shifted glyph back to its base makes a punctuation chord layout-stable
+ *  (the Shift token already records that the key was shifted), so a default and
+ *  the keypress that produces it agree. (Letters are unaffected — they have no
+ *  separate shifted glyph; their case is handled by toUpperCase below.)
+ *
+ *  MIGRATION TRADEOFF (accepted): this fold changed canonicalization, so an
+ *  override persisted by a PRE-fold build as a RAW shifted glyph (e.g.
+ *  'Ctrl+Shift+<') is no longer produced by any keypress after upgrade and so
+ *  becomes unreachable — its command silently falls back to the default. We
+ *  accept this because no shipped default ever used a shifted-glyph combo, so
+ *  only a hand-rebound punctuation chord could be affected, and the fold is
+ *  REQUIRED to make the 'Ctrl+Shift+,' (openSettings) default reachable at all.
+ *  We deliberately do NOT re-parse/re-canonicalize arbitrary persisted override
+ *  strings to recover such a binding: a stored combo is split on '+', so a glyph
+ *  like '+' itself makes the separator ambiguous and re-folding stored strings
+ *  is unsafe — out of scope here. */
+const SHIFTED_PUNCTUATION: Readonly<Record<string, string>> = {
+  '~': '`',
+  '!': '1',
+  '@': '2',
+  '#': '3',
+  $: '4',
+  '%': '5',
+  '^': '6',
+  '&': '7',
+  '*': '8',
+  '(': '9',
+  ')': '0',
+  _: '-',
+  '+': '=',
+  '{': '[',
+  '}': ']',
+  '|': '\\',
+  ':': ';',
+  '"': "'",
+  '<': ',',
+  '>': '.',
+  '?': '/',
+};
+
 /** Normalize the non-modifier key token to its canonical form.
- *  - Single printable characters upper-case (so 'k' and 'K' agree).
  *  - The space key (' ') canonicalizes to the readable token 'Space'.
+ *  - A shifted-punctuation glyph folds to its unshifted base (see
+ *    SHIFTED_PUNCTUATION) so a punctuation chord is layout-stable with Shift.
+ *  - Single printable characters upper-case (so 'k' and 'K' agree).
  *  - Named keys (length > 1, e.g. 'Escape', 'ArrowLeft') pass through. */
 function normalizeKey(key: string): string {
   if (key === ' ' || key === 'Spacebar') return 'Space';
+  const base = SHIFTED_PUNCTUATION[key];
+  if (base !== undefined) return base;
   if (key.length === 1) return key.toUpperCase();
   return key;
 }
@@ -270,23 +327,20 @@ export function findConflict(
 }
 
 /** Combos RESERVED by the app shell that a command may NOT be rebound to —
- *  each is intercepted by the App dispatcher BEFORE matching any rebindable
- *  command, so a command bound to one would be permanently dead. The panel
- *  treats a captured reserved combo as a hard conflict and refuses the
- *  assignment (KB-2).
+ *  each is intercepted by the app shell (the App dispatcher for 'Ctrl+,', the
+ *  terminal pane for 'Ctrl+Shift+Tab') BEFORE matching any rebindable command,
+ *  so a command bound to one would be permanently dead. The panel treats a
+ *  captured reserved combo as a hard conflict and refuses the assignment (KB-2).
  *
  *  ORDER MATTERS: the Shortcuts-panel opener is `Array.from(RESERVED_COMBOS)[0]`
  *  (ShortcutsPanel.OPENER_COMBO), so 'Ctrl+,' (the Shortcuts opener) MUST stay
- *  at index 0 — APPEND new reserved combos, never prepend. 'Ctrl+Shift+G' is the
- *  fixed Changes-viewer toggle (App.tsx dispatcher intercepts it before the
- *  rebindable-command loop), reserved here so a rebind onto it is hard-blocked
- *  rather than silently shadowed. 'Ctrl+Shift+Tab' is the terminal pane's
- *  focus-escape hatch (TerminalPane's attachCustomKeyEventHandler moves focus
- *  out of xterm on it) — reserved so a command rebound onto it could never
- *  fire focus-escape AND its own action (e.g. dock-close/kill) at once. */
+ *  at index 0 — APPEND new reserved combos, never prepend. 'Ctrl+Shift+Tab' is
+ *  the terminal pane's focus-escape hatch (TerminalPane's
+ *  attachCustomKeyEventHandler moves focus out of xterm on it) — reserved so a
+ *  command rebound onto it could never fire focus-escape AND its own action
+ *  (e.g. dock-close/kill) at once. */
 export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
   'Ctrl+,',
-  'Ctrl+Shift+G',
   'Ctrl+Shift+Tab',
 ]);
 

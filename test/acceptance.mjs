@@ -1922,9 +1922,10 @@ test('FR-54 resolveBindings: user overrides win over defaults; others keep defau
   // All commands present in the resolved map (includes openSearch, the
   // project-wide content-search opener, copyRendered, the Viewer
   // copy-rendered shortcut, toggleTerminal, the bottom-dock toggle,
-  // toggleReadingWidth, the Viewer reading-width quick toggle, and
-  // toggleSplitView, the side-by-side compare reading-pane toggle).
-  assert.equal(Object.keys(resolved).length, 12, 'resolved map covers all 12 commands');
+  // toggleReadingWidth, the Viewer reading-width quick toggle, toggleSplitView,
+  // the side-by-side compare reading-pane toggle, and the three newly-editable
+  // shell commands — toggleChanges, openSettings, and toggleMaximizeTerminal).
+  assert.equal(Object.keys(resolved).length, 15, 'resolved map covers all 15 commands');
 });
 
 test('FR-54 resolveBindings: missing/corrupt overrides fall back to defaults', async () => {
@@ -2029,6 +2030,35 @@ test('FR-54 eventToCombo: the space key normalizes to the readable "Space" token
   assert.equal(eventToCombo(keyEvent('Spacebar')), 'Space', "'Spacebar' alias -> 'Space'");
 });
 
+test('FR-54 eventToCombo: a shifted-punctuation glyph folds to its unshifted base so a Shift chord is layout-stable', async () => {
+  const { eventToCombo, DEFAULT_BINDINGS } = await kit();
+  // With Shift held, the comma key reports its SHIFTED glyph '<' (US layout), so
+  // WITHOUT folding the chord would serialize to 'Ctrl+Shift+<' and miss the
+  // openSettings default 'Ctrl+Shift+,'. Folding '<' -> ',' makes the obvious
+  // Shift+comma keypress REACH the default (the Shift token already records the
+  // shift), so the default and the keypress that produces it agree.
+  assert.equal(
+    eventToCombo(keyEvent('<', { ctrl: true, shift: true })),
+    'Ctrl+Shift+,',
+    "Shift+comma (key='<') folds back to the base ',' so it matches the openSettings default",
+  );
+  assert.equal(
+    eventToCombo(keyEvent('<', { ctrl: true, shift: true })),
+    DEFAULT_BINDINGS.openSettings,
+    'the folded Shift+comma chord equals the resolved openSettings default (reachable on US layouts)',
+  );
+  // A few more shifted glyphs fold to their base (number row + bracket).
+  assert.equal(eventToCombo(keyEvent('@', { ctrl: true, shift: true })), 'Ctrl+Shift+2', "Shift+2 ('@') -> base '2'");
+  assert.equal(eventToCombo(keyEvent('?', { ctrl: true, shift: true })), 'Ctrl+Shift+/', "Shift+/ ('?') -> base '/'");
+  assert.equal(eventToCombo(keyEvent('>', { ctrl: true, shift: true })), 'Ctrl+Shift+.', "Shift+. ('>') -> base '.'");
+  // The shifted '+' glyph (Shift+'=') folds to '=' BEFORE the join, so it can
+  // never collide with the '+' combo separator.
+  assert.equal(eventToCombo(keyEvent('+', { ctrl: true, shift: true })), 'Ctrl+Shift+=', "Shift+= ('+') -> base '=' (no separator clash)");
+  // An UNSHIFTED punctuation key is unchanged (no spurious fold).
+  assert.equal(eventToCombo(keyEvent(',', { ctrl: true })), 'Ctrl+,', 'an unshifted comma stays a comma');
+  assert.equal(eventToCombo(keyEvent('.', { ctrl: true })), 'Ctrl+.', 'an unshifted dot stays a dot');
+});
+
 test('FR-54 isReserved: the fixed Ctrl/Cmd+Comma opener is reserved + un-assignable (KB-2)', async () => {
   const { isReserved, RESERVED_COMBOS, findConflict, isValidBinding } = await kit();
   assert.equal(isReserved('Ctrl+,'), true, 'the opener combo is reserved');
@@ -2041,11 +2071,27 @@ test('FR-54 isReserved: the fixed Ctrl/Cmd+Comma opener is reserved + un-assigna
   const { resolveBindings } = await kit();
   assert.equal(findConflict(resolveBindings({}), 'Ctrl+,', null), null, 'no command holds the opener combo');
 
-  // The fixed Changes-viewer toggle (Ctrl/Cmd+Shift+G) is ALSO reserved so a
-  // rebind onto it is hard-blocked by the panel rather than silently shadowed by
-  // the App dispatcher's fixed branch (frontend/F1).
-  assert.equal(isReserved('Ctrl+Shift+G'), true, 'the Changes toggle is reserved');
-  assert.equal(RESERVED_COMBOS.has('Ctrl+Shift+G'), true, 'RESERVED_COMBOS contains the Changes toggle');
+  // The terminal focus-escape hatch (Ctrl/Cmd+Shift+Tab) stays reserved so a
+  // command rebound onto it could never fire focus-escape AND its own action at
+  // once (TerminalPane's attachCustomKeyEventHandler owns it).
+  assert.equal(isReserved('Ctrl+Shift+Tab'), true, 'the terminal focus-escape hatch is reserved');
+  assert.equal(
+    RESERVED_COMBOS.has('Ctrl+Shift+Tab'),
+    true,
+    'RESERVED_COMBOS contains the terminal focus-escape hatch',
+  );
+
+  // RESERVED_COMBOS is now EXACTLY {Ctrl+,, Ctrl+Shift+Tab}: the Changes-viewer
+  // toggle (Ctrl/Cmd+Shift+G) was PROMOTED out of RESERVED to an editable
+  // toggleChanges command, so it is no longer shell-reserved and CAN be rebound.
+  assert.equal(isReserved('Ctrl+Shift+G'), false, 'the promoted Changes toggle is no longer reserved');
+  assert.equal(RESERVED_COMBOS.has('Ctrl+Shift+G'), false, 'RESERVED_COMBOS no longer holds the Changes toggle');
+  assert.equal(RESERVED_COMBOS.size, 2, 'RESERVED_COMBOS is exactly {Ctrl+comma, Ctrl+Shift+Tab}');
+  assert.deepEqual(
+    [...RESERVED_COMBOS].sort(),
+    ['Ctrl+,', 'Ctrl+Shift+Tab'].sort(),
+    'RESERVED_COMBOS contents are exactly the opener + the terminal focus-escape hatch',
+  );
   // The Shortcuts-panel opener (ShortcutsPanel.OPENER_COMBO) reads
   // Array.from(RESERVED_COMBOS)[0], so the opener MUST remain at index 0 — a
   // prepend of a new reserved combo would break the panel's "press X to open"
@@ -2109,9 +2155,11 @@ test('FR-54 diffOverrides: a vacated ("") binding is never persisted (KB-3)', as
   const overrides = diffOverrides({ ...DEFAULT_BINDINGS, foldAll: '' });
   assert.equal(overrides.foldAll, undefined, 'a vacated/invalid binding is not persisted');
   assert.deepEqual(overrides, {}, 'only the (empty) vacate yields no override entry');
-  // A real differing binding still persists.
-  const o2 = diffOverrides({ ...DEFAULT_BINDINGS, foldAll: 'Ctrl+Shift+G' });
-  assert.deepEqual(o2, { foldAll: 'Ctrl+Shift+G' }, 'a real rebind still persists');
+  // A real differing binding still persists. Use a combo NO command defaults to
+  // (Ctrl+Shift+Y) so the fixture reads as a clean rebind, not an unintended
+  // conflict with toggleChanges (whose live default is now Ctrl+Shift+G).
+  const o2 = diffOverrides({ ...DEFAULT_BINDINGS, foldAll: 'Ctrl+Shift+Y' });
+  assert.deepEqual(o2, { foldAll: 'Ctrl+Shift+Y' }, 'a real rebind still persists');
 });
 
 test('FR-54 rebind + reset round-trip on the pure data (defaults <-> override)', async () => {
@@ -2145,6 +2193,100 @@ test('FR-54 rebind + reset round-trip on the pure data (defaults <-> override)',
 });
 
 /* ============================================================
+ * Editable shell commands (toggleChanges / openSettings /
+ * toggleMaximizeTerminal) — the three actionable app commands promoted
+ * to (or added as) rebindable COMMANDS entries.
+ * ============================================================ */
+test('FR-54 editable shell commands: the three new commands exist with their default bindings', async () => {
+  const { COMMANDS, DEFAULT_BINDINGS } = await kit();
+  const expectCmd = (id, label, combo) => {
+    const spec = COMMANDS.find((c) => c.id === id);
+    assert.ok(spec, `a ${id} command is registered`);
+    assert.equal(spec.label, label, `${id} label matches the spec`);
+    assert.equal(spec.defaultBinding, combo, `${id} default binding is ${combo}`);
+    assert.equal(DEFAULT_BINDINGS[id], combo, `${id} resolved default carries the combo`);
+  };
+  // toggleChanges was PROMOTED from the fixed/reserved Ctrl/Cmd+Shift+G branch
+  // to a rebindable command; openSettings + toggleMaximizeTerminal are new.
+  expectCmd('toggleChanges', 'Toggle changes view', 'Ctrl+Shift+G');
+  expectCmd('openSettings', 'Open settings', 'Ctrl+Shift+,');
+  expectCmd('toggleMaximizeTerminal', 'Toggle terminal maximize', 'Ctrl+Shift+M');
+});
+
+test('FR-54 editable shell commands: no two COMMANDS share a default binding (no conflicting defaults)', async () => {
+  const { COMMANDS, DEFAULT_BINDINGS, findConflict, resolveBindings } = await kit();
+  // Every default binding is unique across the whole command set — so the
+  // panel's conflict detection never trips on the shipped defaults.
+  const seen = new Map();
+  for (const c of COMMANDS) {
+    assert.equal(
+      seen.has(c.defaultBinding),
+      false,
+      `default ${c.defaultBinding} is claimed by both ${seen.get(c.defaultBinding)} and ${c.id}`,
+    );
+    seen.set(c.defaultBinding, c.id);
+  }
+  // And each new command's default is collision-free against ALL other defaults.
+  for (const id of ['toggleChanges', 'openSettings', 'toggleMaximizeTerminal']) {
+    assert.equal(
+      findConflict(DEFAULT_BINDINGS, DEFAULT_BINDINGS[id], id),
+      null,
+      `${id} default conflicts with no other default binding`,
+    );
+  }
+  // POSITIVE conflict detection for a new command: capturing toggleTheme's
+  // live combo for openSettings is detected as colliding WITH toggleTheme.
+  // findConflict returns the id already bound to the combo (excluding the
+  // capturing command), so the result is 'toggleTheme'.
+  assert.equal(
+    findConflict(resolveBindings({}), DEFAULT_BINDINGS.toggleTheme, 'openSettings'),
+    'toggleTheme',
+    "binding openSettings to toggleTheme's combo is detected as a toggleTheme conflict",
+  );
+});
+
+test('FR-54 editable shell commands: the promoted Ctrl/Cmd+Shift+G can now be rebound + persisted', async () => {
+  const { resolveBindings, diffOverrides, DEFAULT_BINDINGS, isReserved, bindingAllowedFor } =
+    await kit();
+  // Ctrl+Shift+G is no longer shell-reserved (it was promoted out of
+  // RESERVED_COMBOS), so a command CAN be rebound onto it AND off it.
+  assert.equal(isReserved('Ctrl+Shift+G'), false, 'the promoted combo is no longer reserved');
+  assert.equal(
+    bindingAllowedFor('toggleChanges', 'Ctrl+Shift+G'),
+    true,
+    'the promoted combo is allowed for its command',
+  );
+  // Rebinding toggleChanges to a fresh free combo persists sparsely and
+  // re-resolves cleanly — exactly like any other editable command.
+  const rebound = 'Ctrl+Shift+D';
+  const resolved = { ...DEFAULT_BINDINGS, toggleChanges: rebound };
+  const overrides = diffOverrides(resolved);
+  assert.deepEqual(overrides, { toggleChanges: rebound }, 'a toggleChanges rebind persists sparsely');
+  assert.deepEqual(
+    resolveBindings(overrides),
+    resolved,
+    'the persisted toggleChanges override re-resolves to the same full map',
+  );
+});
+
+test('FR-54 migration safety: an OLD persisted override map (pre-new-ids) loads cleanly', async () => {
+  const { resolveBindings, DEFAULT_BINDINGS } = await kit();
+  // A persisted config from BEFORE these ids existed never mentioned them — the
+  // new commands must default cleanly (resolve to defaultBinding when absent),
+  // and a legacy override of a still-present command must still apply.
+  const legacy = { toggleTheme: 'Ctrl+Shift+T' };
+  const resolved = resolveBindings(legacy);
+  assert.equal(resolved.toggleTheme, 'Ctrl+Shift+T', 'the legacy override still applies');
+  assert.equal(resolved.toggleChanges, DEFAULT_BINDINGS.toggleChanges, 'toggleChanges defaults cleanly');
+  assert.equal(resolved.openSettings, DEFAULT_BINDINGS.openSettings, 'openSettings defaults cleanly');
+  assert.equal(
+    resolved.toggleMaximizeTerminal,
+    DEFAULT_BINDINGS.toggleMaximizeTerminal,
+    'toggleMaximizeTerminal defaults cleanly',
+  );
+});
+
+/* ============================================================
  * Project-wide content search (search-core matchFile + search.run)
  * ------------------------------------------------------------
  * matchFile is a pure substring matcher; createSearch walks the
@@ -2164,7 +2306,7 @@ test('SEARCH command: the openSearch command exists with its default binding (D)
   assert.equal(spec.label, 'Search file contents', 'label matches the spec');
   assert.equal(spec.defaultBinding, 'Ctrl+Shift+F', 'default binding is Ctrl/Cmd+Shift+F');
   assert.equal(DEFAULT_BINDINGS.openSearch, 'Ctrl+Shift+F', 'resolved default carries the combo');
-  assert.equal(COMMANDS.length, 12, 'there are now 12 customizable commands');
+  assert.equal(COMMANDS.length, 15, 'there are now 15 customizable commands');
 });
 
 test('SEARCH matchFile: finds multiple hits per line AND across lines', async () => {

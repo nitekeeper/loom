@@ -351,9 +351,11 @@ export function StatusBar({
       {/* Branch CHANGES toggle — a workspace-level view, so it sits in the LEFT
           cluster next to the explorer toggle. A true toggle button: STABLE name
           ("Changes") + aria-pressed for the open/closed state (A11Y-EXP-04); the
-          shortcut hint lives in the visual tooltip only. An optional changed-file
-          count rides as a .badge-new chip (aria-hidden — the count is supplemental,
-          the stable name never changes). */}
+          shortcut hint lives in the visual tooltip only — the hard-coded DEFAULT
+          (toggleChanges, now editable, default Ctrl/Cmd+Shift+G), like every peer
+          toggle, so a rebind shows only in the Shortcuts panel row, not here. An
+          optional changed-file count rides as a .badge-new chip (aria-hidden — the
+          count is supplemental, the stable name never changes). */}
       <button
         type="button"
         className="iconbtn statusbar-changes-btn"
@@ -361,7 +363,10 @@ export function StatusBar({
         onClick={onToggleDiff}
         aria-pressed={diffMode}
         aria-label="Changes"
-        title="Show changes on this branch (Ctrl/Cmd+Shift+G)"
+        title={
+          (diffMode ? 'Hide changes on this branch' : 'Show changes on this branch') +
+          ' (Ctrl/Cmd+Shift+G)'
+        }
       >
         <DiffIcon open={diffMode} />
         {changedCount !== null && changedCount > 0 ? (
@@ -474,10 +479,13 @@ export function StatusBar({
 
       {/* Settings opener — a settings gear. aria-haspopup="dialog" signals it
           opens a modal; aria-expanded mirrors the Settings panel's open state.
-          The ref lets App return focus here when the panel closes. The Keyboard
-          Shortcuts panel keeps its OWN fixed Ctrl/Cmd+Comma opener (and is also
-          reachable from inside Settings), so this gear carries NO
-          aria-keyshortcuts — that combo opens Shortcuts, not Settings. */}
+          The ref lets App return focus here when the panel closes. Settings now
+          has its OWN editable shortcut (the openSettings command, default
+          Ctrl/Cmd+Shift+,) advertised in the title below — like every peer
+          toggle the hint is a hard-coded DEFAULT (a rebind shows only in the
+          Shortcuts panel row, not here, since no peer button threads the
+          resolved binding through props); aria-keyshortcuts is still omitted to
+          match that peer convention (title-only hints). */}
       <button
         type="button"
         className="iconbtn"
@@ -486,7 +494,7 @@ export function StatusBar({
         aria-haspopup="dialog"
         aria-expanded={settingsOpen}
         aria-label="Settings"
-        title="Settings"
+        title="Settings (Ctrl/Cmd+Shift+,)"
       >
         <GearIcon />
       </button>

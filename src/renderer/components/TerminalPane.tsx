@@ -311,7 +311,14 @@ export function TerminalPane({
           onClick={onToggleMaximize}
           aria-pressed={maximized}
           aria-label={maximized ? 'Restore terminal size' : 'Maximize terminal'}
-          title={maximized ? 'Restore terminal size' : 'Maximize terminal'}
+          // The shortcut hint is the hard-coded DEFAULT (toggleMaximizeTerminal,
+          // Ctrl/Cmd+Shift+M) — like the peer StatusBar toggles, which do not
+          // thread the resolved binding through props; a rebind shows only in
+          // the Shortcuts panel row, not here.
+          title={
+            (maximized ? 'Restore terminal size' : 'Maximize terminal') +
+            ' (Ctrl/Cmd+Shift+M)'
+          }
         >
           <MaximizeIcon maximized={maximized} />
         </button>

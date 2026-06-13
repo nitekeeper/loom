@@ -151,6 +151,41 @@ The clipboard is read back **from the main process** —
 `<html><body>`/`<meta>` (CF_HTML) fragment, so the HTML assertions check
 substrings of the inner markers, not string equality.
 
+### `keyboard-shortcuts.e2e.ts` — editable shell commands
+
+The **only** layer that can prove the three newly-**editable** app commands fire
+end to end through the **real** App keyboard dispatcher
+(`src/renderer/components/App.tsx`) against a **real** Chromium key pipeline —
+which the pure unit suite (`test/acceptance.mjs`: `COMMANDS` / `resolveBindings`
+/ `RESERVED_COMBOS` data) cannot reach:
+
+- **`toggleChanges`** (default `Ctrl/⌘+Shift+G`) — **promoted** out of the old
+  fixed/reserved interception to a rebindable command; opens/closes the
+  center-pane Changes viewer (`.pane.viewer.changes`), the same action the
+  StatusBar Changes toggle performs.
+- **`openSettings`** (default `Ctrl/⌘+Shift+,`) — opens the Settings dialog the
+  same way the gear does. (Note: `Shift`+comma reports the shifted glyph `<`;
+  `eventToCombo` folds it back to `,` so the default is **reachable** on US
+  layouts — see the `eventToCombo` shifted-punctuation unit test.)
+- **`toggleMaximizeTerminal`** (default `Ctrl/⌘+Shift+M`) — opens the dock when
+  closed then maximizes it, and flips maximize↔restore when already open (the
+  `.body.terminal-max` class + the maximize button's `aria-pressed` mirror it).
+
+Tests:
+
+1. **`Ctrl+Shift+G` toggles Changes** open→close, **exactly once** per press
+   (no double-fire after the promotion); **1b** proves `Escape` still closes it.
+2. **`Ctrl+Shift+,` opens Settings** (the gear's dialog).
+3. **`Ctrl+Shift+M`** opens+maximizes the closed dock, then toggles
+   maximize/restore.
+4. **REBIND** — the **promoted** Changes command (previously reserved +
+   un-assignable) is rebound through the Shortcuts panel to a fresh combo; the
+   **new** combo fires the action and the **old** default no longer does. Uses a
+   fresh `--user-data-dir` so the persisted override can't poison a sibling.
+
+The in-sandbox gate is `npx playwright test --list` + `npm run typecheck:e2e`
+(the suite launches a real Electron under xvfb in CI, never in the WSL sandbox).
+
 ## Run it locally (real hardware)
 
 ```bash

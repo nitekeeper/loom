@@ -1232,6 +1232,23 @@ export function App(): JSX.Element {
     setTerminalOpen(next);
   }, []);
 
+  // Flip the terminal dock between maximized and restored (the same action the
+  // pane-header maximize button performs). Maximize/restore is a deliberate
+  // "give me the terminal" action, so bump the focus nonce to land focus in
+  // xterm — matching the header button's inline handler. When the dock is
+  // CLOSED, open it first (a closed dock has nothing to maximize), then
+  // maximize so the keyboard command is a non-crashing, sensible no-op-or-open;
+  // toggleTerminal already bumps the focus nonce in that path.
+  const toggleMaximizeTerminal = useCallback((): void => {
+    if (!terminalOpenRef.current) {
+      toggleTerminal();
+      setTerminalMax(true);
+      return;
+    }
+    setTerminalMax((m) => !m);
+    setTerminalFocusNonce((n) => n + 1);
+  }, [toggleTerminal]);
+
   // Keyboard Shortcuts panel open state. App owns it; the fixed Ctrl/Cmd+Comma
   // opener, the Settings "Open Keyboard Shortcuts" button, and the `?shortcuts`
   // capture hint all set it.
@@ -1907,11 +1924,10 @@ export function App(): JSX.Element {
 
       // Fixed, non-rebindable opener: Ctrl/Cmd+Comma opens the Shortcuts panel.
       // Skipped in editable controls so a future text field keeps native
-      // behavior. RESERVED_COMBOS now holds MULTIPLE fixed combos (the opener +
-      // the Changes toggle), each routed to its OWN action — so this branch must
-      // match the opener SPECIFICALLY (not any reserved combo), else it would
-      // swallow Ctrl/Cmd+Shift+G. The panel still hard-blocks binding any command
-      // to ANY reserved combo (KB-2), so neither fixed combo can be shadowed.
+      // behavior. RESERVED_COMBOS still holds this fixed opener (so the panel
+      // hard-blocks any rebind onto it, KB-2); this branch matches it
+      // SPECIFICALLY (not any reserved combo) so the defensive isReserved guard
+      // below never has to short-circuit it.
       if (combo === 'Ctrl+,' && !isEditableTarget(e.target)) {
         e.preventDefault();
         openShortcuts(gearButtonRef.current);
@@ -1945,19 +1961,6 @@ export function App(): JSX.Element {
       ) {
         e.preventDefault();
         closeChanges();
-        return;
-      }
-
-      // Fixed Ctrl/Cmd+Shift+G binding toggles the branch Changes viewer. A
-      // FIXED combo (not a rebindable CommandId) and a RESERVED combo (so the
-      // Shortcuts panel hard-blocks any rebind onto it, KB-2) — parallel to the
-      // reserved Ctrl/Cmd+Comma opener. eventToCombo folds metaKey into 'Ctrl'
-      // (keybindings.ts:120), so Cmd and Ctrl both canonicalize to
-      // 'Ctrl+Shift+G'. Skipped in editable controls so a future text field
-      // keeps native keys.
-      if (combo === 'Ctrl+Shift+G' && !isEditableTarget(e.target)) {
-        e.preventDefault();
-        toggleChanges();
         return;
       }
 
@@ -2001,6 +2004,14 @@ export function App(): JSX.Element {
         case 'toggleTerminal':
           toggleTerminal();
           break;
+        case 'toggleMaximizeTerminal':
+          // Maximize/restore the terminal dock (opens it first when closed).
+          toggleMaximizeTerminal();
+          break;
+        case 'toggleChanges':
+          // Open/close the branch Changes viewer (the StatusBar toggle action).
+          toggleChanges();
+          break;
         case 'foldAll':
           fireFoldCommand('fold');
           break;
@@ -2035,6 +2046,12 @@ export function App(): JSX.Element {
         case 'openSearch':
           openSearch();
           break;
+        case 'openSettings':
+          // Open Settings the same way the StatusBar gear does — pass the gear
+          // ref as the opener so focus returns there on close (mirrors how the
+          // Ctrl/Cmd+Comma opener hands the gear to openShortcuts).
+          openSettings(gearButtonRef.current);
+          break;
         default:
           break;
       }
@@ -2056,11 +2073,13 @@ export function App(): JSX.Element {
     toggleMdWidth,
     toggleSplitView,
     openShortcuts,
+    openSettings,
     runCloseFileCommand,
     openSearch,
     diffMode,
     closeChanges,
     toggleChanges,
+    toggleMaximizeTerminal,
   ]);
 
   if (vm === null) {

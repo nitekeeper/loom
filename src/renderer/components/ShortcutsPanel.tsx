@@ -1,9 +1,9 @@
 /* ============================================================
  * Loom — Keyboard Shortcuts panel (FR-54 / WCAG 2.2 AA)
  * ------------------------------------------------------------
- * An accessible MODAL dialog for viewing + rebinding the 7
- * customizable commands. It is the ONLY UI that mutates the
- * keybindings; the App dispatcher merely reads the resolved map.
+ * An accessible MODAL dialog for viewing + rebinding the
+ * customizable commands (the COMMANDS array). It is the ONLY UI that
+ * mutates the keybindings; the App dispatcher merely reads the resolved map.
  *
  * ACCESSIBILITY (WCAG 2.2 AA):
  *   - role="dialog" + aria-modal="true" + aria-labelledby the title
@@ -239,12 +239,18 @@ export function ShortcutsPanel({
   // (reassign/cancel).
   const assignCombo = useCallback(
     (id: CommandId, combo: string): void => {
-      // The app-shell opener is reserved — refuse and explain (KB-2).
+      // A reserved combo is intercepted by the app shell before any rebindable
+      // command, so it can never be assigned — refuse and explain (KB-2). The
+      // reason is combo-specific: the Shortcuts opener (OPENER_COMBO) names the
+      // panel it opens; every other reserved combo gets a neutral, accurate
+      // message (e.g. the terminal focus-escape 'Ctrl+Shift+Tab').
       if (isReserved(combo)) {
         setPendingReserved({ id, combo });
         setLiveCombo(combo);
         announce(
-          `${formatCombo(combo)} is reserved for opening Keyboard Shortcuts and cannot be assigned. Press another key combination, or press Escape to cancel.`,
+          combo === OPENER_COMBO
+            ? `${formatCombo(combo)} is reserved for opening Keyboard Shortcuts and cannot be assigned. Press another key combination, or press Escape to cancel.`
+            : `${formatCombo(combo)} is reserved by the app and cannot be assigned. Press a different key combination, or press Escape to cancel.`,
         );
         return;
       }
@@ -635,9 +641,19 @@ export function ShortcutsPanel({
                 {isReservedRow && pendingReserved && (
                   <div className="sc-conflict" role="alert">
                     <span className="sc-conflict-text">
-                      {formatCombo(pendingReserved.combo)} is reserved for
-                      opening this Keyboard Shortcuts panel and cannot be
-                      assigned. Press a different key combination.
+                      {pendingReserved.combo === OPENER_COMBO ? (
+                        <>
+                          {formatCombo(pendingReserved.combo)} is reserved for
+                          opening this Keyboard Shortcuts panel and cannot be
+                          assigned. Press a different key combination.
+                        </>
+                      ) : (
+                        <>
+                          {formatCombo(pendingReserved.combo)} is reserved by the
+                          app and cannot be assigned. Press a different key
+                          combination.
+                        </>
+                      )}
                     </span>
                     <span className="sc-conflict-actions">
                       <button
