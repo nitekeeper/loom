@@ -128,7 +128,10 @@ test('1: the custom min/max/close controls render on the frameless chrome', asyn
     await expect(controls).toHaveCount(1);
     await expect(controls.locator('button')).toHaveCount(3);
     await expect(page.getByRole('button', { name: 'Minimize' })).toHaveCount(1);
-    await expect(page.getByRole('button', { name: 'Maximize' })).toHaveCount(1);
+    // exact:true — the terminal pane's "Maximize terminal" / "Restore terminal
+    // size" buttons (TerminalPane.tsx) would otherwise substring-match these
+    // titlebar controls when terminal-open state is present, resolving to 2.
+    await expect(page.getByRole('button', { name: 'Maximize', exact: true })).toHaveCount(1);
     await expect(page.getByRole('button', { name: 'Close window' })).toHaveCount(1);
   } finally {
     await app.close();
@@ -172,14 +175,14 @@ test('3: toggling Maximize flips isMaximized() and the button label', async () =
   try {
     expect(await isMaximized(app)).toBe(false);
     // Starts as "Maximize"; after toggling it must become "Restore".
-    await page.getByRole('button', { name: 'Maximize' }).click();
+    await page.getByRole('button', { name: 'Maximize', exact: true }).click();
     await expect.poll(() => isMaximized(app), { timeout: 10_000 }).toBe(true);
-    await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(1);
 
     // Toggle back: unmaximize → isMaximized() false → label back to "Maximize".
-    await page.getByRole('button', { name: 'Restore' }).click();
+    await page.getByRole('button', { name: 'Restore', exact: true }).click();
     await expect.poll(() => isMaximized(app), { timeout: 10_000 }).toBe(false);
-    await expect(page.getByRole('button', { name: 'Maximize' })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Maximize', exact: true })).toHaveCount(1);
   } finally {
     await app.close();
     rmSync(dir, { recursive: true, force: true });
@@ -241,8 +244,8 @@ test('5: a renderer reloaded while maximized seeds the Restore label (pull, not 
     await page.waitForSelector('.pane.explorer [role="treeitem"]', { timeout: 30_000 });
 
     // The seed must reflect the live maximized state — "Restore", never "Maximize".
-    await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(1);
-    await expect(page.getByRole('button', { name: 'Maximize' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Restore', exact: true })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Maximize', exact: true })).toHaveCount(0);
 
     // Restore in MAIN so teardown leaves a normal window.
     await app.evaluate(({ BrowserWindow }) => {
@@ -338,7 +341,7 @@ test('8: the n/ne/nw handles start below the 40px titlebar and never shadow the 
     // The controls are still fully clickable (no handle intercepts the pointerdown):
     // clicking Maximize through the area the ne corner used to cover must toggle.
     expect(await isMaximized(app)).toBe(false);
-    await page.getByRole('button', { name: 'Maximize' }).click();
+    await page.getByRole('button', { name: 'Maximize', exact: true }).click();
     await expect.poll(() => isMaximized(app), { timeout: 10_000 }).toBe(true);
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.unmaximize();
