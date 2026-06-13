@@ -61,8 +61,9 @@ thin preload bridge.
                           │   contextIsolation:true · nodeIntegration:false (FR-11/12)│
                           │                                                         │
                           │   App ── TitleBar · StatusBar ── Explorer | Viewer | Chat│
-                          │            (chrome)                (3 content panes,     │
-                          │                                     NO terminal — OQ-6)  │
+                          │            (chrome)                (3 content panes)      │
+                          │   + human-only bottom-dock Terminal (Ctrl+`, @xterm/xterm│
+                          │     ⇄ node-pty over loom:terminal:* IPC) — OQ-6 resolved  │
                           │   safe render: lib/markdown (html:false, inert links) + │
                           │   lib/highlight (read-only tokenizer) — Law 1            │
                           └─────────────────────────────────────────────────────────┘
@@ -171,12 +172,18 @@ See `CONTRACTS.md` §"Module strategy" for the authoritative table.
 Each ADR records a decision already resolved by the orchestrator; they are not
 re-opened here.
 
-### ADR-0001 — Three content panes; no terminal (OQ-6 resolved)
+### ADR-0001 — Three side-by-side content panes; human-only terminal added as a bottom dock (OQ-6 resolved)
 **Decision:** The UI is a CSS grid `auto auto 1fr`: TitleBar + StatusBar chrome
-over a body of exactly three content panes — Explorer | Viewer | Chat. The
-"terminal" pane named in early project memory is **dropped**.
-**Rationale:** The design prototype mounts only three panes; no terminal appears
-in any screenshot. A terminal would also conflict with Law 1. (FR-34, AC-17.)
+over a body of exactly three side-by-side content panes — Explorer | Viewer | Chat.
+The "terminal" named in early project memory is **not** one of those three content
+panes; it has since been added as a separate **human-only bottom-dock terminal**
+below the body, toggled with **Ctrl+`**, built on **@xterm/xterm** (renderer) and
+**node-pty** (main) over `loom:terminal:*` IPC.
+**Rationale:** The design prototype mounts only the three content panes, so the
+side-by-side layout (FR-34, AC-17) is unchanged. The bottom-dock terminal is
+**human-only and MCP-invisible (no agent surface)** — agents cannot see or drive
+it — so it does not conflict with Law 1's no-execution guarantee for the rendered
+file/message content agents produce. (FR-34, AC-17.)
 
 ### ADR-0002 — Storage: sql.js (WASM) substituting for better-sqlite3
 **Decision:** Use **sql.js** (pure-WASM SQLite). Run the **exact Appendix-A DDL**.
