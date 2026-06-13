@@ -7,8 +7,11 @@
  *
  * Three grouped sections:
  *   1. Viewer → Reading width — a real radio group (fieldset/legend) toggling
- *      the RENDERED (.md) reading column between the predefined 792px measure
- *      ('fit', the default) and full Viewer width ('full').
+ *      the Viewer reading column (markdown AND source/plaintext) between the
+ *      predefined 120ch measure ('fit', the default) and full Viewer width
+ *      ('full'). The Viewer-head quick toggle + the rebindable Ctrl/Cmd+Shift+W
+ *      command drive the SAME App-lifted state, so these radios always reflect
+ *      a toggle made there (and vice versa).
  *   2. Appearance → Theme — reflects the live theme and sets it BY VALUE
  *      (ADDITIVE; the StatusBar theme toggle stays). A 2-radio Light/Dark group
  *      so the current value is visible and either can be selected directly.
@@ -145,7 +148,7 @@ export function SettingsPanel({
       announce(
         mode === 'full'
           ? 'Reading width set to full width.'
-          : 'Reading width set to fixed, 792 pixels.',
+          : 'Reading width set to fixed, 120 characters.',
       );
     },
     [mdWidth, onMdWidthChange, announce],
@@ -275,7 +278,7 @@ export function SettingsPanel({
           {/* --- Viewer → Reading width --------------------------------------
               A real radio group: a <fieldset> whose <legend> ("Reading width")
               is the group's accessible name, with TWO native radios whose
-              visible labels ARE their accessible names ("Fixed (792px)" /
+              visible labels ARE their accessible names ("Fixed (120 ch)" /
               "Full width"). The platform handles roving focus + arrow-key
               selection; changing the selection lifts to App. */}
           {/* Plain section WITHOUT an accessible name: a named <section> becomes
@@ -296,7 +299,7 @@ export function SettingsPanel({
                     checked={mdWidth === 'fit'}
                     onChange={() => selectWidth('fit')}
                   />
-                  <span>Fixed (792px)</span>
+                  <span>Fixed (120 ch)</span>
                 </label>
                 <label className="set-radio">
                   <input

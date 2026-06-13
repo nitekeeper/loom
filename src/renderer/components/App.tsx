@@ -50,7 +50,7 @@ import {
   TERMINAL_MIN_HEIGHT,
   TERMINAL_OPEN_KEY,
 } from '../lib/terminal-pane.js';
-import { readInitialMdWidth, persistMdWidth } from '../lib/md-width.js';
+import { readInitialMdWidth, persistMdWidth, toggleWidthMode } from '../lib/md-width.js';
 import type { WidthMode } from '../lib/md-width.js';
 import { installGlobalAnchorGuard } from '../lib/anchor-guard.js';
 
@@ -962,6 +962,22 @@ export function App(): JSX.Element {
     setMdWidth(mode);
     persistMdWidth(mode);
   }, []);
+  // Quick toggle (fit↔full) shared by BOTH fast routes — the Viewer-header
+  // reading-width button and the rebindable toggleReadingWidth command
+  // (default Ctrl/Cmd+Shift+W). Persists via setMdWidthMode and announces the
+  // resulting mode through the polite live region (SC 4.1.3) so the change is
+  // perceivable regardless of focus location. The Settings radios reflect the
+  // same lifted state, so they stay in sync automatically (they announce their
+  // OWN changes inside the panel, so there is no double announcement here).
+  const toggleMdWidth = useCallback((): void => {
+    const next = toggleWidthMode(mdWidth);
+    setMdWidthMode(next);
+    setStatusMessage(
+      next === 'full'
+        ? 'Reading width set to full width.'
+        : 'Reading width set to fixed, 120 characters.',
+    );
+  }, [mdWidth, setMdWidthMode]);
 
   // Fold-command signal lifted to the Viewer/CodeView (foldAll / unfoldAll
   // shortcuts). An incrementing nonce so each press fires exactly once; the
@@ -1524,6 +1540,12 @@ export function App(): JSX.Element {
         case 'toggleTheme':
           void store.setTheme(vm?.theme === 'dark' ? 'light' : 'dark');
           break;
+        case 'toggleReadingWidth':
+          // Flip the Viewer reading column fit↔full (persists + announces).
+          // Global like toggleTheme — meaningful whatever file (if any) is
+          // open, since the mode is sticky across files and restarts.
+          toggleMdWidth();
+          break;
         case 'togglePause':
           void store.togglePause();
           break;
@@ -1548,6 +1570,7 @@ export function App(): JSX.Element {
     toggleTerminal,
     fireFoldCommand,
     fireCopyCommand,
+    toggleMdWidth,
     openShortcuts,
     runCloseFileCommand,
     openSearch,
@@ -1718,6 +1741,7 @@ export function App(): JSX.Element {
             copyCommand={copyCommand}
             targetLine={targetLine}
             mdWidth={mdWidth}
+            onToggleMdWidth={toggleMdWidth}
           />
         )}
         {!explorerHidden && (

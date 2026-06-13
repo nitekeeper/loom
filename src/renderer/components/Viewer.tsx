@@ -85,6 +85,30 @@ function CopyIcon(): JSX.Element {
   );
 }
 
+/** Horizontal-arrows glyph for the reading-width toggle (a width measure
+ *  stretching between two edges). House icon idiom: inline SVG, viewBox 24,
+ *  stroke=currentColor, strokeWidth 2, aria-hidden — decorative; the
+ *  accessible name comes from the button's visible text. */
+function ReadingWidthIcon(): JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m18 8 4 4-4 4" />
+      <path d="m6 8-4 4 4 4" />
+      <path d="M2 12h20" />
+    </svg>
+  );
+}
+
 /** Checkmark glyph shown transiently after a successful copy. Decorative. */
 function CheckIcon(): JSX.Element {
   return (
@@ -676,7 +700,15 @@ function Breadcrumb({ path }: { path: string }): JSX.Element {
   );
 }
 
-export function Viewer({ content, onClose, foldCommand, copyCommand, targetLine, mdWidth }: ViewerProps): JSX.Element {
+export function Viewer({
+  content,
+  onClose,
+  foldCommand,
+  copyCommand,
+  targetLine,
+  mdWidth,
+  onToggleMdWidth,
+}: ViewerProps): JSX.Element {
   // Empty state — reinforce the principle (FR-42).
   if (content === null) {
     return (
@@ -717,6 +749,7 @@ export function Viewer({ content, onClose, foldCommand, copyCommand, targetLine,
       copyCommand={copyCommand}
       targetLine={targetLine}
       mdWidth={mdWidth}
+      onToggleMdWidth={onToggleMdWidth}
     />
   );
 }
@@ -730,6 +763,7 @@ function ViewerContent({
   copyCommand,
   targetLine,
   mdWidth,
+  onToggleMdWidth,
 }: {
   content: FileContent;
   onClose(): void;
@@ -737,6 +771,7 @@ function ViewerContent({
   copyCommand: { nonce: number } | null;
   targetLine: { path: string; line: number; nonce: number } | null;
   mdWidth: WidthMode;
+  onToggleMdWidth(): void;
 }): JSX.Element {
   const { dispatch, meta, text, path } = content;
   const { kind, renderState, safetyBanner } = dispatch;
@@ -923,10 +958,29 @@ function ViewerContent({
             <span>{copied ? 'Copied' : 'Copy rendered'}</span>
           </button>
         )}
-        {/* The reading-column width control moved to the Settings panel (gear →
-            Settings → Viewer → Reading width). It applies via the data-mdwidth
-            attribute on this <section> (set from the App-lifted mdWidth prop), so
-            no per-file head toggle is needed — the choice is global + persisted. */}
+        {/* Reading-width quick toggle — flips the reading column fit↔full for
+            EVERY content type (the data-mdwidth attribute on this <section>
+            governs both the .md and the .code measure). Mirrors the
+            copy-rendered-btn idiom: real <button type="button">, keyboard-
+            operable, shortcut documented in the title. ARIA: this is a TOGGLE
+            button whose constant accessible name is its visible text ("Full
+            width" — SC 2.5.3 label-in-name), with aria-pressed=true meaning
+            FULL-WIDTH IS ON ('full') and false meaning the fixed 120ch measure
+            ('fit') — so AT reads "Full width, toggle button, pressed/not
+            pressed", which maps 1:1 onto the mode. The Settings radios reflect
+            the same App-lifted state, so the two surfaces never diverge. */}
+        <button
+          type="button"
+          className="reading-width-btn"
+          aria-pressed={mdWidth === 'full'}
+          title={`Reading width: ${
+            mdWidth === 'full' ? 'full' : 'fixed (120 ch)'
+          } (Ctrl/Cmd+Shift+W)`}
+          onClick={() => onToggleMdWidth()}
+        >
+          <ReadingWidthIcon />
+          <span>Full width</span>
+        </button>
         {/* SC 4.1.3: announce the successful copy politely so the action is
             perceivable to assistive tech regardless of focus location. */}
         <span className="sr-only" role="status" aria-live="polite">
@@ -1000,9 +1054,14 @@ export interface ViewerProps {
    *  target path + 1-based line). CodeView unfolds any region containing the
    *  line, scrolls it into view, and briefly flashes it. null = no reveal. */
   targetLine: { path: string; line: number; nonce: number } | null;
-  /** RENDERED-markdown reading-column width mode, lifted to App (seeded from
-   *  the capture hint > localStorage > default via md-width.ts and persisted on
-   *  change). Applied as data-mdwidth on the Viewer <section> so the CSS picks
-   *  the predefined 792px measure ('fit') or full Viewer width ('full'). */
+  /** Viewer reading-column width mode, lifted to App (seeded from the capture
+   *  hint > localStorage > default via md-width.ts and persisted on change).
+   *  Applied as data-mdwidth on the Viewer <section> so the CSS picks the
+   *  predefined 120ch measure ('fit') or full Viewer width ('full') for BOTH
+   *  the rendered .md column and the source-code .code grid. */
   mdWidth: WidthMode;
+  /** Flip the reading-width mode fit↔full (the App-owned quick toggle, shared
+   *  with the rebindable Ctrl/Cmd+Shift+W command — persists + announces).
+   *  Wired to the header reading-width button. */
+  onToggleMdWidth(): void;
 }

@@ -1074,7 +1074,20 @@ mark.search-hit {
   align-items: start;
   font-family: var(--font-mono); font-size: 12.5px; line-height: 1.62;
   padding: 8px 0 28px;
+  /* Reading-width 'fit' measure for SOURCE/plaintext files: the SAME 120ch
+     cap + centering as the rendered .md column, so the fixed/full mode
+     governs EVERY content type consistently. The rule sits on .code ITSELF so
+     the ch unit resolves against the CODE font declared here (12.5px mono ⇒
+     ~120 monospace columns), not the prose font. Lines longer than the cap
+     still overflow into the .viewer-body horizontal scroll, exactly as they
+     overflow the pane today — folding/gutter geometry is untouched. */
+  max-width: 120ch;
+  margin-inline: auto;
 }
+/* Full-width source column: mirrors the .md bypass — the attribute selector
+   out-specifies the bare .code rule and drops the predefined measure so the
+   grid fills the Viewer again (margin-inline:auto becomes a no-op). */
+.viewer[data-mdwidth="full"] .code { max-width: none; }
 /* Fold column: a fixed lane left of the gutter holding the chevron toggle (on
    header lines) or an empty spacer (so non-foldable rows keep the gutter
    aligned).
@@ -1173,22 +1186,32 @@ mark.search-hit {
    sits before the render-tag (margin-left:auto), so it stays left-adjacent to
    the breadcrumb while the badge + close push to the right edge. The transient
    .copied state flips to a confirming accent/green so the success is visible.
-   The reading-column WIDTH control now lives in the Settings panel (.set-radio),
-   not the Viewer head. */
-.copy-rendered-btn {
+   The reading-width quick toggle (.reading-width-btn — every content type)
+   shares the exact same affordances; the Settings panel's radio group
+   (.set-radio) remains the canonical control over the same lifted state. */
+.copy-rendered-btn,
+.reading-width-btn {
   display: inline-flex; align-items: center; gap: 6px;
   font-family: var(--font-mono); font-size: 10.5px; font-weight: 600;
   letter-spacing: .03em; color: var(--text-dim);
   background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 6px; padding: 3px 9px; cursor: pointer;
 }
-.copy-rendered-btn svg { flex: 0 0 auto; }
-.copy-rendered-btn:hover { color: var(--text); background: var(--panel-3); }
-.copy-rendered-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.copy-rendered-btn svg, .reading-width-btn svg { flex: 0 0 auto; }
+.copy-rendered-btn:hover, .reading-width-btn:hover { color: var(--text); background: var(--panel-3); }
+.copy-rendered-btn:focus-visible, .reading-width-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .copy-rendered-btn.copied {
   color: var(--live);
   border-color: color-mix(in oklab, var(--live) 40%, transparent);
   background: color-mix(in oklab, var(--live) 12%, transparent);
+}
+/* Pressed (= full-width ON) state of the reading-width toggle: the accent
+   tint mirrors the .fold-all-btn/.copied "active" treatment so aria-pressed
+   has a VISIBLE analogue, not a color-only hover difference (SC 1.4.1). */
+.reading-width-btn[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
 }
 
 .tok-kw { color: var(--t-kw); } .tok-str { color: var(--t-str); }
@@ -1198,8 +1221,8 @@ mark.search-hit {
 /* markdown view */
 /* A11Y-SEARCH-01 / UX-SEARCH-01: a passthrough wrapper so the reveal logic has a
    stable scroll/flash host. It must not constrain width — the inner .md keeps
-   its centered 792px measure (margin-inline:auto) below, or grows to full width
-   when the Settings "Reading width" control selects it (data-mdwidth="full"). */
+   its centered 120ch measure (margin-inline:auto) below, or grows to full width
+   when the "Reading width" control selects it (data-mdwidth="full"). */
 .md-scroll { display: block; }
 /* The block revealed by opening a search result in a RENDERED markdown file:
    the SAME brief accent flash that decays as the SOURCE (CodeView) reveal, so a
@@ -1217,30 +1240,32 @@ mark.search-hit {
   box-shadow: -3px 0 0 0 var(--accent);
   scroll-margin: 80px;
 }
-/* UX-CHAT-02: center the predefined reading column (792px measure) in the
+/* UX-CHAT-02: center the predefined reading column (120ch measure) in the
    available Viewer width so that when the Chat (and/or Explorer) is collapsed
    and the Viewer grows wide, the document does not hard-anchor left with a large
    empty band on the right. margin-inline:auto keeps the comfortable measure
    while balancing the layout; at the normal 3-pane width the centering is
    negligible, so it does not regress the default reading position. The
-   Settings panel's "Reading width" control (RENDERED .md applies regardless of
-   file) can switch this column to full width — see the data-mdwidth="full"
-   override below, which drops max-width but KEEPS the side padding so text never
-   glues to the pane edges.
-   NOTE on 792px: at the DEFAULT 3-pane layout (1440px window, Explorer 248px +
-   Chat 400px) the Viewer pane is ~792px — i.e. the same as the predefined
-   measure — so the column is capped at the pane and the fit↔full choice has no
-   visible effect UNTIL the user frees horizontal space (collapse/narrow Chat or
-   Explorer). 792px is the predefined "Fixed" measure (a comfortably wide reader
-   is the default once space is available); Full width then drops the cap on
-   demand. */
-.md { padding: 20px 30px 40px; max-width: 792px; margin-inline: auto; font-size: 14.5px; line-height: 1.72; color: var(--text); }
+   "Reading width" control (Settings radios, the Viewer-head toggle, or
+   Ctrl/Cmd+Shift+W — applies regardless of file) can switch this column to
+   full width — see the data-mdwidth="full" override below, which drops
+   max-width but KEEPS the side padding so text never glues to the pane edges.
+   NOTE on 120ch: the cap sits on .md itself so the ch unit resolves against
+   the CONTENT's own font (here the 14.5px prose font ⇒ "120 characters of
+   the reading font", per CSS the width of its "0" glyph — ~860px). At the
+   DEFAULT 3-pane layout (1440px window, Explorer 248px + Chat 400px) the
+   Viewer pane is ~792px — narrower than the measure — so the column is capped
+   at the pane and the fit↔full choice has no visible effect UNTIL the user
+   frees horizontal space (collapse/narrow Chat or Explorer). 120ch is the
+   predefined "Fixed (120 ch)" measure (a comfortably wide reader is the
+   default once space is available); Full width then drops the cap on demand. */
+.md { padding: 20px 30px 40px; max-width: 120ch; margin-inline: auto; font-size: 14.5px; line-height: 1.72; color: var(--text); }
 /* Full-width reading column: a later, higher-specificity rule (the attribute
    selector adds specificity over the bare .md above) drops the predefined
    measure so the column fills the Viewer. margin-inline:auto is now a no-op
    (the element already spans the pane); the padding stays for edge breathing
-   room. SOURCE/code view never carries data-mdwidth="full" content and is
-   unaffected. */
+   room. The SOURCE/code view (.code) follows the SAME mode — see its own
+   capped + full-bypass pair next to the .code grid rule. */
 .viewer[data-mdwidth="full"] .md { max-width: none; }
 .md h1 { font-size: 26px; font-weight: 700; letter-spacing: -.02em; margin: 6px 0 14px; }
 .md h2 { font-size: 19px; font-weight: 700; letter-spacing: -.01em; margin: 26px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
