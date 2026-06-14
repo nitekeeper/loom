@@ -20,7 +20,7 @@
     "start": "electron .",
     "loom": "node bin/loom.cjs",
     "rebuild": "electron-rebuild -f -w node-pty",
-    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs test/mermaid.mjs test/bundle-split.mjs test/copy-serialize.mjs test/md-width.mjs test/window-resize.mjs test/linux-maximize.mjs test/git-diff.mjs test/diff-render.mjs test/agent-remove.mjs test/terminal.mjs test/terminal-pane.mjs test/viewer-split.mjs",
+    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs test/mermaid.mjs test/bundle-split.mjs test/copy-serialize.mjs test/md-width.mjs test/window-resize.mjs test/linux-maximize.mjs test/git-diff.mjs test/diff-render.mjs test/agent-remove.mjs test/terminal.mjs test/terminal-pane.mjs test/viewer-split.mjs test/terminal-columns.mjs test/config.mjs",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"

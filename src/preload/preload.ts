@@ -75,6 +75,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.TERMINAL_INPUT,
   IPC.TERMINAL_RESIZE,
   IPC.TERMINAL_CLOSE,
+  IPC.TERMINAL_SET_LAYOUT,
 ]);
 
 const PUSH_CHANNELS: ReadonlySet<string> = new Set([
@@ -263,6 +264,13 @@ export function createBridge(): LoomBridge {
       },
       onExit(h: (p: TerminalExitPush) => void): () => void {
         return subscribe<TerminalExitPush>(IPC.TERMINAL_EXIT, h);
+      },
+      setLayout(count: number): Promise<void> {
+        // Layout state (how many panes), NOT a PTY control — no sessionId. The
+        // count is forwarded as-is; main is the authority — it re-validates +
+        // CLAMPS to [1,3] (default 1 on garbage) before persisting to
+        // loom-config.json (never trust the renderer; mirror of setTheme).
+        return ipcRenderer.invoke(assertInvoke(IPC.TERMINAL_SET_LAYOUT), count);
       },
     },
   };

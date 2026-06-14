@@ -42,7 +42,11 @@ export type CommandId =
   | 'toggleSplitView'
   | 'toggleChanges'
   | 'openSettings'
-  | 'toggleMaximizeTerminal';
+  | 'toggleMaximizeTerminal'
+  | 'focusTerminal1'
+  | 'focusTerminal2'
+  | 'focusTerminal3'
+  | 'cycleTerminalFocus';
 
 /** A command entry shown in the Shortcuts panel. */
 export interface CommandSpec {
@@ -72,6 +76,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'toggleTheme', label: 'Toggle theme', defaultBinding: 'Ctrl+T' },
   { id: 'togglePause', label: 'Pause / resume live feed', defaultBinding: 'Ctrl+.' },
   { id: 'openSettings', label: 'Open settings', defaultBinding: 'Ctrl+Shift+,' },
+  { id: 'focusTerminal1', label: 'Focus terminal 1', defaultBinding: 'Ctrl+1' },
+  { id: 'focusTerminal2', label: 'Focus terminal 2', defaultBinding: 'Ctrl+2' },
+  { id: 'focusTerminal3', label: 'Focus terminal 3', defaultBinding: 'Ctrl+3' },
+  { id: 'cycleTerminalFocus', label: 'Cycle terminal focus', defaultBinding: 'Ctrl+Alt+`' },
 ] as const;
 
 /** Resolved default bindings as a plain id -> combo record. Frozen so a
@@ -276,17 +284,30 @@ export function isValidBinding(combo: string): boolean {
   return isValidKeyToken(last);
 }
 
+/** Commands the App dispatcher fires even inside editable targets (a focused
+ *  terminal / textarea), so they keep working from xterm's own textarea:
+ *  toggleTerminal (Ctrl/Cmd+` closes the dock), the per-terminal SOLO-focus
+ *  commands, and the focus-cycle command. Because they bypass the
+ *  editable-target guard, each MUST carry at least one modifier — a bare-key
+ *  binding (e.g. 'K') would otherwise fire (and e.g. KILL the shell session or
+ *  steal focus) on every plain keystroke in any text field. */
+const EDITABLE_TARGET_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
+  'toggleTerminal',
+  'focusTerminal1',
+  'focusTerminal2',
+  'focusTerminal3',
+  'cycleTerminalFocus',
+]);
+
 /** True when `combo` is a valid binding FOR THE GIVEN COMMAND. On top of the
- *  structural isValidBinding check, toggleTerminal must carry at least one
- *  modifier: it is the one command the App dispatcher fires even inside
- *  editable targets (so Ctrl/Cmd+` can close the dock from xterm's own
- *  textarea) — a bare-key binding (e.g. 'K') would therefore fire, and KILL
- *  the shell session, on every plain keystroke in any text field. */
+ *  structural isValidBinding check, every EDITABLE_TARGET_COMMANDS command must
+ *  carry at least one modifier: these fire even inside editable targets, so a
+ *  bare-key binding would fire on every plain keystroke in any text field. */
 export function bindingAllowedFor(id: CommandId, combo: string): boolean {
   if (!isValidBinding(combo)) return false;
   // isValidBinding guarantees every non-final segment is a modifier, so
   // "has a modifier" reduces to "more than one segment".
-  if (id === 'toggleTerminal' && combo.split('+').length < 2) return false;
+  if (EDITABLE_TARGET_COMMANDS.has(id) && combo.split('+').length < 2) return false;
   return true;
 }
 

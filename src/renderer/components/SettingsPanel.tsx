@@ -46,6 +46,8 @@ import type {
 } from 'react';
 import { MD_WIDTH_ANNOUNCE_FIT, MD_WIDTH_ANNOUNCE_FULL } from '../lib/md-width.js';
 import type { WidthMode } from '../lib/md-width.js';
+import { clampTerminalColumns, MAX_TERMINALS } from '../lib/terminal-columns.js';
+import type { TerminalColumns } from '../lib/terminal-columns.js';
 import type { Theme } from '../../shared/types.js';
 
 export interface SettingsPanelProps {
@@ -64,6 +66,19 @@ export interface SettingsPanelProps {
   /** Open the Keyboard Shortcuts panel (App closes Settings first, then opens
    *  it returning focus to the gear on close). */
   onOpenShortcuts(): void;
+  /** Current number of terminal panes (1..MAX_TERMINALS), reflected by the
+   *  Terminals radio group. Threaded from App's LIVE terminalCount state (seeded
+   *  from the persisted LoomConfig.terminalCount, default 1). Optional +
+   *  back-compat-defaulted so the panel renders a sane selection even before App
+   *  wires the live value through. */
+  terminalCount?: number;
+  /** Select a terminal-pane count (1..MAX_TERMINALS). App is the SINGLE source of
+   *  truth: this callback updates App's LIVE terminalCount (mount/unmount panes,
+   *  clamp the active index) AND persists via window.loom.terminal.setLayout —
+   *  so changing the count here adds/removes terminals on screen immediately, not
+   *  just on restart. The panel does NOT call the layout bridge itself. Optional
+   *  for back-compat; when absent the radio is a controlled-but-inert reflection. */
+  onSelectTerminalCount?(count: number): void;
   /** Close the dialog AND return focus to the opener (App owns the state). */
   onClose(): void;
 }
@@ -84,12 +99,22 @@ function isVisible(el: HTMLElement): boolean {
  *  Shortcuts opener combo, shown as a hint beside its "Open" button (UX-04). */
 const OPENER_COMBO = 'Ctrl/Cmd+,';
 
+/** The selectable terminal-pane counts (1..MAX_TERMINALS), rendered as the
+ *  Terminals radio group. Derived from MAX_TERMINALS so the control tracks the
+ *  cap without a separate magic number. */
+const TERMINAL_COUNTS: readonly TerminalColumns[] = Array.from(
+  { length: MAX_TERMINALS },
+  (_, i) => (i + 1) as TerminalColumns,
+);
+
 export function SettingsPanel({
   mdWidth,
   onMdWidthChange,
   theme,
   onSelectTheme,
   onOpenShortcuts,
+  terminalCount,
+  onSelectTerminalCount,
   onClose,
 }: SettingsPanelProps): JSX.Element {
   const titleId = useId();
@@ -164,6 +189,30 @@ export function SettingsPanel({
       announce(next === 'dark' ? 'Dark theme selected.' : 'Light theme selected.');
     },
     [theme, onSelectTheme, announce],
+  );
+
+  // The current terminal-pane count, clamped to [1, MAX_TERMINALS] so a missing
+  // or out-of-range prop still selects a valid radio (back-compat default = 1,
+  // mirroring LoomConfig.terminalCount's tolerant coercer). Exactly one radio is
+  // always :checked.
+  const currentTerminalCount = clampTerminalColumns(terminalCount ?? 1);
+
+  // Select a terminal-pane count (no-op when already chosen so we don't re-fire
+  // the callback / announce a non-change). Routes through App's
+  // onSelectTerminalCount — the SINGLE source of truth that updates App's LIVE
+  // terminalCount (mount/unmount panes, clamp the active index) AND persists via
+  // window.loom.terminal.setLayout. The panel no longer calls the layout bridge
+  // directly, so changing the count here adds/removes terminals on screen
+  // immediately, in lockstep with the StatusBar add-terminal path (not just on
+  // restart). The clamp on count keeps the value in range; the optional callback
+  // guard keeps this safe if App hasn't wired it (back-compat / a test host).
+  const selectTerminalCount = useCallback(
+    (count: TerminalColumns): void => {
+      if (count === currentTerminalCount) return;
+      onSelectTerminalCount?.(count);
+      announce(`${count} terminal${count === 1 ? '' : 's'} selected.`);
+    },
+    [currentTerminalCount, onSelectTerminalCount, announce],
   );
 
   // Dialog-level key handling: the focus trap (Tab / Shift+Tab) and Escape
@@ -343,6 +392,39 @@ export function SettingsPanel({
                   />
                   <span>Dark</span>
                 </label>
+              </div>
+            </fieldset>
+          </section>
+
+          {/* --- Terminal → Terminals ----------------------------------------
+              A real radio group choosing how many terminal panes (1..3) the
+              dock shows. Selecting a count calls App's onSelectTerminalCount,
+              which updates App's LIVE terminalCount (mounting/unmounting panes
+              on screen immediately) AND persists via window.loom.terminal
+              .setLayout (loom-config.json) — one source of truth, the same path
+              the StatusBar add-terminal affordance drives. Mirrors the
+              Reading-width / Theme groups: a <fieldset>/<legend> for the group
+              name + native radios whose visible text IS each option's
+              accessible name. */}
+          <section className="set-section">
+            <h3 className="set-section-title">Terminal</h3>
+            <fieldset className="set-fieldset">
+              <legend className="set-legend">Terminals</legend>
+              <div className="set-row">
+                {TERMINAL_COUNTS.map((count) => (
+                  <label className="set-radio" key={count}>
+                    <input
+                      type="radio"
+                      name="set-terminal-count"
+                      value={count}
+                      checked={count === currentTerminalCount}
+                      onChange={() => selectTerminalCount(count)}
+                    />
+                    <span>
+                      {count === 1 ? '1 terminal' : `${count} terminals`}
+                    </span>
+                  </label>
+                ))}
               </div>
             </fieldset>
           </section>

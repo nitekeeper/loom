@@ -112,3 +112,94 @@ test('TERM-KB: Ctrl+Shift+Tab (terminal focus-escape) is reserved', async () => 
   const { isReserved } = await kit();
   assert.equal(isReserved('Ctrl+Shift+Tab'), true);
 });
+
+test('TERM-FOCUS: focusTerminal1/2/3 + cycleTerminalFocus carry their default combos', async () => {
+  const { COMMANDS, DEFAULT_BINDINGS, resolveBindings } = await kit();
+  // The four NEW per-terminal focus commands and their shipped defaults.
+  const expected = [
+    ['focusTerminal1', 'Focus terminal 1', 'Ctrl+1'],
+    ['focusTerminal2', 'Focus terminal 2', 'Ctrl+2'],
+    ['focusTerminal3', 'Focus terminal 3', 'Ctrl+3'],
+    ['cycleTerminalFocus', 'Cycle terminal focus', 'Ctrl+Alt+`'],
+  ];
+  const resolved = resolveBindings(undefined);
+  for (const [id, label, combo] of expected) {
+    const spec = COMMANDS.find((c) => c.id === id);
+    assert.ok(spec, `a ${id} command is registered`);
+    assert.equal(spec.label, label, `${id} label matches the design`);
+    assert.equal(spec.defaultBinding, combo, `${id} default binding is ${combo}`);
+    // The DEFAULT_BINDINGS map and a default resolve both carry the combo.
+    assert.equal(DEFAULT_BINDINGS[id], combo, `DEFAULT_BINDINGS.${id} === ${combo}`);
+    assert.equal(resolved[id], combo, `resolved default carries ${id} ⇒ ${combo}`);
+  }
+});
+
+test('TERM-FOCUS: the four focus combos are structurally valid and collide with nothing', async () => {
+  const { isValidBinding, findConflict, DEFAULT_BINDINGS } = await kit();
+  const cases = [
+    ['focusTerminal1', 'Ctrl+1'],
+    ['focusTerminal2', 'Ctrl+2'],
+    ['focusTerminal3', 'Ctrl+3'],
+    ['cycleTerminalFocus', 'Ctrl+Alt+`'],
+  ];
+  for (const [id, combo] of cases) {
+    assert.equal(isValidBinding(combo), true, `${combo} parses as a real binding`);
+    // No OTHER command default claims this combo (exceptId excludes the owner).
+    assert.equal(
+      findConflict(DEFAULT_BINDINGS, combo, id),
+      null,
+      `no other command default claims ${combo}`,
+    );
+  }
+});
+
+test('TERM-FOCUS: the four focus combos are NOT shell-reserved (so the commands can fire)', async () => {
+  const { isReserved } = await kit();
+  for (const combo of ['Ctrl+1', 'Ctrl+2', 'Ctrl+3', 'Ctrl+Alt+`']) {
+    assert.equal(isReserved(combo), false, `${combo} is not shell-reserved`);
+  }
+});
+
+test('TERM-FOCUS: focus commands fire inside editable targets ⇒ each default keeps a modifier', async () => {
+  const { bindingAllowedFor } = await kit();
+  // focusTerminal*/cycleTerminalFocus bypass the editable-target guard (so they
+  // work from xterm's textarea), so a bare-key binding would steal focus on
+  // every plain keystroke — each MUST carry a modifier. Pin that the shipped
+  // defaults satisfy that rule, and that a bare-key override is rejected.
+  for (const [id, combo] of [
+    ['focusTerminal1', 'Ctrl+1'],
+    ['focusTerminal2', 'Ctrl+2'],
+    ['focusTerminal3', 'Ctrl+3'],
+    ['cycleTerminalFocus', 'Ctrl+Alt+`'],
+  ]) {
+    assert.equal(bindingAllowedFor(id, combo), true, `${id} default ${combo} is allowed`);
+    assert.equal(bindingAllowedFor(id, '1'), false, `${id} rejects a bare-key override`);
+  }
+});
+
+test('TERM-KB-GUARD: every DEFAULT_BINDINGS combo is UNIQUE and none is RESERVED (author-time, R6)', async () => {
+  const { DEFAULT_BINDINGS, RESERVED_COMBOS } = await kit();
+  // findConflict only guards USER rebinds at runtime — it never runs over the
+  // shipped defaults. So a careless edit could ship two commands on one combo,
+  // or a command's default landing on a reserved shell combo (permanently dead),
+  // and the whole green suite would still pass. This author-time guard pins the
+  // defaults themselves: collision-free AND reserved-free by construction.
+  const entries = Object.entries(DEFAULT_BINDINGS);
+  const seen = new Map(); // combo -> first command id that claimed it
+  for (const [id, combo] of entries) {
+    const prior = seen.get(combo);
+    assert.equal(
+      prior,
+      undefined,
+      `default combo ${combo} is claimed by BOTH ${prior} and ${id} — defaults must be unique`,
+    );
+    seen.set(combo, id);
+    assert.equal(
+      RESERVED_COMBOS.has(combo),
+      false,
+      `default for ${id} (${combo}) collides with a RESERVED shell combo — it could never fire`,
+    );
+  }
+  // Sanity: the dedup map saw exactly one entry per command (no defaults lost).
+  assert.equal(seen.size, entries.length, 'every command default is a distinct combo');
+});

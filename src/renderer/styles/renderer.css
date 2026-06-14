@@ -480,7 +480,12 @@ html[data-platform='darwin'] .win-controls { display: none; }
   grid-template-rows: 0 minmax(0, 1fr);
 }
 /* The dock spans ALL columns in row 2 (1 / -1 tracks however many columns the
-   hidden-pane variants leave). Beats the `.body > *` row-1 pin on specificity. */
+   hidden-pane variants leave). Beats the `.body > *` row-1 pin on specificity.
+   BOTH the multi-terminal `.terminal-dock-wrap` container (the up-to-3-column
+   sub-grid, below) AND a bare single `.pane.terminal` (the back-compat path /
+   wrapper-less render) anchor to row 2 here, so the dock fills the second row
+   regardless of which shape App mounts. */
+.body > .terminal-dock-wrap,
 .body > .pane.terminal {
   grid-column: 1 / -1;
   grid-row: 2;
@@ -488,8 +493,123 @@ html[data-platform='darwin'] .win-controls { display: none; }
 /* While maximized, row 1 still EXISTS at 0 height — hide everything in it
    (panes + column splitters) so its content leaves the tab order and the AT
    tree, and its overflow can never paint over the dock. visibility (not
-   display) so the panes keep their layout/scroll state for instant restore. */
-.body.terminal-max > :not(.pane.terminal) { visibility: hidden; }
+   display) so the panes keep their layout/scroll state for instant restore.
+   The `.terminal-dock-wrap` is EXCLUDED alongside `.pane.terminal`: once the
+   multi-terminal wrapper exists it (not a bare `.pane.terminal`) is the row-2
+   dock child, so hiding "everything but `.pane.terminal`" would blank the whole
+   dock (design risk R11). Per-terminal solo-maximize is handled INSIDE the wrap
+   by the `.terminal-dock-wrap.solo-maximized` rules below — never by this
+   whole-dock rule, which only governs whole-dock (terminal-max) maximize. */
+.body.terminal-max > :not(.pane.terminal):not(.terminal-dock-wrap) { visibility: hidden; }
+
+/* ============================================================
+   Multi-terminal dock sub-grid (.terminal-dock-wrap)
+   ------------------------------------------------------------
+   The HORIZONTAL analog of the center Viewer's .viewer-split-wrap: inside the
+   row-2 dock, up to THREE .pane.terminal columns sit side by side with fixed
+   inter-terminal dividers interleaved between them:
+       [ col | divider | col | divider | col ]
+   App sets `grid-template-columns` INLINE from lib/terminal-columns.ts'
+   terminalColumnsTemplate(ratios, count, splitWidth) — the SINGLE source of the
+   track string (each column a `minmax(0, calc(ratio * (100% − dividers)))`, each
+   divider a fixed `--terminal-divider-w` px track). App also sets the
+   `--terminal-divider-w` custom property here (default 8px), read by BOTH the
+   inline grid template AND the `.terminal-col-divider` width below, so the
+   layout and the JS ratio-clamp geometry can never drift. A single terminal
+   yields one full-width track with no dividers (a visual no-op for upgrading
+   single-terminal users). The minmax(0,…) tracks let any column shrink to its
+   JS-enforced TERMINAL_PANE_MIN floor (clampColumnRatios) without a content min
+   blowing out the grid. ONE grid row so every column is full dock height.
+   ============================================================ */
+.terminal-dock-wrap {
+  /* Defaults are a safety net only — App always sets gridTemplateColumns inline
+     from terminalColumnsTemplate(); the single-column fallback keeps the dock
+     usable if the inline value is ever absent. */
+  --terminal-divider-w: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  /* DEFINITE height of the dock row (the grid area is row 2 = --terminal-h).
+     The OLD single-terminal pane was a DIRECT `.body` grid child and inherited
+     the row's definite height via stretch; this extra wrapper level otherwise
+     breaks that chain, leaving the pane's flex:1 `.term-body` (the xterm host)
+     with no definite height to fill → the xterm collapses to 0 and renders
+     HIDDEN (every terminal e2e then times out waiting for a visible .xterm).
+     height:100% re-establishes the definite height the inner flex needs. */
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Each terminal column fills its grid cell and clips its own overflow so the
+   columns lay out independently. (.pane already gives flex-column + min-height:0
+   via the base .pane rule — only the grid-cell sizing guards are added here.)
+   height:100% so the pane fills the wrap's row and the flex:1 .term-body (xterm
+   host) gets a real, non-zero box — see the wrapper note above. */
+.terminal-dock-wrap > .pane.terminal {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Inter-terminal divider — the column-axis ColSplitter look, REUSED. It is an
+   IN-FLOW grid item (not absolutely positioned), so like .viewer-split-divider
+   it resets the base .splitter abspos geometry and lives in its own fixed
+   divider track. Its width reads the SAME `--terminal-divider-w` the grid
+   reserves, so the seam and the reserved track are always identical. The 2px
+   seam line, hover/drag accent, and focus-visible bar+halo all come from the
+   base .splitter rules (re-axised). */
+.splitter.terminal-col-divider {
+  position: relative;
+  top: auto; bottom: auto; left: auto; right: auto;
+  transform: none;
+  width: var(--terminal-divider-w, 8px);
+  align-self: stretch;
+  z-index: 1;
+}
+/* Mirror of the .viewer-split-divider clip fix: the divider is an in-flow grid
+   item inside an overflow:hidden wrap, so the base focus halo's 2px box-shadow at
+   the ::before's top/bottom (top:0; bottom:0) would be shaved by the wrap clip.
+   Inset the seam ::before by 2px top/bottom so its full focus halo lands INSIDE
+   the clipped box — pixel-parity with the other splitters' unclipped focus ring. */
+.splitter.terminal-col-divider::before { top: 2px; bottom: 2px; }
+
+/* ---- Per-terminal SOLO-maximize (design §4 / risk R11) ----
+   Maximizing terminal *i* expands THAT terminal to fill the whole dock and hides
+   the OTHER terminals WITHIN the dock — NOT a whole-dock maximize, and NOT the
+   legacy `.body.terminal-max > :not(.pane.terminal)` rule (which would blank
+   every terminal once this wrapper exists — R11). App adds `.solo-maximized` to
+   the wrap and `.terminal-maximized` to the focused .pane.terminal; the dock
+   collapses to a single 1fr column, the maximized terminal spans the full grid,
+   and every OTHER child (the sibling terminals + the inter-terminal dividers)
+   is hidden via `visibility` (not display) so the hidden panes keep their
+   layout/scroll state for an instant restore. Un-maximize drops both classes and
+   the inline column template restores the side-by-side layout. */
+.terminal-dock-wrap.solo-maximized {
+  /* One full-width column for the maximized terminal. NOTE: an inline
+     `style="grid-template-columns: …"` (which App sets from
+     terminalColumnsTemplate) WINS over this class rule, so the actual
+     full-width collapse is guaranteed by the maximized child's `grid-column:
+     1 / -1` + the sibling/divider `visibility:hidden` below — both robust to any
+     surviving multi-track inline template. This rule is the CSS-side intent and
+     the safety net for the wrapper-less / inline-cleared case. */
+  grid-template-columns: minmax(0, 1fr);
+}
+/* Hide every direct child that is NOT the maximized terminal: the sibling
+   terminal columns AND the inter-terminal dividers leave the tab order + AT tree
+   and can never paint over the maximized terminal. visibility (not display)
+   preserves their layout/scroll state for an instant restore. */
+.terminal-dock-wrap.solo-maximized > :not(.terminal-maximized) {
+  visibility: hidden;
+}
+/* The maximized terminal spans ALL grid columns (whatever tracks the inline
+   template still declares) so it fills the dock even before App repoints the
+   inline `grid-template-columns` — robust to the inline/class ordering above. */
+.terminal-dock-wrap.solo-maximized > .pane.terminal.terminal-maximized {
+  grid-column: 1 / -1;
+  visibility: visible;
+}
 
 /* ============================================================
    Chat resize splitter (FR-54 / WCAG 2.4.7, 2.1.1)

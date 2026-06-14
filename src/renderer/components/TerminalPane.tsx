@@ -24,6 +24,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import type { ITheme } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
+import { eventToCombo } from '../lib/keybindings.js';
 
 export interface TerminalPaneProps {
   /** Current dock height (px) — re-fits the grid when it changes. */
@@ -34,11 +35,27 @@ export interface TerminalPaneProps {
   onToggleMaximize(): void;
   /** Close the dock (kills the PTY via unmount cleanup). */
   onClose(): void;
-  /** Bumped by App when the dock (re)opens via keyboard or on maximize/
-   *  restore, so focus lands in the terminal exactly on those deliberate
-   *  actions (mirrors the fold/copy command-nonce idiom) — never as a
-   *  resize side effect. */
-  focusNonce: number;
+  /** 0-based index of this pane among the live terminals. Drives the unique
+   *  `aria-label` (`Terminal N`) + `data-terminal-index` selector hook and the
+   *  per-index focus targeting in `focusRequest`. Defaults to 0 (back-compat
+   *  with the single-terminal layout). */
+  slot?: number;
+  /** Per-index focus request from App (replaces the old single shared
+   *  `focusNonce`): `targetIndex` names which pane to focus, `nonce` bumps on
+   *  each deliberate "give me the terminal" action (keyboard (re)open, maximize/
+   *  restore, focus shortcut). This pane focuses its xterm ONLY when
+   *  `targetIndex === slot` AND the nonce changed since it was last applied —
+   *  never as a resize side effect. With 3 instances a shared nonce would focus
+   *  the wrong pane (design R8). */
+  focusRequest?: { targetIndex: number; nonce: number };
+  /** Canonical combos (resolveBindings output) for the App commands that MUST
+   *  fire from inside a focused terminal (toggleTerminal, focusTerminal1/2/3,
+   *  cycleTerminalFocus). xterm CONSUMES some chords (notably Ctrl+Alt+`) and
+   *  stops their propagation, so the App's bubble-phase dispatcher never sees
+   *  them; the custom key handler returns false for these so xterm does NOT
+   *  process them and they fall through to the App. RESOLVED (not default) so a
+   *  rebound combo is deferred too. */
+  appKeyCombos?: ReadonlySet<string>;
 }
 
 /** Shared 1×1 scratch canvas for color conversion, cached across reads (the
@@ -145,7 +162,9 @@ export function TerminalPane({
   maximized,
   onToggleMaximize,
   onClose,
-  focusNonce,
+  slot = 0,
+  focusRequest,
+  appKeyCombos,
 }: TerminalPaneProps): JSX.Element {
   // The xterm mount target (.term-body).
   const hostRef = useRef<HTMLDivElement>(null);
@@ -153,9 +172,18 @@ export function TerminalPane({
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionRef = useRef<string | null>(null);
+  // App terminal-shortcut combos, mirrored to a ref so the (mount-once) xterm
+  // custom key handler always reads the CURRENT set (rebinds change it).
+  const appKeyCombosRef = useRef<ReadonlySet<string> | undefined>(appKeyCombos);
+  appKeyCombosRef.current = appKeyCombos;
   // The pane-head maximize button — the Ctrl+Shift+Tab keyboard escape hatch
   // out of the terminal lands here (xterm swallows plain Tab by design).
   const maxBtnRef = useRef<HTMLButtonElement>(null);
+  // Last focusRequest.nonce this pane actually applied. Tracked per-instance so
+  // a request aimed at a sibling (targetIndex !== slot) or a re-render with an
+  // unchanged nonce never re-steals focus (design R8). Starts null so the very
+  // first matching request still focuses.
+  const lastFocusNonceRef = useRef<number | null>(null);
   // sessionId === null from open() ⇒ the pty backend failed to load/spawn.
   const [unavailable, setUnavailable] = useState(false);
   // The PTY exited (e.g. the user typed `exit`) — the session id is dead.
@@ -199,6 +227,15 @@ export function TerminalPane({
       if (e.type === 'keydown' && e.key === 'Tab' && e.ctrlKey && e.shiftKey) {
         maxBtnRef.current?.focus();
         return false; // swallow — never reaches the shell
+      }
+      // Defer the App's terminal shortcuts (toggle/focus/cycle) to the App's
+      // keydown dispatcher. xterm CONSUMES some chords (e.g. Ctrl+Alt+` cycle)
+      // and stops propagation, so returning false here means xterm does NOT
+      // process them — they bubble to App instead of being sent to the shell.
+      // (Ctrl+1/2/3 already bubble; including them is harmless. Resolved combos
+      // so a rebound focus command is deferred too.)
+      if (e.type === 'keydown' && appKeyCombosRef.current !== undefined) {
+        if (appKeyCombosRef.current.has(eventToCombo(e))) return false;
       }
       return true;
     });
@@ -284,15 +321,31 @@ export function TerminalPane({
     if (id !== null) void window.loom.terminal.resize(id, term.cols, term.rows);
   }, [height, maximized]);
 
-  // Deliberate focus hand-off ONLY: App bumps the nonce on keyboard (re)open
-  // and on maximize/restore, so focus lands in the terminal exactly when the
-  // user asked for the terminal — never as a resize side effect.
+  // Deliberate, per-index focus hand-off ONLY: App issues a focusRequest on
+  // keyboard (re)open, maximize/restore, and the per-terminal focus shortcuts.
+  // This pane focuses its xterm only when the request targets THIS slot and
+  // carries a nonce it has not already applied — so a shared bump aimed at a
+  // sibling pane never steals focus here (design R8), and a re-render with an
+  // unchanged nonce is a no-op (never a resize side effect).
   useEffect(() => {
+    if (focusRequest === undefined) return;
+    if (focusRequest.targetIndex !== slot) return;
+    if (focusRequest.nonce === lastFocusNonceRef.current) return;
+    lastFocusNonceRef.current = focusRequest.nonce;
     termRef.current?.focus();
-  }, [focusNonce]);
+  }, [focusRequest, slot]);
 
   return (
-    <section className="pane terminal" aria-label="Terminal">
+    <section
+      // `terminal-maximized` marks the solo-maximized pane: the dock wrap's
+      // `.solo-maximized > :not(.terminal-maximized){visibility:hidden}` rule
+      // hides the OTHER terminals while this one spans the dock (grid-column
+      // 1/-1 + visibility:visible). Without this class the maximized pane is
+      // hidden along with its siblings (design §4 solo-maximize).
+      className={'pane terminal' + (maximized ? ' terminal-maximized' : '')}
+      aria-label={`Terminal ${slot + 1}`}
+      data-terminal-index={slot}
+    >
       {/* The title carries the keyboard escape hatch hint (Ctrl+Shift+Tab
           focuses the header from inside xterm — see the custom key handler). */}
       <div

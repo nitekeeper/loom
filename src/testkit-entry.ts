@@ -333,13 +333,38 @@ export {
   createTerminalManager,
   defaultShell,
   OUTPUT_BUFFER_CAP,
+  MAX_TERMINALS,
 } from './main/terminal.js';
 export type {
   TerminalManager,
+  SessionEntry,
   PtyFactory,
   PtyLike,
   PtySpawnOpts,
 } from './main/terminal.js';
+
+// Pure multi-terminal COLUMN geometry (1|2|3-col dock layout). Electron-free,
+// mirrors the viewer-split export above so the node --test tier can pin the
+// clamp range, grid-template-columns math, the N-pane min-width floor, the
+// ratio/count coercion, and the active-index/cycle logic without a DOM. The
+// stateful consumer (the dock-wrap + inter-terminal ColSplitter) stays in
+// App.tsx; only the pure surface here. (MAX_TERMINALS is re-exported from the
+// manager module above — same value 3 — to avoid a duplicate-export clash.)
+export {
+  clampTerminalColumns,
+  terminalColumnsMinWidth,
+  clampColumnRatios,
+  terminalColumnsTemplate,
+  coerceStoredColumns,
+  coerceStoredColumnRatios,
+  clampActiveTerminalIndex,
+  cycleTerminalIndex,
+  TERMINAL_COUNT_DEFAULT,
+  TERMINAL_PANE_MIN,
+  TERMINAL_DIVIDER_W,
+  TERMINAL_COLUMNS_RATIOS_KEY,
+} from './renderer/lib/terminal-columns.js';
+export type { TerminalColumns } from './renderer/lib/terminal-columns.js';
 
 // Pure Linux maximize bounds correction (frameless WM frame-offset fix).
 // Re-exported so the node --test suite can pin the display-selection logic
@@ -347,3 +372,23 @@ export type {
 // without Electron.
 export { linuxMaximizeBounds, computeWslToggleMaximize } from './main/linux-maximize.js';
 export type { DisplayInfo, WslMaximizeDecision } from './main/linux-maximize.js';
+
+// Persisted config store + bounds (FR-37, AC-20; multi-terminal design §4 AC8 /
+// §8 R10). Electron-free: node:fs/node:path + shared types only, so it pulls
+// cleanly into the Node test bundle. Re-exported so the node --test tier can
+// drive the REAL FileConfigStore over a temp userData dir and pin the tolerant
+// config-load coercion — specifically the terminalCount round-trip: a config
+// WITHOUT the key loads as the default (1), an in-type out-of-range integer is
+// CLAMPED into [1,3], any non-finite-integer garbage falls back to the default,
+// an unknown FUTURE key is dropped (no throw), and a valid 2/3 round-trips. The
+// private coercers (coerceConfig/coerceTerminalCount) are exercised through the
+// store's load path; only the public factory + bounds surface here.
+export {
+  createConfigStore,
+  DEFAULT_CONFIG,
+  CONFIG_FILENAME,
+  MIN_TERMINAL_COUNT,
+  MAX_TERMINAL_COUNT,
+  DEFAULT_TERMINAL_COUNT,
+} from './main/config.js';
+export type { ConfigStore } from './main/config.js';

@@ -11,6 +11,7 @@
  * derived from the LoomStore (FR-14 single source of truth).
  * ============================================================ */
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -50,6 +51,19 @@ import {
   TERMINAL_MIN_HEIGHT,
   TERMINAL_OPEN_KEY,
 } from '../lib/terminal-pane.js';
+import {
+  clampActiveTerminalIndex,
+  clampColumnRatios,
+  clampTerminalColumns,
+  coerceStoredColumnRatios,
+  cycleTerminalIndex,
+  terminalColumnsMinWidth,
+  terminalColumnsTemplate,
+  MAX_TERMINALS,
+  TERMINAL_DIVIDER_W,
+  TERMINAL_COLUMNS_RATIOS_KEY,
+} from '../lib/terminal-columns.js';
+import type { TerminalColumns } from '../lib/terminal-columns.js';
 import {
   readInitialMdWidth,
   persistMdWidth,
@@ -121,6 +135,21 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
   return target.isContentEditable;
 }
+
+/** Command ids the dispatcher fires EVEN inside an editable target (xterm's
+ *  hidden <textarea>), so they keep working from inside a focused terminal:
+ *  toggleTerminal (Ctrl/Cmd+` closes the dock from within), the per-terminal
+ *  focus commands (Ctrl+1/2/3), and the focus-cycle command (Ctrl+Alt+`). Each
+ *  carries a modifier (enforced author-side by bindingAllowedFor's
+ *  EDITABLE_TARGET_COMMANDS guard) so a bare key can never punch through editing.
+ *  Mirrors keybindings.ts' EDITABLE_TARGET_COMMANDS (not exported there). */
+const TERMINAL_EDITABLE_EXEMPT: ReadonlySet<CommandId> = new Set<CommandId>([
+  'toggleTerminal',
+  'focusTerminal1',
+  'focusTerminal2',
+  'focusTerminal3',
+  'cycleTerminalFocus',
+]);
 
 /* ============================================================
  * Chat-pane resize (FR-54 / WCAG 2.4.7, 2.1.1)
@@ -547,6 +576,111 @@ function useTerminalHeight(): {
   }, []);
 
   return { height, setHeight };
+}
+
+/* ============================================================
+ * Multi-terminal column WIDTH ratios (bottom dock, horizontal split)
+ * ------------------------------------------------------------
+ * The HORIZONTAL analog of useViewerSplit: when the dock holds 2 or 3
+ * terminals they sit side by side (col | divider | col | divider | col),
+ * sized by per-column fraction ratios fed to CSS as grid-template-columns
+ * on .terminal-dock-wrap (terminalColumnsTemplate). The ratios are
+ * EPHEMERAL — persisted in localStorage like the viewer-split ratio
+ * (terminalCount itself lives in loom-config.json), clamped by the pure
+ * helpers in lib/terminal-columns.ts so no column starves below its floor.
+ * ============================================================ */
+
+/** Read the live splittable dock width (px) the terminal columns share: the
+ *  `.terminal-dock-wrap` width minus the `count − 1` in-flow dividers, so the
+ *  ratio clamp and the px→fraction drag conversion measure against the SAME
+ *  width the grid lays the columns out against. Falls back to the window width
+ *  pre-mount so the lazy init never divides by a zero-width track. Never
+ *  negative. */
+function terminalColumnsSplitWidthNow(count: number): number {
+  const c = clampTerminalColumns(count);
+  let wrap = 0;
+  if (typeof document !== 'undefined') {
+    const el = document.querySelector('.terminal-dock-wrap');
+    if (el instanceof HTMLElement && el.clientWidth > 0) wrap = el.clientWidth;
+  }
+  if (wrap <= 0) {
+    wrap =
+      typeof window !== 'undefined' && window.innerWidth > 0
+        ? window.innerWidth
+        : 1440;
+  }
+  return Math.max(0, wrap - (c - 1) * TERMINAL_DIVIDER_W);
+}
+
+/** Read the persisted column ratios for `count` columns from localStorage, or
+ *  null when unset / garbage / wrong length (so the equal-fraction default
+ *  applies). */
+function readPersistedColumnRatios(count: number): number[] | null {
+  try {
+    return coerceStoredColumnRatios(
+      window.localStorage.getItem(TERMINAL_COLUMNS_RATIOS_KEY),
+      count,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Compute the initial column ratios for `count`: persisted, else equal —
+ *  clamped against the current splittable dock width. */
+function initialColumnRatios(count: number): number[] {
+  const persisted = readPersistedColumnRatios(count);
+  return clampColumnRatios(
+    persisted ?? Array.from({ length: clampTerminalColumns(count) }, () => 1),
+    count,
+    terminalColumnsSplitWidthNow(count),
+  );
+}
+
+/** Manage the resizable terminal column ratios: state + persistence + re-clamp.
+ *  The multi-column generalization of useViewerSplit. `setRatios` clamps the
+ *  candidate array against the live track and (optionally) persists it; `reset`
+ *  re-seeds the ratios for a NEW column count (e.g. add/remove a terminal). */
+function useTerminalColumns(initialCount: number): {
+  ratios: number[];
+  setRatios: (next: number[], count: number, persist: boolean) => void;
+  reset: (count: number) => void;
+} {
+  // Lazy init so the localStorage read happens once, pre-paint.
+  const [ratios, setRatiosState] = useState<number[]>(() =>
+    initialColumnRatios(initialCount),
+  );
+
+  const setRatios = useCallback(
+    (next: number[], count: number, persist: boolean): void => {
+      const clamped = clampColumnRatios(
+        next,
+        count,
+        terminalColumnsSplitWidthNow(count),
+      );
+      setRatiosState(clamped);
+      if (persist) {
+        try {
+          window.localStorage.setItem(
+            TERMINAL_COLUMNS_RATIOS_KEY,
+            JSON.stringify(clamped),
+          );
+        } catch {
+          /* localStorage may be unavailable; ratios still apply in-session. */
+        }
+      }
+    },
+    [],
+  );
+
+  // Re-seed the ratios for a new column count (persisted-or-equal, clamped) so
+  // adding/removing a terminal lays the columns out sensibly. Does NOT persist —
+  // the user's per-count stored set (if any) is preserved; setRatios persists.
+  const reset = useCallback((count: number): void => {
+    setRatiosState(initialColumnRatios(count));
+  }, []);
+
+  return { ratios, setRatios, reset };
 }
 
 /* ============================================================
@@ -1061,6 +1195,165 @@ function ColSplitter({ ratio, setRatio, ariaLabel }: ColSplitterProps): JSX.Elem
   );
 }
 
+interface TerminalColSplitterProps {
+  /** Boundary index: the divider BETWEEN column `index` and `index + 1`. */
+  index: number;
+  /** The live per-column WIDTH ratios (length === count). */
+  ratios: number[];
+  /** The live terminal count (drives the px→fraction track width). */
+  count: number;
+  /** Clamp+persist the candidate ratios (App's useTerminalColumns setter). */
+  setRatios: (next: number[], count: number, persist: boolean) => void;
+  /** Accessible label for the divider. */
+  ariaLabel: string;
+}
+
+/** A draggable divider BETWEEN two adjacent terminal columns — the multi-column
+ *  analog of the viewer ColSplitter, REUSING the same capture-based drag +
+ *  keyboard pattern but shifting weight only between the two columns it sits
+ *  between (the others stay fixed). A clientX delta over the splittable dock
+ *  width (wrap − dividers) maps to a fraction df that moves from column
+ *  `index + 1` to column `index` (dragging RIGHT widens the LEFT column);
+ *  clampColumnRatios (via setRatios) keeps every column at its
+ *  TERMINAL_PANE_MIN floor. ArrowRight/Left nudge by a small fraction; Home/End
+ *  push the boundary toward the floor on each side. Live-updates during drag,
+ *  persists on release — the ColSplitter persist-on-end pattern. role="separator"
+ *  / aria-orientation "vertical" (the separator's own axis), with aria-valuenow
+ *  the LEFT column's whole-percent share of the two it divides. */
+function TerminalColSplitter({
+  index,
+  ratios,
+  count,
+  setRatios,
+  ariaLabel,
+}: TerminalColSplitterProps): JSX.Element {
+  const [dragging, setDragging] = useState(false);
+  // Drag origin: clientX, the two columns' ratios at grab, and the splittable
+  // track width captured once so the px→fraction conversion is stable.
+  const origin = useRef<{ x: number; left: number; right: number; w: number } | null>(
+    null,
+  );
+
+  // Move fraction `df` from the right column to the left (positive widens left),
+  // building a fresh ratios array with only the two boundary columns changed.
+  const applyDelta = useCallback(
+    (left: number, right: number, df: number, persist: boolean): void => {
+      const next = ratios.slice();
+      // Guard the bounded pair so neither inverts before the clamp renormalizes.
+      const pair = left + right;
+      let nextLeft = left + df;
+      if (nextLeft < 0) nextLeft = 0;
+      if (nextLeft > pair) nextLeft = pair;
+      next[index] = nextLeft;
+      next[index + 1] = pair - nextLeft;
+      setRatios(next, count, persist);
+    },
+    [ratios, index, count, setRatios],
+  );
+
+  const onPointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const left = ratios[index] ?? 0;
+      const right = ratios[index + 1] ?? 0;
+      origin.current = {
+        x: e.clientX,
+        left,
+        right,
+        w: terminalColumnsSplitWidthNow(count),
+      };
+      setDragging(true);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      document.querySelector('.win')?.classList.add('dragging');
+    },
+    [ratios, index, count],
+  );
+
+  const onPointerMove = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      const o = origin.current;
+      if (o === null || o.w <= 0) return;
+      const delta = e.clientX - o.x;
+      applyDelta(o.left, o.right, delta / o.w, false); // live, un-persisted
+    },
+    [applyDelta],
+  );
+
+  const endDrag = useCallback(
+    (e: ReactPointerEvent<HTMLDivElement>): void => {
+      if (origin.current === null) return;
+      origin.current = null;
+      setDragging(false);
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        /* capture may already be released (lostpointercapture). */
+      }
+      document.querySelector('.win')?.classList.remove('dragging');
+      // Persist the settled ratios (re-read live state, not the grab snapshot).
+      setRatios(ratios.slice(), count, true);
+    },
+    [setRatios, ratios, count],
+  );
+
+  const onKeyDown = useCallback(
+    (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+      const left = ratios[index] ?? 0;
+      const right = ratios[index + 1] ?? 0;
+      const pair = left + right;
+      const STEP = 0.02; // ~2 percentage points per press (viewer-step parity)
+      let df: number | null = null;
+      switch (e.key) {
+        case 'ArrowRight': // widen the LEFT column
+          df = STEP;
+          break;
+        case 'ArrowLeft':
+          df = -STEP;
+          break;
+        case 'Home': // LEFT column to its max (clamp keeps the right floor)
+          df = pair;
+          break;
+        case 'End': // LEFT column to its min
+          df = -pair;
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+      applyDelta(left, right, df, true);
+    },
+    [ratios, index, applyDelta],
+  );
+
+  // The LEFT column's whole-percent share of the two columns it divides.
+  const left = ratios[index] ?? 0;
+  const right = ratios[index + 1] ?? 0;
+  const pair = left + right;
+  const pct = pair > 0 ? Math.round((left / pair) * 100) : 50;
+
+  return (
+    <div
+      className={
+        'splitter terminal-col-divider' + (dragging ? ' dragging' : '')
+      }
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={ariaLabel}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct}
+      aria-valuetext={`${pct} percent`}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endDrag}
+      onLostPointerCapture={endDrag}
+      onKeyDown={onKeyDown}
+    />
+  );
+}
+
 /** Read the capture-only `?shortcuts` hint (presence ⇒ open the Keyboard
  *  Shortcuts panel on boot for a headless proof screenshot). `?shortcuts`
  *  (no value) or `=1`/`=true` ⇒ open; `=0`/`=false` ⇒ closed. Parallel to
@@ -1189,25 +1482,98 @@ export function App(): JSX.Element {
   // not a status message. Both the Explorer and Chat toggles write here.
   const [statusMessage, setStatusMessage] = useState('');
 
-  // ---- Terminal dock (bottom row): open/height/maximize state ----
+  // ---- Terminal dock (bottom row): open / height / count / focus / maximize ----
   // Height mirrors useChatWidth (persisted, clamped); open state persists via
-  // TERMINAL_OPEN_KEY; maximize is SESSION-ONLY (never persisted) so a relaunch
-  // always starts with the three columns visible.
+  // TERMINAL_OPEN_KEY. terminalCount (1..3) is seeded from the persisted
+  // InitialState.terminalCount once the boot snapshot arrives and persisted via
+  // window.loom.terminal.setLayout. Per-terminal SOLO-maximize is SESSION-ONLY
+  // (maximizedTerminalIndex; null = none) so a relaunch always shows every
+  // column. Focus is modeled per-index as { targetIndex, nonce } (R8): each
+  // TerminalPane focuses its xterm only when targetIndex === its slot AND the
+  // nonce changed — a shared scalar nonce would focus the wrong pane.
   const { height: terminalHeight, setHeight: setTerminalHeight } =
     useTerminalHeight();
   const [terminalOpen, setTerminalOpen] = useState<boolean>(() =>
     initialTerminalOpen(),
   );
-  const [terminalMax, setTerminalMax] = useState<boolean>(false);
-  // Bumped on (re)open so TerminalPane re-focuses xterm (the command-nonce
-  // idiom — fold/copy commands use the same shape).
-  const [terminalFocusNonce, setTerminalFocusNonce] = useState(0);
+  // How many terminal columns to mount (1..3). Seeded to the default; the
+  // boot-seed effect below threads the persisted InitialState.terminalCount once
+  // vm is non-null (config-borne, NOT a localStorage value).
+  const [terminalCount, setTerminalCount] = useState<TerminalColumns>(1);
+  // Which terminal column the focus commands / accent target. Clamped into the
+  // live count by clampActiveTerminalIndex so a stale index (after a remove)
+  // never addresses a non-existent pane.
+  const [activeTerminalIndex, setActiveTerminalIndex] = useState<number>(0);
+  // Per-index focus request (R8): targetIndex names which pane to focus, nonce
+  // bumps on each request so the SAME pane can be re-focused. null = no request
+  // yet (no pane focuses on mount alone — only an explicit request focuses).
+  const [terminalFocusRequest, setTerminalFocusRequest] = useState<{
+    targetIndex: number;
+    nonce: number;
+  } | null>(null);
+  const terminalFocusNonceRef = useRef(0);
+  // Which terminal is SOLO-maximized within the dock (null = none). Distinct
+  // from the legacy whole-dock maximize: solo-maximize expands ONE terminal and
+  // hides its siblings WITHIN the dock (design §4 / R11), via the wrap's
+  // .solo-maximized class + the column's .terminal-maximized class.
+  const [maximizedTerminalIndex, setMaximizedTerminalIndex] = useState<
+    number | null
+  >(null);
+  // Ephemeral per-column WIDTH ratios (localStorage, like the viewer-split
+  // ratio); terminalCount itself is config-borne.
+  const {
+    ratios: terminalColumnRatios,
+    setRatios: setTerminalColumnRatios,
+    reset: resetTerminalColumnRatios,
+  } = useTerminalColumns(1);
   // The StatusBar terminal toggle — focus returns here on close (SC 2.4.3).
   const terminalToggleRef = useRef<HTMLButtonElement>(null);
-  // Latest open state in a ref so the toggle can read it without side effects
-  // inside the state updater (StrictMode-safe — the toggleExplorer idiom).
+  // Latest open / count in refs so the toggle + focus commands read them without
+  // side effects inside a state updater (StrictMode-safe — the toggleExplorer
+  // idiom). The count ref also lets the keydown dispatcher clamp focus targets
+  // against the LIVE count without re-subscribing the listener on every change.
   const terminalOpenRef = useRef(terminalOpen);
   terminalOpenRef.current = terminalOpen;
+  const terminalCountRef = useRef<TerminalColumns>(terminalCount);
+  terminalCountRef.current = terminalCount;
+  const activeTerminalIndexRef = useRef(activeTerminalIndex);
+  activeTerminalIndexRef.current = activeTerminalIndex;
+
+  // Issue a focus request at `index` (clamped into the live count): bump the
+  // shared nonce so the targeted pane re-focuses even when it is already active.
+  // `count` defaults to the live ref, but add/remove pass the NEW count
+  // explicitly — the ref still holds the pre-render (old) count at that moment,
+  // so clamping against the live ref would mis-target the just-added column.
+  const requestTerminalFocus = useCallback(
+    (index: number, count?: number): void => {
+      const target = clampActiveTerminalIndex(
+        index,
+        count ?? terminalCountRef.current,
+      );
+      terminalFocusNonceRef.current += 1;
+      setActiveTerminalIndex(target);
+      setTerminalFocusRequest({
+        targetIndex: target,
+        nonce: terminalFocusNonceRef.current,
+      });
+    },
+    [],
+  );
+
+  // Seed terminalCount from the persisted boot snapshot ONCE vm is available
+  // (InitialState.terminalCount is config-borne, threaded by buildInitialState),
+  // then mirror it to localStorage-free state. A ref guards the one-shot so a
+  // later vm update (counters/messages) never clobbers a live user change.
+  const terminalCountSeededRef = useRef(false);
+  useEffect(() => {
+    if (terminalCountSeededRef.current) return;
+    if (vm === null) return;
+    terminalCountSeededRef.current = true;
+    const seeded = clampTerminalColumns(vm.terminalCount);
+    setTerminalCount(seeded);
+    setActiveTerminalIndex((i) => clampActiveTerminalIndex(i, seeded));
+    resetTerminalColumnRatios(seeded);
+  }, [vm, resetTerminalColumnRatios]);
 
   const toggleTerminal = useCallback((): void => {
     const next = !terminalOpenRef.current;
@@ -1217,37 +1583,196 @@ export function App(): JSX.Element {
       /* localStorage may be unavailable; state still applies in-session. */
     }
     if (next) {
-      // Opening: focus lands in the terminal (TerminalPane focuses xterm on
-      // mount; the nonce also covers a re-open of an already-mounted pane).
-      setTerminalFocusNonce((n) => n + 1);
+      // Opening: focus lands in the ACTIVE terminal (the per-index focus
+      // request also covers a re-open of an already-mounted pane).
+      requestTerminalFocus(activeTerminalIndexRef.current);
     } else {
-      // Closing: maximize is open-only, and focus must never strand inside
-      // the unmounting pane — return it to the always-visible toggle.
-      setTerminalMax(false);
+      // Closing: solo-maximize is open-only, and focus must never strand inside
+      // an unmounting pane — return it to the always-visible toggle.
+      setMaximizedTerminalIndex(null);
       requestAnimationFrame(() => terminalToggleRef.current?.focus());
     }
     // Announce the change to assistive tech via the polite live region
     // (SC 4.1.3 / A11Y-CHAT-02) — perceivable regardless of focus location.
     setStatusMessage(next ? 'Terminal opened' : 'Terminal closed');
     setTerminalOpen(next);
-  }, []);
+  }, [requestTerminalFocus]);
 
-  // Flip the terminal dock between maximized and restored (the same action the
-  // pane-header maximize button performs). Maximize/restore is a deliberate
-  // "give me the terminal" action, so bump the focus nonce to land focus in
-  // xterm — matching the header button's inline handler. When the dock is
-  // CLOSED, open it first (a closed dock has nothing to maximize), then
-  // maximize so the keyboard command is a non-crashing, sensible no-op-or-open;
-  // toggleTerminal already bumps the focus nonce in that path.
+  // SOLO-maximize / restore the ACTIVE terminal (the same action its pane-header
+  // maximize button performs): toggle maximizedTerminalIndex between the active
+  // index and null, and re-focus that terminal — matching the header button's
+  // inline handler. When the dock is CLOSED, open it first (a closed dock has
+  // nothing to maximize), then maximize the active terminal so the keyboard
+  // command is a non-crashing, sensible no-op-or-open; toggleTerminal already
+  // issues the focus request in that path.
   const toggleMaximizeTerminal = useCallback((): void => {
+    const active = clampActiveTerminalIndex(
+      activeTerminalIndexRef.current,
+      terminalCountRef.current,
+    );
     if (!terminalOpenRef.current) {
       toggleTerminal();
-      setTerminalMax(true);
+      setMaximizedTerminalIndex(active);
       return;
     }
-    setTerminalMax((m) => !m);
-    setTerminalFocusNonce((n) => n + 1);
-  }, [toggleTerminal]);
+    setMaximizedTerminalIndex((m) => (m === null ? active : null));
+    requestTerminalFocus(active);
+  }, [toggleTerminal, requestTerminalFocus]);
+
+  // Add a terminal column (up to MAX_TERMINALS), persisting the new count to
+  // loom-config.json via the layout bridge so it boots with it next launch.
+  // Opens the dock if closed (a closed dock has nothing to add to), re-seeds the
+  // column ratios for the new count, and focuses the freshly-added terminal.
+  const addTerminal = useCallback((): void => {
+    if (terminalCountRef.current >= MAX_TERMINALS) {
+      setStatusMessage(`Terminal dock at capacity (${MAX_TERMINALS} terminals)`);
+      return;
+    }
+    const next = clampTerminalColumns(terminalCountRef.current + 1);
+    if (next === terminalCountRef.current) {
+      setStatusMessage(`Terminal dock at capacity (${MAX_TERMINALS} terminals)`);
+      return;
+    }
+    // Refuse to add a column the dock is too narrow to host without starving an
+    // existing one below its TERMINAL_PANE_MIN floor (the N-pane min-width
+    // guard) — keeps every terminal usable rather than collapsing one to ~0.
+    // terminalColumnsMinWidth(next) is the FULL wrap floor (columns + dividers),
+    // so reconstruct the raw wrap width (split width + the next-count dividers)
+    // to compare like-for-like.
+    const dockWidth =
+      terminalColumnsSplitWidthNow(next) + (next - 1) * TERMINAL_DIVIDER_W;
+    if (dockWidth < terminalColumnsMinWidth(next)) {
+      setStatusMessage('Window too narrow to add another terminal');
+      return;
+    }
+    setTerminalCount(next);
+    resetTerminalColumnRatios(next);
+    void window.loom.terminal.setLayout(next).catch(() => {
+      /* persistence is best-effort; the in-session count still applies. */
+    });
+    const newIndex = next - 1;
+    if (!terminalOpenRef.current) {
+      toggleTerminal();
+    }
+    // Pass the NEW count so the focus clamps against it (the count ref still
+    // holds the pre-render old count at this synchronous moment).
+    requestTerminalFocus(newIndex, next);
+    setStatusMessage(`Added terminal ${next}`);
+  }, [toggleTerminal, requestTerminalFocus, resetTerminalColumnRatios]);
+
+  // Remove the last terminal column (floor of 1), persisting the new count. The
+  // active index is clamped into the smaller count; if the removed column was
+  // maximized, drop the solo-maximize. Focus moves to the now-last terminal.
+  const removeTerminal = useCallback((): void => {
+    const next = clampTerminalColumns(terminalCountRef.current - 1);
+    if (next === terminalCountRef.current) return; // already at the floor (1)
+    setTerminalCount(next);
+    resetTerminalColumnRatios(next);
+    void window.loom.terminal.setLayout(next).catch(() => {
+      /* persistence is best-effort; the in-session count still applies. */
+    });
+    setMaximizedTerminalIndex((m) =>
+      m === null ? null : m >= next ? null : m,
+    );
+    const clampedActive = clampActiveTerminalIndex(
+      activeTerminalIndexRef.current,
+      next,
+    );
+    // Pass the NEW (smaller) count so the focus clamps against it.
+    requestTerminalFocus(clampedActive, next);
+    setStatusMessage(`Removed a terminal (${next} remaining)`);
+  }, [requestTerminalFocus, resetTerminalColumnRatios]);
+
+  // Set the terminal count to an ARBITRARY target (the Settings radio group,
+  // which can jump e.g. 1→3 or 3→1, unlike add/removeTerminal's ±1 step). This
+  // is the SINGLE source of truth the Settings path routes through so a count
+  // change there drives the SAME live state as the StatusBar add/remove path:
+  // it updates App's live terminalCount, re-seeds the column ratios for the new
+  // count, persists via window.loom.terminal.setLayout (loom-config.json),
+  // drops a now-out-of-range solo-maximize, clamps the active index, opens the
+  // dock if closed, and focuses a valid pane. SettingsPanel calls this instead
+  // of touching the layout bridge directly, so config + live UI never desync.
+  const selectTerminalCount = useCallback(
+    (count: number): void => {
+      const next = clampTerminalColumns(count);
+      if (next === terminalCountRef.current) return; // no-op on a re-select
+      setTerminalCount(next);
+      resetTerminalColumnRatios(next);
+      void window.loom.terminal.setLayout(next).catch(() => {
+        /* persistence is best-effort; the in-session count still applies. */
+      });
+      // Drop a solo-maximize that now points past the (possibly smaller) count.
+      setMaximizedTerminalIndex((m) => (m === null ? null : m >= next ? null : m));
+      // Open the dock if closed so the new panes are actually visible.
+      if (!terminalOpenRef.current) {
+        toggleTerminal();
+      }
+      // Focus a valid pane: the freshly-added last terminal when growing, else
+      // the active index clamped into the (smaller) count. Pass the NEW count so
+      // the focus clamps against it (the ref still holds the pre-render count).
+      const focusIndex =
+        next > terminalCountRef.current
+          ? next - 1
+          : clampActiveTerminalIndex(activeTerminalIndexRef.current, next);
+      requestTerminalFocus(focusIndex, next);
+      setStatusMessage(
+        `${next} terminal${next === 1 ? '' : 's'} (${next} pane${next === 1 ? '' : 's'})`,
+      );
+    },
+    [toggleTerminal, requestTerminalFocus, resetTerminalColumnRatios],
+  );
+
+  // Focus terminal at 0-based `index` (the focusTerminal1/2/3 commands): open
+  // the dock first when closed (a closed dock has no pane to focus), then set
+  // the active index (clamped into the live count) and bump that pane's nonce.
+  // When the dock was closed, toggleTerminal already issues a focus request for
+  // the CURRENT active index, so override it to the requested one here.
+  const focusTerminalAt = useCallback(
+    (index: number): void => {
+      if (!terminalOpenRef.current) {
+        toggleTerminal();
+      }
+      requestTerminalFocus(index);
+    },
+    [toggleTerminal, requestTerminalFocus],
+  );
+
+  // Advance the active terminal by one slot, wrapping within the live count
+  // (the cycleTerminalFocus command). Opens the dock first when closed.
+  const cycleTerminalFocus = useCallback((): void => {
+    if (!terminalOpenRef.current) {
+      toggleTerminal();
+    }
+    const nextIndex = cycleTerminalIndex(
+      activeTerminalIndexRef.current,
+      terminalCountRef.current,
+    );
+    requestTerminalFocus(nextIndex);
+  }, [toggleTerminal, requestTerminalFocus]);
+
+  // A terminal pane's own close (×) button. With more than one terminal it
+  // removes a column (the rightmost unmounts — App tracks a count, not a session
+  // list — which closes one PTY and persists the smaller count); the last
+  // terminal's × closes the whole dock (the single-terminal back-compat path).
+  const closeTerminalPane = useCallback((): void => {
+    if (terminalCountRef.current > 1) {
+      removeTerminal();
+    } else {
+      toggleTerminal();
+    }
+  }, [removeTerminal, toggleTerminal]);
+
+  // SOLO-maximize / restore a SPECIFIC terminal (its pane-header × maximize
+  // button): toggle maximizedTerminalIndex between that index and null, mark it
+  // active, and focus it (matching toggleMaximizeTerminal's keyboard path).
+  const toggleMaximizeTerminalAt = useCallback(
+    (index: number): void => {
+      const i = clampActiveTerminalIndex(index, terminalCountRef.current);
+      setMaximizedTerminalIndex((m) => (m === i ? null : i));
+      requestTerminalFocus(i);
+    },
+    [requestTerminalFocus],
+  );
 
   // Keyboard Shortcuts panel open state. App owns it; the fixed Ctrl/Cmd+Comma
   // opener, the Settings "Open Keyboard Shortcuts" button, and the `?shortcuts`
@@ -1987,11 +2512,14 @@ export function App(): JSX.Element {
 
       // Every other command is suppressed inside editable controls so normal
       // typing (and native combos like Ctrl/Cmd+B bold) is never swallowed —
-      // EXCEPT toggleTerminal: xterm's hidden <textarea> IS an editable
-      // target, and Ctrl/Cmd+` must close the dock from inside the terminal
-      // (symmetric with opening it). The terminal swallows every OTHER combo
-      // by design (a shell owns its keys); only its own toggle punches out.
-      if (matched !== 'toggleTerminal' && isEditableTarget(e.target)) return;
+      // EXCEPT the terminal commands: xterm's hidden <textarea> IS an editable
+      // target, and toggleTerminal (Ctrl/Cmd+` close), the per-terminal focus
+      // commands (Ctrl+1/2/3) and the focus-cycle (Ctrl+Alt+`) must fire from
+      // inside a focused terminal. The terminal swallows every OTHER combo by
+      // design (a shell owns its keys); only these punch out (each carries a
+      // modifier so a bare key can never punch through — R7).
+      if (!TERMINAL_EDITABLE_EXEMPT.has(matched) && isEditableTarget(e.target))
+        return;
 
       e.preventDefault();
       switch (matched) {
@@ -2005,8 +2533,26 @@ export function App(): JSX.Element {
           toggleTerminal();
           break;
         case 'toggleMaximizeTerminal':
-          // Maximize/restore the terminal dock (opens it first when closed).
+          // Solo-maximize/restore the active terminal (opens dock if closed).
           toggleMaximizeTerminal();
+          break;
+        case 'focusTerminal1':
+          // Focus terminal N (1-based command → 0-based slot). Opens the dock
+          // first when closed; clamps the index into the LIVE count so a focus
+          // command for a slot above the live count is a no-op-on-the-last, not
+          // a crash. Fires from inside another terminal (R7 editable exception).
+          focusTerminalAt(0);
+          break;
+        case 'focusTerminal2':
+          focusTerminalAt(1);
+          break;
+        case 'focusTerminal3':
+          focusTerminalAt(2);
+          break;
+        case 'cycleTerminalFocus':
+          // Advance focus to the next terminal, wrapping within the live count
+          // (Ctrl+Alt+`). Opens the dock first when closed.
+          cycleTerminalFocus();
           break;
         case 'toggleChanges':
           // Open/close the branch Changes viewer (the StatusBar toggle action).
@@ -2080,6 +2626,8 @@ export function App(): JSX.Element {
     closeChanges,
     toggleChanges,
     toggleMaximizeTerminal,
+    focusTerminalAt,
+    cycleTerminalFocus,
   ]);
 
   if (vm === null) {
@@ -2111,6 +2659,36 @@ export function App(): JSX.Element {
   // target, so this is FORCED to the RIGHT (file) pane (effectiveActivePane);
   // otherwise the stored activePane stands (single doc / two-doc reading split).
   const liveActivePane = effectiveActivePane(splitView, diffMode, activePane);
+
+  // The dock sub-grid track string (cols + interleaved divider tracks), built
+  // from the live column ratios against the current splittable dock width — the
+  // SINGLE source of the .terminal-dock-wrap grid (lib/terminal-columns.ts). A
+  // single terminal yields one full track with no dividers (a visual no-op for
+  // upgrading single-terminal users). solo-maximize is handled by CSS state
+  // classes on top of this template (the maximized column spans 1 / -1).
+  const terminalGridTemplate = terminalColumnsTemplate(
+    terminalColumnRatios,
+    terminalCount,
+    terminalColumnsSplitWidthNow(terminalCount),
+  );
+  // 0-based indices of the live terminal columns to mount.
+  const terminalSlots = Array.from({ length: terminalCount }, (_unused, i) => i);
+
+  // The RESOLVED combos for the terminal commands that must fire from inside a
+  // focused terminal. Passed to each TerminalPane so its xterm custom key
+  // handler returns false for them (xterm otherwise CONSUMES chords like
+  // Ctrl+Alt+` and stops propagation before App's bubble dispatcher sees them).
+  // Resolved (not default) so a rebound focus command is deferred too.
+  // Plain const (NOT useMemo): this sits AFTER an early return above, so a hook
+  // here would change the hook count between renders (React #310). The compute
+  // is cheap (one resolveBindings + a 5-id map), fine per-render. TerminalPane
+  // mirrors the Set into a ref, so a fresh Set each render is harmless.
+  const resolvedTerminalBindings = resolveBindings(vm?.keybindings);
+  const terminalAppKeyCombos = new Set(
+    [...TERMINAL_EDITABLE_EXEMPT]
+      .map((id) => resolvedTerminalBindings[id])
+      .filter((c): c is string => typeof c === 'string'),
+  );
 
   return (
     <div className="win">
@@ -2144,6 +2722,8 @@ export function App(): JSX.Element {
         terminalOpen={terminalOpen}
         onToggleTerminal={toggleTerminal}
         terminalToggleRef={terminalToggleRef}
+        terminalCount={terminalCount}
+        onAddTerminal={addTerminal}
         onTogglePause={() => void store.togglePause()}
         onToggleTheme={() =>
           void store.setTheme(vm.theme === 'dark' ? 'light' : 'dark')
@@ -2162,11 +2742,16 @@ export function App(): JSX.Element {
           'body' +
           (explorerHidden ? ' explorer-hidden' : '') +
           (chatHidden ? ' chat-hidden' : '') +
-          // The terminal dock adds a second grid ROW (terminal-open); maximize
-          // collapses row 1 so the dock fills the body (terminal-max). The
-          // row classes compose freely with the column-hiding classes above.
+          // The terminal dock adds a second grid ROW (terminal-open). Maximize
+          // COMBINES two layers: `.body.terminal-max` expands the dock to fill
+          // the body (row 1 -> 0, hiding explorer/viewer — the v0.8.x whole-dock
+          // maximize, preserved so a single maximized terminal still fills the
+          // screen) AND `.terminal-dock-wrap.solo-maximized` (set in the dock
+          // render) hides the OTHER terminals so only the focused one shows
+          // (design §4 per-terminal solo-maximize). The legacy whole-dock hide
+          // rule is scoped OFF the wrapper so it never blanks the dock itself (R11).
           (terminalOpen ? ' terminal-open' : '') +
-          (terminalOpen && terminalMax ? ' terminal-max' : '')
+          (maximizedTerminalIndex !== null ? ' terminal-max' : '')
           // NOTE: the split reading-pane layout lives entirely on the
           // .viewer-split-wrap grid (left | divider | right, using --viewer-split
           // inherited from .body's inline style) — the center track mounts that
@@ -2511,10 +3096,14 @@ export function App(): JSX.Element {
           />
         )}
         {/* Terminal dock (bottom row, spans all columns). The row splitter on
-            its top edge resizes it; hidden while maximized (the dock fills the
-            body, so there is no seam to drag). Unmounting TerminalPane closes
-            the PTY session — the dock's open state IS the session lifetime. */}
-        {terminalOpen && !terminalMax && (
+            its top edge resizes the WHOLE dock; per-terminal solo-maximize
+            expands ONE column WITHIN the dock (it does not change the dock
+            height), so the row splitter stays. Up to terminalCount .pane.terminal
+            columns sit side by side inside the .terminal-dock-wrap sub-grid with
+            resizable inter-terminal dividers interleaved between them. Unmounting
+            a TerminalPane closes its PTY session — the dock's open state + count
+            ARE the session lifetimes. */}
+        {terminalOpen && (
           <RowSplitter
             height={terminalHeight}
             setHeight={setTerminalHeight}
@@ -2525,19 +3114,54 @@ export function App(): JSX.Element {
           />
         )}
         {terminalOpen && (
-          <TerminalPane
-            height={terminalHeight}
-            maximized={terminalMax}
-            // Maximize/restore is a deliberate "give me the terminal" action —
-            // bump the focus nonce so focus lands in xterm. (The geometry
-            // effect in TerminalPane never focuses; only the nonce does.)
-            onToggleMaximize={() => {
-              setTerminalMax((m) => !m);
-              setTerminalFocusNonce((n) => n + 1);
-            }}
-            onClose={toggleTerminal}
-            focusNonce={terminalFocusNonce}
-          />
+          <div
+            className={
+              'terminal-dock-wrap' +
+              (maximizedTerminalIndex !== null ? ' solo-maximized' : '')
+            }
+            style={
+              {
+                gridTemplateColumns: terminalGridTemplate,
+                // The divider width fed from the SINGLE TS constant
+                // (TERMINAL_DIVIDER_W), read by BOTH the inline grid template
+                // (terminalColumnsTemplate) AND the .terminal-col-divider width
+                // — so the layout and the ratio-clamp geometry can never drift.
+                ['--terminal-divider-w' as string]: TERMINAL_DIVIDER_W + 'px',
+              } as CSSProperties
+            }
+          >
+            {terminalSlots.map((i) => (
+              <Fragment key={i}>
+                {i > 0 && (
+                  <TerminalColSplitter
+                    index={i - 1}
+                    ratios={terminalColumnRatios}
+                    count={terminalCount}
+                    setRatios={setTerminalColumnRatios}
+                    ariaLabel={`Resize terminals ${i} and ${i + 1}`}
+                  />
+                )}
+                <TerminalPane
+                  height={terminalHeight}
+                  slot={i}
+                  // Per-terminal solo-maximize: this pane is maximized when it is
+                  // the recorded maximized index. TerminalPane applies the
+                  // .terminal-maximized root class from this prop; App toggles the
+                  // wrap's .solo-maximized above (design §4 / R11).
+                  maximized={maximizedTerminalIndex === i}
+                  onToggleMaximize={() => toggleMaximizeTerminalAt(i)}
+                  onClose={closeTerminalPane}
+                  // Per-index focus request (R8): each pane focuses its xterm ONLY
+                  // when targetIndex === its slot AND the nonce changed — a shared
+                  // scalar nonce would focus the wrong pane with 3 instances.
+                  focusRequest={terminalFocusRequest ?? undefined}
+                  // Defer the App's terminal shortcuts (incl. Ctrl+Alt+` cycle,
+                  // which xterm would otherwise consume) to the App dispatcher.
+                  appKeyCombos={terminalAppKeyCombos}
+                />
+              </Fragment>
+            ))}
+          </div>
         )}
       </div>
       {settingsOpen && (
@@ -2558,6 +3182,14 @@ export function App(): JSX.Element {
             settingsOpenerRef.current = null;
             openShortcuts(gearButtonRef.current);
           }}
+          // Reflect the LIVE count so the Terminals radio shows the real
+          // selection (1/2/3), not a hard-coded 1 (the panel default).
+          terminalCount={terminalCount}
+          // Route the count change through App's live-state updater (the SAME
+          // path the StatusBar add/remove uses) — it mounts/unmounts panes,
+          // clamps the active index, AND persists via setLayout. SettingsPanel
+          // no longer calls the layout bridge directly (single source of truth).
+          onSelectTerminalCount={selectTerminalCount}
           onClose={closeSettings}
         />
       )}

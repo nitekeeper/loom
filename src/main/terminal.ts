@@ -2,12 +2,14 @@
  * Loom — terminal session manager (loom:terminal:* — PURE)
  * ------------------------------------------------------------
  * The main-process bookkeeping behind the human-invoked terminal pane:
- * one live PTY session at a time, spawned in the launch root via an
- * INJECTED PtyFactory (the only seam to node-pty — src/main/pty-factory.ts),
- * with every renderer payload RE-VALIDATED here (never trust the renderer):
+ * up to MAX_TERMINALS concurrent sessionId-keyed PTY sessions, each spawned
+ * in the launch root via an INJECTED PtyFactory (the only seam to node-pty —
+ * src/main/pty-factory.ts), each owning its OWN coalescing output pump, with
+ * every renderer payload RE-VALIDATED here (never trust the renderer):
  *
- *   - open    -> kill the previous session, spawn cwd=rootDir, return a
- *                fresh randomUUID() session token (null = unavailable).
+ *   - open    -> at capacity return { sessionId: null } (spawn/kill nothing);
+ *                else spawn cwd=rootDir, insert an entry, return a fresh
+ *                randomUUID() session token (null = unavailable/at-capacity).
  *   - input   -> string data only, <= MAX_TERMINAL_INPUT_BYTES (byte-
  *                measured), live session token only; else silent no-op.
  *   - resize  -> cols/rows finite integers within the TERMINAL_MIN/MAX
@@ -83,20 +85,39 @@ export const OUTPUT_BUFFER_CAP = 256 * 1024;
 /** Coalescing flush cadence: one TERMINAL_DATA push per tick at most. */
 const FLUSH_MS = 8;
 
+/** Hard cap on concurrent live terminals. open() at capacity spawns nothing,
+ *  kills nothing, and returns the { sessionId: null } graceful sentinel. */
+export const MAX_TERMINALS = 3;
+
+/** One live terminal: its OWN pty PLUS its OWN coalescing-pump state
+ *  (`pending`/`pendingBytes`/`flushTimer`). Keeping the pump per-entry is what
+ *  isolates 3 terminals' output — a shared global pump would interleave their
+ *  chunks and mis-account the per-session OUTPUT_BUFFER_CAP (risk R1). */
+export interface SessionEntry {
+  id: string;
+  pty: PtyLike;
+  /** Pending (unflushed) output chunks + their byte total, bounded at
+   *  OUTPUT_BUFFER_CAP with drop-oldest — PER ENTRY. */
+  pending: { data: string; bytes: number }[];
+  pendingBytes: number;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+}
+
 export interface TerminalManager {
-  /** Validates { cols, rows }; kills any previous session; spawns via the
-   *  factory. { sessionId: null } on invalid payload or factory throw. */
+  /** Validates { cols, rows }; spawns via the factory and inserts a new entry
+   *  (does NOT kill prior sessions). { sessionId: null } on invalid payload,
+   *  factory throw, or at MAX_TERMINALS capacity (spawns/kills nothing). */
   open(payload: unknown): TerminalOpenResult;
   /** Validates { sessionId, data } (live token, string, byte cap). */
   input(payload: unknown): void;
   /** Validates { sessionId, cols, rows } (live token, in-range ints). */
   resize(payload: unknown): void;
-  /** Validates { sessionId }; kills the live session on a match. */
+  /** Validates { sessionId }; kills + removes ONLY the matching entry. */
   close(payload: unknown): void;
   /** Attach the renderer push sink (send(channel, payload)). Buffered output
    *  flushes once attached. Returns a detach fn — pushes stop after detach. */
   attachSink(send: (channel: string, payload: unknown) => void): () => void;
-  /** Kill the live session unconditionally (window close / app quit). */
+  /** Kill EVERY live session unconditionally (window close / app quit). */
   disposeAll(): void;
 }
 
@@ -116,33 +137,29 @@ export function createTerminalManager(deps: {
   const platform = deps.platform ?? process.platform;
   const env = deps.env ?? process.env;
 
-  /** The SINGLE live session, or null. The id is the per-spawn random token
-   *  re-checked on every input/resize/close (stale id = silent no-op). */
-  let session: { id: string; pty: PtyLike } | null = null;
+  /** The live sessions, keyed by their per-spawn random token. The id is
+   *  re-checked on every input/resize/close via sessions.get(sessionId)
+   *  (unknown id = silent no-op). Each entry owns its OWN pump state. */
+  const sessions = new Map<string, SessionEntry>();
   let sink: ((channel: string, payload: unknown) => void) | null = null;
-  /** Pending (unflushed) output chunks + their byte total, bounded at
-   *  OUTPUT_BUFFER_CAP with drop-oldest. */
-  let pending: { data: string; bytes: number }[] = [];
-  let pendingBytes = 0;
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** True when `payload` is an object carrying the LIVE session's token. */
-  function liveSession(payload: unknown): { id: string; pty: PtyLike } | null {
-    if (session === null) return null;
+  /** Resolve the live entry carrying `payload.sessionId`, or null. */
+  function liveSession(payload: unknown): SessionEntry | null {
     if (payload === null || typeof payload !== 'object') return null;
     const { sessionId } = payload as { sessionId?: unknown };
-    return sessionId === session.id ? session : null;
+    if (typeof sessionId !== 'string') return null;
+    return sessions.get(sessionId) ?? null;
   }
 
-  function clearPending(): void {
-    pending = [];
-    pendingBytes = 0;
+  function clearPending(entry: SessionEntry): void {
+    entry.pending = [];
+    entry.pendingBytes = 0;
   }
 
-  /** Buffer one PTY chunk, enforcing the drop-oldest byte cap. A single
-   *  over-cap chunk is tail-truncated (byte-wise) so the newest output —
-   *  what the user needs to see — always survives. */
-  function buffer(data: string): void {
+  /** Buffer one PTY chunk into ITS entry, enforcing the drop-oldest byte cap.
+   *  A single over-cap chunk is tail-truncated (byte-wise) so the newest output
+   *  — what the user needs to see — always survives. */
+  function buffer(entry: SessionEntry, data: string): void {
     let chunk = data;
     let bytes = Buffer.byteLength(chunk);
     if (bytes > OUTPUT_BUFFER_CAP) {
@@ -157,45 +174,49 @@ export function createTerminalManager(deps: {
         chunk = chunk.slice(1);
         bytes = Buffer.byteLength(chunk);
       }
-      clearPending();
+      clearPending(entry);
     }
-    pending.push({ data: chunk, bytes });
-    pendingBytes += bytes;
-    while (pendingBytes > OUTPUT_BUFFER_CAP && pending.length > 1) {
-      const oldest = pending.shift();
-      if (oldest !== undefined) pendingBytes -= oldest.bytes;
+    entry.pending.push({ data: chunk, bytes });
+    entry.pendingBytes += bytes;
+    while (entry.pendingBytes > OUTPUT_BUFFER_CAP && entry.pending.length > 1) {
+      const oldest = entry.pending.shift();
+      if (oldest !== undefined) entry.pendingBytes -= oldest.bytes;
     }
   }
 
-  /** Flush the pending output as ONE TERMINAL_DATA push (sink + session
-   *  permitting; otherwise the bounded buffer simply keeps accumulating). */
-  function flush(): void {
-    if (sink === null || session === null || pending.length === 0) return;
+  /** Flush ONE entry's pending output as ONE TERMINAL_DATA push (sink +
+   *  liveness permitting; otherwise the bounded buffer keeps accumulating). */
+  function flush(entry: SessionEntry): void {
+    if (sink === null || entry.pending.length === 0) return;
+    if (sessions.get(entry.id) !== entry) return;
     const push: TerminalDataPush = {
-      sessionId: session.id,
-      data: pending.map((c) => c.data).join(''),
+      sessionId: entry.id,
+      data: entry.pending.map((c) => c.data).join(''),
     };
-    clearPending();
+    clearPending(entry);
     sink(IPC.TERMINAL_DATA, push);
   }
 
-  function scheduleFlush(): void {
-    if (flushTimer !== null) return;
-    flushTimer = setTimeout(() => {
-      flushTimer = null;
-      flush();
+  function scheduleFlush(entry: SessionEntry): void {
+    if (entry.flushTimer !== null) return;
+    entry.flushTimer = setTimeout(() => {
+      entry.flushTimer = null;
+      flush(entry);
     }, FLUSH_MS);
-    (flushTimer as { unref?: () => void }).unref?.();
+    (entry.flushTimer as { unref?: () => void }).unref?.();
   }
 
-  /** Kill + forget the live session (best-effort kill; never throws). */
-  function killSession(): void {
-    if (session === null) return;
-    const { pty } = session;
-    session = null;
-    clearPending();
+  /** Kill + forget ONE entry: remove it from the map, clear its timer, kill
+   *  its pty (best-effort; never throws). */
+  function killSession(entry: SessionEntry): void {
+    sessions.delete(entry.id);
+    if (entry.flushTimer !== null) {
+      clearTimeout(entry.flushTimer);
+      entry.flushTimer = null;
+    }
+    clearPending(entry);
     try {
-      pty.kill();
+      entry.pty.kill();
     } catch {
       /* best-effort: a dying PTY must never take the app down. */
     }
@@ -214,8 +235,8 @@ export function createTerminalManager(deps: {
         return { sessionId: null };
       }
 
-      // Single live session: a second open kills the previous one first.
-      killSession();
+      // At capacity: spawn nothing, kill nothing — graceful sentinel.
+      if (sessions.size >= MAX_TERMINALS) return { sessionId: null };
 
       let pty: PtyLike;
       try {
@@ -232,23 +253,34 @@ export function createTerminalManager(deps: {
       }
 
       const id = randomUUID();
-      session = { id, pty };
+      const entry: SessionEntry = {
+        id,
+        pty,
+        pending: [],
+        pendingBytes: 0,
+        flushTimer: null,
+      };
+      sessions.set(id, entry);
 
       pty.onData((d: string) => {
         // Output from a superseded/killed session is dropped at the token gate.
-        if (session === null || session.id !== id) return;
-        buffer(d);
-        scheduleFlush();
+        if (sessions.get(id) !== entry) return;
+        buffer(entry, d);
+        scheduleFlush(entry);
       });
 
       pty.onExit((e: { exitCode: number }) => {
-        if (session === null || session.id !== id) return;
+        if (sessions.get(id) !== entry) return;
         // Flush the pending tail FIRST so no output is lost, then push the
         // exit and invalidate the session (input-after-exit is a no-op).
-        flush();
+        flush(entry);
         const push: TerminalExitPush = { sessionId: id, exitCode: e.exitCode };
-        session = null;
-        clearPending();
+        sessions.delete(id);
+        if (entry.flushTimer !== null) {
+          clearTimeout(entry.flushTimer);
+          entry.flushTimer = null;
+        }
+        clearPending(entry);
         if (sink !== null) sink(IPC.TERMINAL_EXIT, push);
       });
 
@@ -278,25 +310,24 @@ export function createTerminalManager(deps: {
     },
 
     close(payload: unknown): void {
-      if (liveSession(payload) === null) return;
-      killSession();
+      const live = liveSession(payload);
+      if (live === null) return;
+      killSession(live);
     },
 
     attachSink(send: (channel: string, payload: unknown) => void): () => void {
       sink = send;
-      // Anything buffered while detached flushes on the next pump tick.
-      scheduleFlush();
+      // Anything buffered while detached flushes on the next pump tick —
+      // per entry, so every terminal's backlog drains.
+      for (const entry of sessions.values()) scheduleFlush(entry);
       return () => {
         if (sink === send) sink = null;
       };
     },
 
     disposeAll(): void {
-      killSession();
-      if (flushTimer !== null) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
+      // Reap EVERY live session: kill each pty + clear each per-entry timer.
+      for (const entry of [...sessions.values()]) killSession(entry);
     },
   };
 }

@@ -103,9 +103,16 @@ async function launch(
   dir: string,
   userDataDir?: string,
 ): Promise<{ app: ElectronApplication; page: Page }> {
-  const udArgs = userDataDir === undefined ? [] : [`--user-data-dir=${userDataDir}`];
+  // ALWAYS isolate userData. A caller may pin a SPECIFIC dir (to assert a
+  // persisted override survives a relaunch); when none is given we still mint a
+  // FRESH dir rather than sharing the machine-global one — terminalCount
+  // (loom-config.json) and TERMINAL_OPEN_KEY / TERMINAL_COLUMNS_RATIOS_KEY
+  // (localStorage) otherwise leak from a sibling test that opened N terminals or
+  // left the dock open, booting this test at the wrong column count (the
+  // multi-terminal persistence made this order-dependent flake visible).
+  const ud = userDataDir ?? mkdtempSync(path.join(tmpdir(), 'loom-e2e-kbsc-ud-'));
   const app = await electron.launch({
-    args: [...udArgs, MAIN_ENTRY],
+    args: [`--user-data-dir=${ud}`, MAIN_ENTRY],
     env: { ...process.env, LOOM_ROOT: dir, SHELL: 'bash' },
   });
   const page = await app.firstWindow();
@@ -118,6 +125,42 @@ async function launch(
  *  editable targets) actually handles the combos under test. */
 async function focusTree(page: Page): Promise<void> {
   await page.locator('.pane.explorer [role="treeitem"]').first().click();
+}
+
+/* ---- Multi-terminal focus selectors/helpers ------------------------------ *
+ * The dock mounts up to 3 .pane.terminal columns, each with a 0-based
+ * `data-terminal-index`. The per-terminal focus commands move REAL DOM focus
+ * into one pane's xterm (its .xterm-helper-textarea), so we read "which terminal
+ * is active" from document.activeElement's owning pane index — NOT a CSS class
+ * (there is none). Scope every per-pane selector to ONE index so a >1-pane
+ * layout never trips Playwright strict mode (risk R9). */
+const TOGGLE_TERMINAL = 'button[aria-label="Terminal"]';
+const ADD_TERMINAL = 'button[aria-label="Add terminal"]';
+const termPane = (i: number): string => `.pane.terminal[data-terminal-index="${i}"]`;
+const termXterm = (i: number): string => `${termPane(i)} .xterm`;
+
+/** Open the dock and ADD columns until `count` (1..3) terminal panes are live,
+ *  waiting for each new pane's xterm to mount before adding the next. */
+async function openNTerminals(page: Page, count: number): Promise<void> {
+  await page.locator(TOGGLE_TERMINAL).click();
+  await page.waitForSelector(termXterm(0), { timeout: 15_000 });
+  for (let i = 1; i < count; i++) {
+    await page.locator(ADD_TERMINAL).click();
+    await page.waitForSelector(termXterm(i), { timeout: 15_000 });
+  }
+  await expect(page.locator('.pane.terminal')).toHaveCount(count);
+}
+
+/** The 0-based index of the terminal pane that currently OWNS DOM focus (its
+ *  xterm holds activeElement), or null when focus is outside every terminal.
+ *  This is the "active ring" signal for the per-index focus commands. */
+async function activeTerminalIndex(page: Page): Promise<number | null> {
+  return page.evaluate(() => {
+    const owner = document.activeElement?.closest('.pane.terminal');
+    if (owner === null || owner === undefined) return null;
+    const raw = owner.getAttribute('data-terminal-index');
+    return raw === null ? null : Number(raw);
+  });
 }
 
 test.beforeAll(() => {
@@ -322,6 +365,140 @@ test('4: the promoted Toggle changes view command can be rebound and the new com
     // rebound away, and nothing else claims it.
     await page.keyboard.press('Control+Shift+G');
     await expect(changes).toHaveCount(0);
+  } finally {
+    await app.close().catch(() => undefined);
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(ud, { recursive: true, force: true });
+  }
+});
+
+/* ================================================================== *
+ * TERMINAL FOCUS COMMANDS: per-index focus, cycle, and a focus rebind  *
+ * ================================================================== */
+
+/* ------------------------------------------------------------------ *
+ * 5. the default focus combo moves the active terminal to the right    *
+ * ------------------------------------------------------------------ */
+// With two terminals open, the active one starts at the LEFT column (slot 0).
+// The focusTerminal2 default (Ctrl/Cmd+2) moves real DOM focus into the RIGHT
+// column (slot 1) — its xterm becomes activeElement. These editable-target
+// commands fire even FROM inside a terminal (EDITABLE_TARGET_COMMANDS), so the
+// press works whether focus sits on the tree or in the left terminal.
+test('5: the focusTerminal2 default (Ctrl+2) moves the active terminal to the right pane', async () => {
+  const dir = makeGitRepo();
+  const { app, page } = await launch(dir);
+  try {
+    await openNTerminals(page, 2);
+
+    // Seed the active terminal to the LEFT pane (slot 0) deterministically: its
+    // own focus command lands focus there regardless of where it started.
+    await page.keyboard.press('Control+1');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(0);
+
+    // The DEFAULT focus combo for terminal 2 moves the active terminal RIGHT.
+    await page.keyboard.press('Control+2');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(1);
+    // And the right pane's xterm actually holds focus (activeElement is inside
+    // slot 1) — a precise re-statement of the "active ring on the right" signal.
+    await expect(page.locator(`${termPane(1)} .xterm-helper-textarea`)).toBeFocused();
+  } finally {
+    await app.close().catch(() => undefined);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * 6. cycleTerminalFocus advances the active terminal (wrapping)        *
+ * ------------------------------------------------------------------ */
+// The cycle command (default Ctrl/Cmd+Alt+`) advances the active terminal by one
+// slot, wrapping within the live count. With three terminals: 0 → 1 → 2 → 0.
+test('6: cycleTerminalFocus (Ctrl+Alt+`) advances focus and wraps within the count', async () => {
+  const dir = makeGitRepo();
+  const { app, page } = await launch(dir);
+  try {
+    await openNTerminals(page, 3);
+
+    // Anchor at slot 0, then cycle three times back to 0 (full wrap).
+    await page.keyboard.press('Control+1');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(0);
+
+    await page.keyboard.press('Control+Alt+`');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(1);
+
+    await page.keyboard.press('Control+Alt+`');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(2);
+
+    // Wrap: from the last slot the next cycle returns to the first.
+    await page.keyboard.press('Control+Alt+`');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(0);
+  } finally {
+    await app.close().catch(() => undefined);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * 7. REBIND a focus command through the Shortcuts panel, then it fires  *
+ * ------------------------------------------------------------------ */
+// The full rebind flow for a per-terminal focus command: open the Shortcuts
+// panel, capture a NEW combo for "Focus terminal 2" (Ctrl+Shift+Y — free and
+// modifier-bearing, as EDITABLE_TARGET_COMMANDS requires), persist it, then
+// prove the NEW combo moves the active terminal to slot 1 while the OLD default
+// (Ctrl+2) no longer does. Uses an isolated userData dir so the persisted
+// override never leaks into a sibling launch (workers:1, no per-test isolation).
+test('7: the Focus terminal 2 command can be rebound and the new combo focuses the right pane', async () => {
+  const dir = makeGitRepo();
+  const ud = makeUserDataDir();
+  const { app, page } = await launch(dir, ud);
+  try {
+    await openNTerminals(page, 2);
+
+    // Move focus off the xterm textarea first: the Shortcuts opener (Ctrl+,) is a
+    // normal command, suppressed inside an editable target (only the terminal
+    // focus/toggle commands carry the editable-target exception). Open it from a
+    // non-editable target, the suite's focusTree idiom.
+    await focusTree(page);
+    // Open the Shortcuts panel via its fixed opener.
+    await page.keyboard.press('Control+Comma');
+    const dialog = page.locator('.sc-dialog');
+    await expect(dialog).toBeVisible();
+
+    // Arm capture on the "Focus terminal 2" row, then press the new combo. The
+    // binding button's accessible name is the row label (aria-labelledby).
+    await dialog.getByRole('button', { name: 'Focus terminal 2' }).click();
+    await page.keyboard.press('Control+Shift+Y');
+    // No conflict/reserved warning — the combo is free, valid, and modifier-
+    // bearing (the editable-target constraint is satisfied).
+    await expect(dialog.locator('.sc-conflict')).toHaveCount(0);
+    await expect(
+      dialog.getByRole('button', { name: 'Focus terminal 2' }),
+    ).toContainText('Ctrl/Cmd+Shift+Y');
+
+    // Close the panel (Done). It returns focus to its opener (the Settings gear)
+    // AFTER a re-render — and the persisted rebind DEFERS that focus-return by a
+    // tick (config write → re-render). WAIT for it to settle (gear focused)
+    // before seeding focus: otherwise the deferred return steals focus back from
+    // the terminal right after Control+1 (a real but narrow race — a user
+    // pressing a focus shortcut a beat later, or twice, never hits it).
+    await dialog.getByRole('button', { name: 'Done' }).click();
+    await expect(page.locator('.sc-dialog')).toHaveCount(0);
+    await expect(page.locator('button[aria-label="Settings"]')).toBeFocused();
+
+    // Seed the active terminal to the LEFT pane so a successful move is visible.
+    await page.keyboard.press('Control+1');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(0);
+
+    // The NEW combo now focuses the RIGHT terminal (slot 1).
+    await page.keyboard.press('Control+Shift+Y');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(1);
+
+    // Re-seat to the left, then prove the OLD default (Ctrl+2) no longer fires
+    // the focus action — it was rebound away and nothing else claims it.
+    await page.keyboard.press('Control+1');
+    await expect.poll(() => activeTerminalIndex(page)).toBe(0);
+    await page.keyboard.press('Control+2');
+    // Give any (incorrect) handler a beat, then assert focus stayed on the left.
+    await expect.poll(() => activeTerminalIndex(page)).toBe(0);
   } finally {
     await app.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });

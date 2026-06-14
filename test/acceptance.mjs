@@ -1923,9 +1923,10 @@ test('FR-54 resolveBindings: user overrides win over defaults; others keep defau
   // project-wide content-search opener, copyRendered, the Viewer
   // copy-rendered shortcut, toggleTerminal, the bottom-dock toggle,
   // toggleReadingWidth, the Viewer reading-width quick toggle, toggleSplitView,
-  // the side-by-side compare reading-pane toggle, and the three newly-editable
-  // shell commands — toggleChanges, openSettings, and toggleMaximizeTerminal).
-  assert.equal(Object.keys(resolved).length, 15, 'resolved map covers all 15 commands');
+  // the side-by-side compare reading-pane toggle, the three newly-editable
+  // shell commands — toggleChanges, openSettings, and toggleMaximizeTerminal —
+  // plus the four multi-terminal commands: focusTerminal1/2/3 and cycleTerminalFocus).
+  assert.equal(Object.keys(resolved).length, 19, 'resolved map covers all 19 commands');
 });
 
 test('FR-54 resolveBindings: missing/corrupt overrides fall back to defaults', async () => {
@@ -2306,7 +2307,7 @@ test('SEARCH command: the openSearch command exists with its default binding (D)
   assert.equal(spec.label, 'Search file contents', 'label matches the spec');
   assert.equal(spec.defaultBinding, 'Ctrl+Shift+F', 'default binding is Ctrl/Cmd+Shift+F');
   assert.equal(DEFAULT_BINDINGS.openSearch, 'Ctrl+Shift+F', 'resolved default carries the combo');
-  assert.equal(COMMANDS.length, 15, 'there are now 15 customizable commands');
+  assert.equal(COMMANDS.length, 19, 'there are now 19 customizable commands');
 });
 
 test('SEARCH matchFile: finds multiple hits per line AND across lines', async () => {

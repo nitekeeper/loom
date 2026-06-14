@@ -16,6 +16,7 @@
  * ============================================================ */
 import type { JSX, Ref } from 'react';
 import type { LiveState, SessionCounters, Theme } from '../../shared/types.js';
+import { MAX_TERMINALS } from '../lib/terminal-columns.js';
 
 export interface StatusBarProps {
   liveState: LiveState;
@@ -55,6 +56,13 @@ export interface StatusBarProps {
   /** Ref to the terminal toggle <button> so App can restore focus when the
    *  dock closes out from under the keyboard (no lost focus / no trap). */
   terminalToggleRef?: Ref<HTMLButtonElement>;
+  /** Number of live terminal panes (1..3). Drives the add-terminal affordance's
+   *  at-capacity state: the control is disabled once this reaches MAX (3). */
+  terminalCount: number;
+  /** Add another terminal pane (up to MAX = 3). App threads the new count
+   *  through and persists it; this is a no-op at capacity (the button is
+   *  disabled then, but the guard keeps the action safe if ever fired). */
+  onAddTerminal(): void;
   onTogglePause(): void;
   onToggleTheme(): void;
   /** Open the Settings panel. (The Keyboard Shortcuts panel has its own fixed
@@ -212,6 +220,35 @@ function TerminalIcon({ open }: { open: boolean }): JSX.Element {
   );
 }
 
+/** Add-terminal glyph: a small terminal frame overlaid with a plus, the
+ *  conventional "new terminal" affordance, distinct from the dock-toggle
+ *  TerminalIcon at 16px. Always a hollow outline (it is an action, not a
+ *  toggle, so it has no on/off state to encode). Decorative; the accessible
+ *  name comes from the button's aria-label. */
+function AddTerminalIcon(): JSX.Element {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {/* Terminal frame (open on the right so the plus reads as separate). */}
+      <path d="M3 5a2 2 0 0 1 2-2h9" />
+      <path d="M16 21H5a2 2 0 0 1-2-2V5" />
+      <path d="M7 9l2.5 2.5L7 14" />
+      {/* The "add" plus, sitting at the frame's open corner. */}
+      <line x1="19" y1="4" x2="19" y2="10" />
+      <line x1="16" y1="7" x2="22" y2="7" />
+    </svg>
+  );
+}
+
 function SunIcon(): JSX.Element {
   return (
     <svg
@@ -310,6 +347,8 @@ export function StatusBar({
   terminalOpen,
   onToggleTerminal,
   terminalToggleRef,
+  terminalCount,
+  onAddTerminal,
   onTogglePause,
   onToggleTheme,
   onOpenSettings,
@@ -446,6 +485,35 @@ export function StatusBar({
         title="Toggle terminal (Ctrl/Cmd+`)"
       >
         <TerminalIcon open={terminalOpen} />
+      </button>
+
+      {/* Add-terminal affordance — sits next to the dock toggle (both are
+          terminal controls). Up to MAX_TERMINALS (3) concurrent panes; at
+          capacity the control is a real `disabled` <button> so it is
+          keyboard-inert and AT-announced as unavailable (state not conveyed
+          by tint alone). The aria-label / title flip to an explicit
+          at-capacity message, and the onClick stays guarded so the action is
+          safe even if ever fired. This is an ACTION (not a toggle), so no
+          aria-pressed. */}
+      <button
+        type="button"
+        className="iconbtn statusbar-add-terminal-btn"
+        onClick={() => {
+          if (terminalCount < MAX_TERMINALS) onAddTerminal();
+        }}
+        disabled={terminalCount >= MAX_TERMINALS}
+        aria-label={
+          terminalCount >= MAX_TERMINALS
+            ? `Add terminal (at capacity — ${MAX_TERMINALS} maximum)`
+            : 'Add terminal'
+        }
+        title={
+          terminalCount >= MAX_TERMINALS
+            ? `At capacity (${MAX_TERMINALS} terminals)`
+            : 'Add terminal'
+        }
+      >
+        <AddTerminalIcon />
       </button>
 
       <span className="stat-sep" aria-hidden="true" />

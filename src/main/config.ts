@@ -19,11 +19,22 @@ import {
   type Theme,
 } from '../shared/types.js';
 
+/** Inclusive bounds for the persisted terminal-pane count. Mirrors the
+ *  renderer's MAX_TERMINALS (lib/terminal-columns.ts) without importing renderer
+ *  code into main: the contract caps the layout at 3 columns / 3 terminals, and
+ *  at least 1 pane is always present. */
+export const MIN_TERMINAL_COUNT = 1;
+export const MAX_TERMINAL_COUNT = 3;
+/** DEFAULT terminal-pane count — a back-compat no-op for single-terminal users
+ *  whose config predates the field (missing/garbage coerces to this). */
+export const DEFAULT_TERMINAL_COUNT = 1;
+
 export const DEFAULT_CONFIG: LoomConfig = {
   theme: 'dark',
   keybindings: {},
   maxMessageLength: MAX_BODY_LENGTH,
   maxMessages: DEFAULT_MAX_MESSAGES,
+  terminalCount: DEFAULT_TERMINAL_COUNT,
 };
 
 export const CONFIG_FILENAME = 'loom-config.json';
@@ -34,6 +45,9 @@ export interface ConfigStore {
   /** Persist the user keyboard-shortcut OVERRIDES (sparse id -> combo map).
    *  Tolerates a non-object by storing {} (mirror of theme persistence). */
   setKeybindings(map: Record<string, string>): void;
+  /** Persist the desired terminal-pane count (clamped to [1,3]); garbage
+   *  coerces to the default (1). Mirror of setTheme persistence. */
+  setTerminalCount(count: number): void;
 }
 
 /** Coerce an unknown value into a sparse string->string keybinding override
@@ -72,12 +86,26 @@ function coerceMaxMessages(value: unknown): number {
   return DEFAULT_MAX_MESSAGES;
 }
 
+/** Coerce an unknown value into a valid terminalCount — an INTEGER CLAMPED to
+ *  [MIN_TERMINAL_COUNT, MAX_TERMINAL_COUNT] ([1,3]). Mirrors coerceMaxMessages's
+ *  tolerant integer check, but an in-type out-of-range integer is CLAMPED into
+ *  range (a count of 5 means "as many as allowed" = 3) rather than rejected,
+ *  while anything not a finite integer (missing, non-number, NaN/Infinity,
+ *  non-integer) falls back to the DEFAULT (1). A damaged config never throws. */
+function coerceTerminalCount(value: unknown): number {
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return Math.min(MAX_TERMINAL_COUNT, Math.max(MIN_TERMINAL_COUNT, value));
+  }
+  return DEFAULT_TERMINAL_COUNT;
+}
+
 /** Validate + normalize an unknown parsed object into a LoomConfig. */
 function coerceConfig(parsed: unknown): LoomConfig {
   let theme: Theme = DEFAULT_CONFIG.theme;
   let keybindings: Record<string, string> = {};
   let maxMessageLength = MAX_BODY_LENGTH;
   let maxMessages = DEFAULT_MAX_MESSAGES;
+  let terminalCount = DEFAULT_TERMINAL_COUNT;
   if (parsed && typeof parsed === 'object') {
     const t = (parsed as { theme?: unknown }).theme;
     if (t === 'dark' || t === 'light') theme = t;
@@ -88,8 +116,11 @@ function coerceConfig(parsed: unknown): LoomConfig {
     maxMessages = coerceMaxMessages(
       (parsed as { maxMessages?: unknown }).maxMessages,
     );
+    terminalCount = coerceTerminalCount(
+      (parsed as { terminalCount?: unknown }).terminalCount,
+    );
   }
-  return { theme, keybindings, maxMessageLength, maxMessages };
+  return { theme, keybindings, maxMessageLength, maxMessages, terminalCount };
 }
 
 class FileConfigStore implements ConfigStore {
@@ -123,6 +154,13 @@ class FileConfigStore implements ConfigStore {
 
   setKeybindings(map: Record<string, string>): void {
     this.current = { ...this.current, keybindings: coerceKeybindings(map) };
+    this.write(this.current);
+  }
+
+  setTerminalCount(count: number): void {
+    // Clamp/normalize via the same tolerant coercer the load path uses, so a
+    // bad renderer value can never persist out of range (mirror of setTheme).
+    this.current = { ...this.current, terminalCount: coerceTerminalCount(count) };
     this.write(this.current);
   }
 

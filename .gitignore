@@ -46,3 +46,9 @@ test-results/
 
 # Claude Code harness runtime state
 .claude/
+
+# Atelier scaffolding (mode marker / active-project pointer)
+.ai/
+
+# Atelier host-dispatch per-writer git worktrees (transient)
+.atelier-worktrees/

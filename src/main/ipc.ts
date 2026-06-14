@@ -208,6 +208,10 @@ class IpcWiringImpl implements IpcWiring {
       // Resolve the persisted user OVERRIDES over the defaults so the
       // renderer receives the full commandId -> combo map (mirror of theme).
       keybindings: resolveBindings(cfg.keybindings),
+      // Boot the renderer with the persisted terminal-pane count. The config
+      // coercer already clamped it to [1,3] (default 1) on read — mirror of
+      // theme: main is the single source of truth, the renderer just renders.
+      terminalCount: cfg.terminalCount ?? 1,
     };
   }
 
@@ -370,6 +374,15 @@ class IpcWiringImpl implements IpcWiring {
     ipcMain.handle(IPC.TERMINAL_INPUT, (_evt, p: unknown): void => this.deps.terminal.input(p));
     ipcMain.handle(IPC.TERMINAL_RESIZE, (_evt, p: unknown): void => this.deps.terminal.resize(p));
     ipcMain.handle(IPC.TERMINAL_CLOSE, (_evt, p: unknown): void => this.deps.terminal.close(p));
+
+    // Persist the desired terminal-pane COUNT (layout state, not a PTY control —
+    // no sessionId). main is the authority: pass only a finite number through to
+    // config.setTerminalCount, which CLAMPS to [1,3] (default 1 on garbage);
+    // anything not a number is dropped to the default so a hostile renderer can
+    // never persist an out-of-range/typed-wrong value. Mirror of SET_THEME.
+    ipcMain.handle(IPC.TERMINAL_SET_LAYOUT, (_evt, count: unknown): void => {
+      config.setTerminalCount(typeof count === 'number' ? count : 1);
+    });
   }
 
   // --- renderer pump -------------------------------------------

@@ -475,6 +475,10 @@ export interface InitialState {
    *  panel read this; the panel writes overrides back via SET_KEYBINDINGS.
    *  Additive to the boot snapshot (mirrors `theme`). */
   keybindings: Record<string, string>;
+  /** Number of terminal panes to boot with (1..3), threaded from the persisted
+   *  LoomConfig.terminalCount (default 1). The renderer mounts this many panes
+   *  on launch (visual no-op for upgrading single-terminal users). */
+  terminalCount: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -605,6 +609,12 @@ export interface LoomConfig {
    *  persistent). Absent/invalid falls back to DEFAULT_MAX_MESSAGES. Additive
    *  (a missing field on an older config is tolerated). */
   maxMessages?: number;
+  /** OPTIONAL number of terminal panes the renderer boots with (1..3). Persisted
+   *  via SET_TERMINAL_LAYOUT, read on boot into InitialState.terminalCount.
+   *  Validated as an integer CLAMPED to [1,3]; an absent/invalid value falls
+   *  back to 1 (back-compat no-op for single-terminal users). Additive — a
+   *  missing field on an older config is tolerated (no migration runner). */
+  terminalCount?: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -614,14 +624,17 @@ export interface LoomConfig {
 /*     agent surface touches the terminal.                             */
 /* ------------------------------------------------------------------ */
 
-/** Open the single terminal session: initial xterm grid size. main RE-VALIDATES
- *  cols/rows as finite integers within the TERMINAL_MIN/MAX bounds. */
+/** Open a terminal session: initial xterm grid size. Supports up to 3
+ *  concurrent terminal sessions, each addressed by its sessionId. main
+ *  RE-VALIDATES cols/rows as finite integers within the TERMINAL_MIN/MAX
+ *  bounds. */
 export interface TerminalOpenParams { cols: number; rows: number; }
 
 /** Result of TERMINAL_OPEN. `sessionId` is the per-spawn random token that
  *  every subsequent input/resize/close must carry (stale-id ⇒ silent no-op).
- *  null = terminal unavailable (the node-pty load/spawn failed) — the pane
- *  shows a graceful empty state, never an error throw. */
+ *  null = open() at capacity (3) — neither spawns nor kills — OR terminal
+ *  unavailable (the node-pty load/spawn failed); the pane shows a graceful
+ *  empty state, never an error throw. */
 export interface TerminalOpenResult { sessionId: string | null; }
 
 /** TERMINAL_DATA push payload: a coalesced batch of PTY output. */
@@ -771,9 +784,10 @@ export const IPC = {
    *  read (never trust the renderer; the git show object-store read bypasses the
    *  fs sandbox, so this re-check is mandatory). */
   READ_FILE_DIFF: 'loom:git:diff',
-  /** invoke(p: TerminalOpenParams): TerminalOpenResult — spawn the SINGLE
-   *  terminal PTY session in main, cwd = the launch root. A second open kills
-   *  the previous session first. sessionId:null = terminal unavailable (the
+  /** invoke(p: TerminalOpenParams): TerminalOpenResult — spawn a terminal PTY
+   *  session in main, cwd = the launch root. Up to 3 concurrent sessions, each
+   *  addressed by its sessionId. open() at capacity (3) returns sessionId:null
+   *  (spawns/kills nothing); sessionId:null also = terminal unavailable (the
    *  node-pty load/spawn failed) — graceful degradation, never a throw.
    *  ADDITIVE: a human-invoked surface; MCP-invisible (agents never reach it). */
   TERMINAL_OPEN: 'loom:terminal:open',
@@ -793,6 +807,13 @@ export const IPC = {
   /** send(TerminalExitPush) main->renderer — the PTY exited; the session id
    *  is invalidated (input/resize/close after exit are silent no-ops). */
   TERMINAL_EXIT: 'loom:terminal:exit',
+  /** invoke(count: number): void — persist the desired terminal COUNT
+   *  (how many panes are open, 1..3) to loom-config.json so the renderer
+   *  boots with it next launch (threaded into InitialState.terminalCount).
+   *  main RE-VALIDATES + CLAMPS the count to [1,3] (default 1 on
+   *  missing/garbage); it carries NO sessionId — it is layout state, not a
+   *  PTY control. ADDITIVE: a human-invoked surface; MCP-invisible. */
+  TERMINAL_SET_LAYOUT: 'loom:terminal:set-layout',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -914,8 +935,10 @@ export interface WindowControls {
 /** The terminal pane's bridge surface (see LoomBridge.terminal). Mirrors the
  *  four loom:terminal:* invokes + the TERMINAL_DATA / TERMINAL_EXIT pushes. */
 export interface TerminalBridge {
-  /** Spawn the SINGLE PTY session in main (cwd = launch root). A second open
-   *  kills the previous session. sessionId:null = terminal unavailable. */
+  /** Spawn a terminal PTY session in main (cwd = launch root). Up to 3
+   *  concurrent sessions, each addressed by its sessionId. open() at capacity
+   *  (3) returns sessionId:null (spawns/kills nothing); sessionId:null also =
+   *  terminal unavailable. */
   open(opts: TerminalOpenParams): Promise<TerminalOpenResult>;
   /** Forward keystrokes/paste to the PTY's stdin. main re-validates: a stale
    *  sessionId, non-string data, or an over-cap payload is a silent no-op. */
@@ -929,6 +952,11 @@ export interface TerminalBridge {
   onData(h: (p: TerminalDataPush) => void): () => void;
   /** Subscribe to PTY exit pushes. Returns an unsubscribe fn. */
   onExit(h: (p: TerminalExitPush) => void): () => void;
+  /** Persist the desired terminal COUNT (1..3 panes open) to loom-config.json
+   *  so the renderer boots with it next launch. main re-validates + clamps to
+   *  [1,3] (default 1 on garbage). Layout state, NOT a PTY control: carries no
+   *  sessionId. Mirrors setTheme/setKeybindings. */
+  setLayout(count: number): Promise<void>;
 }
 
 declare global {
