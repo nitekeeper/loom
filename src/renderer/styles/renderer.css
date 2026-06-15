@@ -602,12 +602,26 @@ html[data-platform='darwin'] .win-controls { display: none; }
    preserves their layout/scroll state for an instant restore. */
 .terminal-dock-wrap.solo-maximized > :not(.terminal-maximized) {
   visibility: hidden;
+  /* Park every hidden sibling in the single explicit cell (row 1 / col 1) so it
+     keeps a DEFINITE grid position and never AUTO-FLOWS onto an implicit row.
+     Without this, maximizing terminal 2 or 3 (a LATER DOM child) breaks: that
+     pane carries `grid-column: 1 / -1` but an AUTO row, and the still-auto-placed
+     earlier siblings already fill row 1's cells — so the maximized pane is pushed
+     onto an implicit row 2/3 sized by `grid-auto-rows` (content height), NOT the
+     `1fr` dock track. The result is a pane that "pretends" to maximize while its
+     xterm stays at its old size (terminal 1 worked only because, as the first
+     child, it already auto-placed on row 1). Pinning the siblings here keeps the
+     grid a SINGLE row, so the maximized pane below always fills the whole dock. */
+  grid-area: 1 / 1;
 }
 /* The maximized terminal spans ALL grid columns (whatever tracks the inline
    template still declares) so it fills the dock even before App repoints the
-   inline `grid-template-columns` — robust to the inline/class ordering above. */
+   inline `grid-template-columns` — robust to the inline/class ordering above.
+   `grid-row: 1` pins it to the explicit `1fr` track too: a later-DOM maximized
+   pane must never be auto-flowed onto an implicit row below it (see above). */
 .terminal-dock-wrap.solo-maximized > .pane.terminal.terminal-maximized {
   grid-column: 1 / -1;
+  grid-row: 1;
   visibility: visible;
 }
 
