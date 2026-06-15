@@ -77,6 +77,27 @@ export function defaultShell(
   return env.SHELL || 'bash';
 }
 
+/** Strip LOOM_ROOT from a child PTY's environment so Loom's OWN integrated
+ *  terminal can never propagate a stale sandbox root to a nested `loom`.
+ *
+ *  WHY: when Loom is launched via bin/loom.cjs (or the --capture path), it sets
+ *  LOOM_ROOT in its own process.env to communicate the resolved root. That env
+ *  is the default the PTY would inherit — so a `loom .` typed INSIDE Loom's
+ *  terminal would see the parent's LOOM_ROOT and (before main.ts now prefers the
+ *  explicit positional arg) reopen the parent's folder. Even with the precedence
+ *  fix, a bare `loom` with no positional should resolve from the user's actual
+ *  cwd, not a leaked parent root — so we remove the var at the PTY boundary.
+ *
+ *  Pure + non-mutating: returns a SHALLOW copy with LOOM_ROOT deleted, keeping
+ *  EVERY other var (incl. SHELL, which defaultShell still reads from the kept
+ *  env). The injected env is never mutated. */
+export function stripLoomRoot(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const { LOOM_ROOT: _drop, ...rest } = env;
+  return rest;
+}
+
 /** Drop-oldest flow-control bound (bytes) on PENDING (unflushed) PTY output.
  *  Bounds the renderer-bound backlog when the sink is detached or the pump is
  *  behind a flood — the oldest chunks are dropped, the tail is preserved. */
@@ -241,11 +262,16 @@ export function createTerminalManager(deps: {
       let pty: PtyLike;
       try {
         pty = deps.factory({
+          // defaultShell reads $SHELL — resolved from `env` (which still carries
+          // SHELL) before LOOM_ROOT is stripped for the child's environment.
           shell: defaultShell(platform, env),
           cwd: deps.rootDir,
           cols,
           rows,
-          env,
+          // Strip LOOM_ROOT so a nested `loom` inside this terminal can never
+          // inherit Loom's own (possibly stale) sandbox root — keeping all other
+          // vars (SHELL included).
+          env: stripLoomRoot(env),
         });
       } catch {
         // Graceful "terminal unavailable" (node-pty load/spawn failure).

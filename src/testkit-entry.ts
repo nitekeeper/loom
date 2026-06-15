@@ -332,6 +332,7 @@ export type { ActivePane } from './renderer/lib/viewer-split.js';
 export {
   createTerminalManager,
   defaultShell,
+  stripLoomRoot,
   OUTPUT_BUFFER_CAP,
   MAX_TERMINALS,
 } from './main/terminal.js';
@@ -372,6 +373,15 @@ export type { TerminalColumns } from './renderer/lib/terminal-columns.js';
 // without Electron.
 export { linuxMaximizeBounds, computeWslToggleMaximize } from './main/linux-maximize.js';
 export type { DisplayInfo, WslMaximizeDecision } from './main/linux-maximize.js';
+
+// Pure sandbox-root precedence decision (the resolveRoot fix). Re-exported so
+// the node --test suite can pin the ordering — the EXPLICIT positional argv
+// folder beats the ambient LOOM_ROOT, LOOM_ROOT is used only when argv is null,
+// and null when both are absent — without Electron. The impure wrapper
+// (main.ts resolveRoot: env/argv reads, isDirectory checks, picker/cwd fallback)
+// stays in the main process; only the pure decision fn + type surface here.
+export { chooseRoot } from './main/root-resolve.js';
+export type { RootCandidates } from './main/root-resolve.js';
 
 // Persisted config store + bounds (FR-37, AC-20; multi-terminal design §4 AC8 /
 // §8 R10). Electron-free: node:fs/node:path + shared types only, so it pulls

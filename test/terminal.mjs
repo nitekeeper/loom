@@ -545,6 +545,40 @@ test('TERM-CLOSE/DISPOSE: detaching the sink stops pushes', async () => {
   mgr.disposeAll();
 });
 
+test('TERM-ENV-STRIP: the spawned PTY env DROPS LOOM_ROOT but KEEPS every other var (SHELL/FOO)', async () => {
+  const k = await kit();
+  const { factory, spawned } = makeFakeFactory();
+  // Inject an env carrying a stale LOOM_ROOT alongside SHELL + an arbitrary var.
+  const mgr = makeManager(k, factory, {
+    env: { LOOM_ROOT: '/x', SHELL: '/bin/bash', FOO: 'bar' },
+  });
+  const res = mgr.open({ cols: 80, rows: 24 });
+  assert.equal(typeof res.sessionId, 'string');
+  assert.equal(spawned.length, 1);
+
+  const childEnv = spawned[0].env;
+  // LOOM_ROOT must be gone so a nested `loom` can't inherit Loom's stale root.
+  assert.equal('LOOM_ROOT' in childEnv, false, 'LOOM_ROOT is stripped from the child env');
+  // Every other var survives, incl. SHELL (defaultShell still resolved it).
+  assert.equal(childEnv.SHELL, '/bin/bash', 'SHELL is preserved');
+  assert.equal(childEnv.FOO, 'bar', 'arbitrary vars are preserved');
+  // The shell was still resolved from the kept SHELL.
+  assert.equal(spawned[0].shell, '/bin/bash', '$SHELL still drives the shell selection');
+  mgr.disposeAll();
+});
+
+test('TERM-ENV-STRIP: stripLoomRoot is non-mutating and drops only LOOM_ROOT', async () => {
+  const k = await kit();
+  const src = { LOOM_ROOT: '/x', SHELL: '/bin/bash', FOO: 'bar' };
+  const out = k.stripLoomRoot(src);
+  // The returned env has LOOM_ROOT removed, everything else intact.
+  assert.deepEqual(out, { SHELL: '/bin/bash', FOO: 'bar' });
+  // The input is NOT mutated (shallow copy).
+  assert.deepEqual(src, { LOOM_ROOT: '/x', SHELL: '/bin/bash', FOO: 'bar' });
+  // An env with no LOOM_ROOT round-trips unchanged (by value).
+  assert.deepEqual(k.stripLoomRoot({ SHELL: '/bin/zsh' }), { SHELL: '/bin/zsh' });
+});
+
 test('TERM-SHELL: defaultShell honors $SHELL, falls back to bash; powershell.exe on win32', async () => {
   const k = await kit();
   assert.equal(k.defaultShell('linux', { SHELL: '/bin/zsh' }), '/bin/zsh');

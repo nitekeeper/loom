@@ -30,6 +30,7 @@ import { createTerminalManager } from './terminal.js';
 import { createNodePtyFactory } from './pty-factory.js';
 import { createWsFeed, wsEnabled } from './ws.js';
 import { linuxMaximizeBounds, computeWslToggleMaximize } from './linux-maximize.js';
+import { chooseRoot } from './root-resolve.js';
 
 /** Capture window dimensions (FR — headless screenshots via a normal,
  *  WSLg-composited hidden window; see runCapture + applyWslSwitches). */
@@ -1057,29 +1058,57 @@ function argvFolder(): string | null {
 }
 
 /** Resolve the sandbox root (Law 3 boundary) BEFORE bootServices, in priority:
- *   1. LOOM_ROOT env (the bin/loom.cjs launcher + capture path set this).
- *   2. A folder passed on argv (`Loom.exe C:\path` / drag-onto-exe).
+ *   1. A folder passed on argv (`loom .` / `Loom.exe C:\path` / drag-onto-exe).
+ *   2. LOOM_ROOT env (the bin/loom.cjs launcher + capture path set this).
  *   3. Packaged + still unresolved: a native folder picker (cancel => quit).
  *   4. Dev (not packaged): cwd — the existing behavior, unchanged.
+ *
+ *  WHY argv FIRST (the bug fix): the explicit positional folder MUST beat the
+ *  ambient LOOM_ROOT. LOOM_ROOT leaks into the user's shell via Loom's own
+ *  integrated terminal (its PTY inherits the parent's env), so a nested `loom .`
+ *  used to silently reopen the PARENT's folder instead of the one the user
+ *  named. Checking argv first makes the explicit `.`/`<dir>` always win. When NO
+ *  positional is given, LOOM_ROOT is STILL honored — that is exactly how
+ *  bin/loom.cjs and the --capture path communicate the root (no positional arg,
+ *  LOOM_ROOT set), so those contracts are preserved.
+ *
+ *  The pure precedence decision lives in root-resolve.ts (chooseRoot) so it is
+ *  unit-testable without Electron; this wrapper does the impure work — reading
+ *  env+argv, the isDirectory() validation (incl. the set-but-not-a-dir LOOM_ROOT
+ *  stderr warning), and the picker/cwd fallback.
+ *
  *  An argv/env root that is not an existing directory is rejected and we fall
  *  through to the picker (packaged) or cwd (dev). Resolves to null ONLY when a
  *  packaged user cancels the picker, signaling the caller to quit gracefully. */
 async function resolveRoot(): Promise<string | null> {
-  // 1. LOOM_ROOT — honored byte-for-byte for the launcher + capture paths.
+  // 1. A folder argument on argv — the EXPLICIT positional folder, highest
+  //    priority so a stale/inherited LOOM_ROOT can never override it.
+  const fromArgv = argvFolder();
+
+  // 2. LOOM_ROOT — consulted ONLY when no explicit positional folder was given,
+  //    byte-for-byte, for the launcher + capture paths (which pass the root via
+  //    LOOM_ROOT with no positional). Gating on `fromArgv === null` means a
+  //    stale/invalid LOOM_ROOT neither overrides an explicit arg NOR emits a
+  //    misleading "falling back" warning when the arg already won and LOOM_ROOT
+  //    was never going to be used.
+  let fromEnv: string | null = null;
   const envRoot = process.env.LOOM_ROOT;
-  if (envRoot) {
+  if (fromArgv === null && envRoot) {
     const resolved = path.resolve(envRoot);
-    if (isDirectory(resolved)) return resolved;
-    // An explicitly-set-but-invalid LOOM_ROOT: don't silently open elsewhere.
-    // Fall through to picker (packaged) or cwd (dev) below.
-    process.stderr.write(
-      `[loom:boot] LOOM_ROOT is not a directory: ${resolved}; falling back\n`,
-    );
+    if (isDirectory(resolved)) {
+      fromEnv = resolved;
+    } else {
+      // An explicitly-set-but-invalid LOOM_ROOT: don't silently open elsewhere.
+      // Fall through to the picker (packaged) / cwd (dev).
+      process.stderr.write(
+        `[loom:boot] LOOM_ROOT is not a directory: ${resolved}; falling back\n`,
+      );
+    }
   }
 
-  // 2. A folder argument on argv.
-  const fromArgv = argvFolder();
-  if (fromArgv) return fromArgv;
+  // Pure precedence: explicit positional argument beats the ambient LOOM_ROOT.
+  const chosen = chooseRoot({ argvFolder: fromArgv, envRoot: fromEnv });
+  if (chosen !== null) return chosen;
 
   // 3. Packaged with no usable cwd/env: ask the user (modal, post-ready).
   if (app.isPackaged) {
