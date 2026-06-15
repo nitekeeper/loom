@@ -565,11 +565,23 @@ test('solo-maximizing one terminal hides the others; restore brings them back', 
     await expect(page.locator(paneAt(0))).toBeHidden();
     await expect(page.locator(paneAt(2))).toBeHidden();
     await expect(page.locator(paneAt(1))).toBeVisible();
-    const wMax = (await page.locator(paneAt(1)).boundingBox())?.width;
-    expect(wMax, 'maximized pane 1 has no box').toBeTruthy();
+    const maxBox = await page.locator(paneAt(1)).boundingBox();
+    expect(maxBox, 'maximized pane 1 has no box').toBeTruthy();
     // The maximized pane is markedly WIDER than its restored third-of-dock width
     // (it now spans every grid column) — a clear, rounding-proof delta.
-    expect(wMax!).toBeGreaterThan(wBefore! * 1.5);
+    expect(maxBox!.width).toBeGreaterThan(wBefore! * 1.5);
+    // ...AND it must fill the dock HEIGHT, not just the width. Maximizing a LATER
+    // terminal (slot 1/2) once regressed by auto-flowing the `grid-column: 1 / -1`
+    // pane onto an implicit, content-sized grid row instead of the `1fr` dock
+    // track — the pane "pretended" to maximize (button flipped) while its xterm
+    // collapsed to ~the pane header height and the command line stayed put. Assert
+    // the maximized pane spans ~the full `.terminal-dock-wrap` height to lock that
+    // out: a slot-0 maximize always filled the dock, so width alone never caught
+    // the slot-1/2 break. (Compare against the wrap, not a hard-coded px, so the
+    // check is robust to the dock's resizable height.)
+    const wrapH = (await page.locator('.terminal-dock-wrap').boundingBox())?.height;
+    expect(wrapH, 'terminal dock wrap has no box').toBeTruthy();
+    expect(maxBox!.height).toBeGreaterThan(wrapH! * 0.95);
 
     // The pane-header button flips to the RESTORE affordance while maximized
     // (aria-pressed mirrors the state) — matches the keyboard-shortcuts suite.
