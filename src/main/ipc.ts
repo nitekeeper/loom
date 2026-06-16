@@ -17,7 +17,7 @@
  *   - PAUSED    when the human set it via SET_LIVE_STATE; PAUSED is
  *               sticky — it overrides LIVE/CAUGHT_UP until unset.
  * ============================================================ */
-import { clipboard, ipcMain, shell } from 'electron';
+import { clipboard, ipcMain, shell, type WebContents } from 'electron';
 import {
   IPC,
   type FileNode,
@@ -35,7 +35,6 @@ import {
   type GitFileStatus,
   type ChangeSet,
   type FileDiff,
-  type TerminalOpenResult,
 } from '../shared/types.js';
 import { getGitStatus } from './git.js';
 import {
@@ -46,7 +45,6 @@ import {
 } from './git-diff.js';
 import { removeAgentByName, clearStaleAgents, isStaleAgent } from './engine.js';
 import type { ConfigStore } from './config.js';
-import type { TerminalManager } from './terminal.js';
 import type { LoomDb } from './db.js';
 import type { EventBus } from './eventbus.js';
 import type { Sandbox } from './sandbox.js';
@@ -69,8 +67,14 @@ const MAX_CLIPBOARD_CHARS = 5_000_000;
 export interface IpcWiring {
   /** Register ipcMain.handle handlers (call once, before window load). */
   register(): void;
-  /** Begin pushing events/counters/live-state to the given webContents. */
-  attachRenderer(send: (channel: string, payload: unknown) => void): () => void;
+  /** Begin pushing events/counters/live-state to ONE window. `sender` is that
+   *  window's webContents — it lets SET_LIVE_STATE route a human pause back to
+   *  the correct window's pump (omit only on the capture path, which never
+   *  pauses). Returns a detach fn; pushes stop after detach. */
+  attachRenderer(
+    send: (channel: string, payload: unknown) => void,
+    sender?: WebContents,
+  ): () => void;
   /** Nudge a counters recompute+push OUTSIDE the bus. The MCP session reaper
    *  evicts sessions without publishing any bus event, yet eviction changes
    *  staleAgents — without this nudge the count froze at its last pushed
@@ -95,19 +99,27 @@ export interface IpcDeps {
    *  (degraded boot with no MCP server, or tests) the live set is empty,
    *  which is CORRECT: with no agent transport, no agent can be live. */
   liveConnectionIds?: () => ReadonlySet<string>;
-  /** The human-invoked terminal pane's PTY session manager (loom:terminal:*). */
-  terminal: TerminalManager;
+}
+
+/** Per-attached-renderer pump handle (one per live window + the capture
+ *  window). Each window owns its OWN live-feed state + push timers — built in
+ *  attachRenderer's closure — so two windows on the SAME folder never share a
+ *  pause toggle, a files counter, or a git-debounce timer (they DO share the one
+ *  db/engine the snapshot builders read). Stored in a Set so SET_LIVE_STATE can
+ *  route to the SENDER's pump and nudgeCounters() can fan out to every window. */
+interface RendererPump {
+  /** The window's webContents — lets SET_LIVE_STATE route a human pause to the
+   *  RIGHT window. Undefined on the capture path (which never sets live state). */
+  readonly sender: WebContents | undefined;
+  /** Apply a human PAUSE/release on THIS window only. */
+  setHumanLiveState(state: LiveState): void;
+  /** Debounced counters recompute+push for THIS window. */
+  pushCounters(): void;
 }
 
 class IpcWiringImpl implements IpcWiring {
-  /** Files written/observed this session (counters.files). */
-  private fileCount = 0;
-  /** The sticky human-set live state, or null when not paused. */
-  private pausedState: LiveState | null = null;
-  /** The current auto state (LIVE or CAUGHT_UP). */
-  private autoState: LiveState = 'CAUGHT_UP';
-  /** Debounce timer for git status pushes (300ms after a file event). */
-  private gitDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Every attached renderer's pump — one per live window (+ capture window). */
+  private readonly pumps = new Set<RendererPump>();
 
   constructor(private readonly deps: IpcDeps) {}
 
@@ -163,7 +175,7 @@ class IpcWiringImpl implements IpcWiring {
     });
   }
 
-  private computeCounters(): SessionCounters {
+  private computeCounters(fileCount: number): SessionCounters {
     const { db } = this.deps;
     // Aggregate counts only — the former version did listMessages() + one
     // listReceipts() per message (O(messages × receipts)) on every ~100ms tick,
@@ -174,7 +186,7 @@ class IpcWiringImpl implements IpcWiring {
       channels: db.listChannels().length,
       messages: db.countMessages(),
       receipts: db.countReceipts(),
-      files: this.fileCount,
+      files: fileCount,
       // Drives the roster's "clear stale (N)" button: gone rows ∪ actives
       // with no live session — the SAME isStaleAgent definition the sweep
       // applies, over the SAME live-session set, so the count always equals
@@ -198,12 +210,15 @@ class IpcWiringImpl implements IpcWiring {
     return {
       rootName: sandbox.rootName,
       theme: cfg.theme,
-      liveState: this.currentLiveState(),
+      // A FRESH window's boot snapshot starts settled + zero-files; its per-window
+      // pump (attachRenderer) immediately refines live state + counters as events
+      // flow. (Live state is per-window now, so there is no shared value to seed.)
+      liveState: 'CAUGHT_UP',
       tree: sandbox.buildTree(),
       agents: this.buildAgentViews(),
       channels: this.buildChannelViews(),
       messages: this.buildMessageViews(),
-      counters: this.computeCounters(),
+      counters: this.computeCounters(0),
       wsEnabled: wsEnabled(),
       // Resolve the persisted user OVERRIDES over the defaults so the
       // renderer receives the full commandId -> combo map (mirror of theme).
@@ -213,11 +228,6 @@ class IpcWiringImpl implements IpcWiring {
       // theme: main is the single source of truth, the renderer just renders.
       terminalCount: cfg.terminalCount ?? 1,
     };
-  }
-
-  /** Resolved live state: human PAUSED is sticky and overrides auto. */
-  private currentLiveState(): LiveState {
-    return this.pausedState ?? this.autoState;
   }
 
   // --- request/response handlers -------------------------------
@@ -252,9 +262,17 @@ class IpcWiringImpl implements IpcWiring {
       },
     );
 
-    ipcMain.handle(IPC.SET_LIVE_STATE, (_evt, state: LiveState): void => {
-      // The human can PAUSE (sticky) or release back to the auto machine.
-      this.setHumanLiveState(state);
+    ipcMain.handle(IPC.SET_LIVE_STATE, (evt, state: LiveState): void => {
+      // The human can PAUSE (sticky) or release back to the auto machine — on
+      // the SENDER's window ONLY, so a pause in one window never flips another's
+      // feed. Route to the pump whose webContents is the sender; an unmatched
+      // sender (no pump attached yet, or the capture window) is a silent no-op.
+      for (const pump of this.pumps) {
+        if (pump.sender === evt.sender) {
+          pump.setHumanLiveState(state);
+          return;
+        }
+      }
     });
 
     ipcMain.handle(IPC.OPEN_EXTERNAL, async (_evt, url: unknown): Promise<void> => {
@@ -361,19 +379,12 @@ class IpcWiringImpl implements IpcWiring {
       },
     );
 
-    // Terminal pane (loom:terminal:*): each handler delegates the RAW unknown
-    // payload to the PURE session manager, which is the authoritative
-    // re-validation gate (types, the per-spawn sessionId token, the
-    // MAX_TERMINAL_INPUT_BYTES cap, cols/rows ranges — never trust the
-    // renderer; unit-pinned in test/terminal.mjs). Invalid/stale input is a
-    // silent no-op; a failed spawn returns { sessionId: null } (unavailable).
-    ipcMain.handle(
-      IPC.TERMINAL_OPEN,
-      (_evt, p: unknown): TerminalOpenResult => this.deps.terminal.open(p),
-    );
-    ipcMain.handle(IPC.TERMINAL_INPUT, (_evt, p: unknown): void => this.deps.terminal.input(p));
-    ipcMain.handle(IPC.TERMINAL_RESIZE, (_evt, p: unknown): void => this.deps.terminal.resize(p));
-    ipcMain.handle(IPC.TERMINAL_CLOSE, (_evt, p: unknown): void => this.deps.terminal.close(p));
+    // Terminal pane PTY controls (loom:terminal:open/input/resize/close) are
+    // registered by main itself (registerTerminalHandlers), SENDER-scoped to the
+    // per-window TerminalManager — terminals are now per-window (each window has
+    // its OWN pool + sink), so a single shared handler here could not route
+    // output to the right window. Only the SHARED, no-PTY layout-count handler
+    // (config-backed) stays here.
 
     // Persist the desired terminal-pane COUNT (layout state, not a PTY control —
     // no sessionId). main is the authority: pass only a finite number through to
@@ -387,22 +398,34 @@ class IpcWiringImpl implements IpcWiring {
 
   // --- renderer pump -------------------------------------------
 
-  attachRenderer(send: (channel: string, payload: unknown) => void): () => void {
+  attachRenderer(
+    send: (channel: string, payload: unknown) => void,
+    sender?: WebContents,
+  ): () => void {
+    // PER-WINDOW live-feed state: each attached renderer owns its files counter,
+    // pause toggle, auto state, and push/debounce timers (closure-local), so two
+    // windows on the same folder never share a pause or a counter. They DO share
+    // the one db/engine the snapshot builders read.
+    let fileCount = 0;
+    let pausedState: LiveState | null = null;
+    let autoState: LiveState = 'CAUGHT_UP';
     let countersTimer: ReturnType<typeof setTimeout> | null = null;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let gitTimer: ReturnType<typeof setTimeout> | null = null;
     let disposed = false;
 
     const pushLiveState = (): void => {
       if (disposed) return;
-      send(IPC.LIVE_STATE, this.currentLiveState());
+      // Human PAUSED is sticky and overrides the auto machine.
+      send(IPC.LIVE_STATE, pausedState ?? autoState);
     };
 
     const pushCounters = (): void => {
-      if (countersTimer !== null) return;
+      if (disposed || countersTimer !== null) return;
       countersTimer = setTimeout(() => {
         countersTimer = null;
         if (disposed) return;
-        send(IPC.COUNTERS, this.computeCounters());
+        send(IPC.COUNTERS, this.computeCounters(fileCount));
       }, COUNTERS_DEBOUNCE_MS);
       (countersTimer as { unref?: () => void }).unref?.();
     };
@@ -413,40 +436,62 @@ class IpcWiringImpl implements IpcWiring {
         idleTimer = null;
         if (disposed) return;
         // Idle window elapsed with no events -> settle to CAUGHT_UP.
-        this.autoState = 'CAUGHT_UP';
+        autoState = 'CAUGHT_UP';
         // Only surface the change when not human-paused.
-        if (this.pausedState === null) pushLiveState();
+        if (pausedState === null) pushLiveState();
       }, CAUGHT_UP_IDLE_MS);
       (idleTimer as { unref?: () => void }).unref?.();
     };
 
-    // Allow SET_LIVE_STATE (human) to drive a push immediately.
-    this.onHumanLiveStateChange = pushLiveState;
-    // Allow out-of-bus sources (the MCP session reaper) to drive a counters
-    // recompute+push — same debounce as the bus-driven path.
-    this.onCountersNudge = pushCounters;
+    // Debounced git-status push for THIS window (its own timer).
+    const pushGitStatus = (): void => {
+      if (gitTimer !== null) clearTimeout(gitTimer);
+      gitTimer = setTimeout(() => {
+        gitTimer = null;
+        if (disposed) return;
+        void getGitStatus(this.deps.rootPath).then((map) => {
+          if (disposed) return;
+          send(IPC.GIT_STATUS, Object.fromEntries(map));
+        });
+      }, 300);
+      (gitTimer as { unref?: () => void }).unref?.();
+    };
 
-    // Terminal output/exit pushes flow to THIS renderer (the manager's
-    // coalesced TERMINAL_DATA / TERMINAL_EXIT pump). Detached on dispose so
-    // pushes stop after the renderer goes away (unit-pinned: detach => silence).
-    const detachTerminal = this.deps.terminal.attachSink(send);
+    // Human PAUSE/release on THIS window only (routed here from SET_LIVE_STATE
+    // via the sender match), then push the resolved state to this window.
+    const setHumanLiveState = (state: LiveState): void => {
+      if (state === 'PAUSED') {
+        pausedState = 'PAUSED';
+      } else {
+        // Releasing the pause: adopt the requested live/caught-up state and
+        // hand control back to the auto machine.
+        pausedState = null;
+        autoState = state === 'LIVE' ? 'LIVE' : 'CAUGHT_UP';
+      }
+      pushLiveState();
+    };
 
     const unsubscribe = this.deps.bus.subscribe((e: LoomEvent) => {
       if (disposed) return;
       // Fan every event out to the renderer (FR-29).
       send(IPC.EVENT, e);
-      // Track session file activity for counters.
+      // Track session file activity for counters (per window).
       if (e.kind === 'file') {
-        if (e.action === 'add' || e.action === 'change') this.fileCount += 1;
+        if (e.action === 'add' || e.action === 'change') fileCount += 1;
       }
       // Events are flowing -> LIVE (unless the human has paused).
-      const wasAuto = this.autoState;
-      this.autoState = 'LIVE';
-      if (this.pausedState === null && wasAuto !== 'LIVE') pushLiveState();
+      const wasAuto = autoState;
+      autoState = 'LIVE';
+      if (pausedState === null && wasAuto !== 'LIVE') pushLiveState();
       armIdle();
       pushCounters();
-      if (e.kind === 'file') this.pushGitStatus(send, () => disposed);
+      if (e.kind === 'file') pushGitStatus();
     });
+
+    // Register this window's pump so SET_LIVE_STATE can route to it (by sender)
+    // and nudgeCounters() can fan a recompute out to every window.
+    const pump: RendererPump = { sender, setHumanLiveState, pushCounters };
+    this.pumps.add(pump);
 
     // Emit the starting live state once on attach.
     pushLiveState();
@@ -459,55 +504,18 @@ class IpcWiringImpl implements IpcWiring {
 
     return () => {
       disposed = true;
+      this.pumps.delete(pump);
       unsubscribe();
-      detachTerminal();
       if (countersTimer !== null) clearTimeout(countersTimer);
       if (idleTimer !== null) clearTimeout(idleTimer);
-      if (this.gitDebounceTimer !== null) {
-        clearTimeout(this.gitDebounceTimer);
-        this.gitDebounceTimer = null;
-      }
-      this.onHumanLiveStateChange = null;
-      this.onCountersNudge = null;
+      if (gitTimer !== null) clearTimeout(gitTimer);
     };
   }
 
   nudgeCounters(): void {
-    this.onCountersNudge?.();
-  }
-
-  /** Set by attachRenderer so the human's SET_LIVE_STATE pushes immediately. */
-  private onHumanLiveStateChange: (() => void) | null = null;
-  /** Set by attachRenderer so out-of-bus sources (the MCP reaper) can drive a
-   *  debounced counters recompute+push (see IpcWiring.nudgeCounters). */
-  private onCountersNudge: (() => void) | null = null;
-
-  private pushGitStatus(
-    send: (channel: string, payload: unknown) => void,
-    isDisposed: () => boolean,
-  ): void {
-    if (this.gitDebounceTimer !== null) clearTimeout(this.gitDebounceTimer);
-    this.gitDebounceTimer = setTimeout(() => {
-      this.gitDebounceTimer = null;
-      if (isDisposed()) return;
-      void getGitStatus(this.deps.rootPath).then((map) => {
-        if (isDisposed()) return;
-        send(IPC.GIT_STATUS, Object.fromEntries(map));
-      });
-    }, 300);
-    (this.gitDebounceTimer as { unref?: () => void }).unref?.();
-  }
-
-  private setHumanLiveState(state: LiveState): void {
-    if (state === 'PAUSED') {
-      this.pausedState = 'PAUSED';
-    } else {
-      // Releasing the pause: adopt the requested live/caught-up state and
-      // hand control back to the auto machine.
-      this.pausedState = null;
-      this.autoState = state === 'LIVE' ? 'LIVE' : 'CAUGHT_UP';
-    }
-    this.onHumanLiveStateChange?.();
+    // The MCP reaper evicts sessions without a bus event, yet eviction changes
+    // staleAgents — fan a debounced counters recompute+push out to EVERY window.
+    for (const pump of this.pumps) pump.pushCounters();
   }
 }
 

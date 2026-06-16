@@ -42,6 +42,8 @@ export type CommandId =
   | 'toggleSplitView'
   | 'toggleChanges'
   | 'openSettings'
+  | 'newWindow'
+  | 'openFolderWindow'
   | 'toggleMaximizeTerminal'
   | 'focusTerminal1'
   | 'focusTerminal2'
@@ -76,6 +78,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'toggleTheme', label: 'Toggle theme', defaultBinding: 'Ctrl+T' },
   { id: 'togglePause', label: 'Pause / resume live feed', defaultBinding: 'Ctrl+.' },
   { id: 'openSettings', label: 'Open settings', defaultBinding: 'Ctrl+Shift+,' },
+  { id: 'newWindow', label: 'New window (same folder)', defaultBinding: 'Ctrl+Shift+N' },
+  { id: 'openFolderWindow', label: 'Open folder in new window…', defaultBinding: 'Ctrl+Shift+O' },
   { id: 'focusTerminal1', label: 'Focus terminal 1', defaultBinding: 'Ctrl+1' },
   { id: 'focusTerminal2', label: 'Focus terminal 2', defaultBinding: 'Ctrl+2' },
   { id: 'focusTerminal3', label: 'Focus terminal 3', defaultBinding: 'Ctrl+3' },

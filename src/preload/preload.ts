@@ -66,6 +66,8 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.WINDOW_IS_MAXIMIZED,
   IPC.WINDOW_GET_BOUNDS,
   IPC.WINDOW_SET_BOUNDS,
+  IPC.WINDOW_NEW,
+  IPC.WINDOW_OPEN_FOLDER,
   IPC.GIT_STATUS,
   IPC.GET_CHANGES,
   IPC.READ_FILE_DIFF,
@@ -237,6 +239,17 @@ export function createBridge(): LoomBridge {
         // x/y/width/height as finite integers and CLAMPS the size before applying
         // (never trust the renderer; mirror of openExternal/copyToClipboard).
         return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_SET_BOUNDS), b);
+      },
+      newWindow(): Promise<void> {
+        // No args: main opens another window onto the SAME folder in this process
+        // (shared db/MCP, own renderer pump + terminal pool).
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_NEW));
+      },
+      openFolder(): Promise<void> {
+        // No args: main pops the native folder picker and decides in-process
+        // duplicate vs. new isolated process vs. decline (a live Loom already
+        // serves it). The renderer never supplies a path — Law 3 stays in main.
+        return ipcRenderer.invoke(assertInvoke(IPC.WINDOW_OPEN_FOLDER));
       },
     },
     // Terminal pane PTY controls (loom:terminal:*). Each method hard-pins its

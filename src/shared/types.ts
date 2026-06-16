@@ -727,6 +727,20 @@ export const IPC = {
    *  the window minimum + a sane maximum before applying; invalid input or an
    *  unresolved sender is a silent no-op (never trust the renderer). */
   WINDOW_SET_BOUNDS: 'loom:window:set-bounds',
+  /** invoke(): void — open ANOTHER window onto the SAME folder in THIS process.
+   *  Takes NO args (resolves nothing from the sender — every same-folder window
+   *  shares the one db/engine/MCP/watcher, with its OWN renderer pump + terminal
+   *  pool). Safe to duplicate because both windows write the single in-memory
+   *  sql.js store; a SECOND OS process on the same folder would instead
+   *  double-write loom.db, so same-folder duplication MUST stay in-process. */
+  WINDOW_NEW: 'loom:window:new',
+  /** invoke(): void — pop a native folder picker and open the chosen folder in a
+   *  new window. main is the authority: if the pick equals THIS process's root it
+   *  duplicates in-process (WINDOW_NEW path, shared db); if a LIVE Loom already
+   *  serves that folder it informs + declines (two processes flushing one loom.db
+   *  would clobber chat); otherwise it spawns a fresh, fully-isolated Loom process
+   *  on that folder. Takes NO args — the renderer never supplies a path. */
+  WINDOW_OPEN_FOLDER: 'loom:window:open-folder',
   /** invoke(name: string): boolean — HUMAN roster curation: remove ONE agent
    *  (any status) from the roster. main RE-VALIDATES the input (string,
    *  trimmed non-empty, <= MAX_NAME_LENGTH, existing row) and DELETEs the
@@ -930,6 +944,13 @@ export interface WindowControls {
    *  edge-resize drag. main re-validates + clamps the payload; an invalid shape
    *  or an unresolved sender window is a silent no-op. */
   setBounds(b: WindowBounds): Promise<void>;
+  /** Open ANOTHER window onto the SAME folder in this process (shared db/MCP,
+   *  own renderer pump + terminal pool). Takes no args. */
+  newWindow(): Promise<void>;
+  /** Pop a native folder picker and open the chosen folder in a new window —
+   *  in-process when it is THIS folder, otherwise a fresh isolated Loom process
+   *  (declining when a live Loom already serves it). Takes no args. */
+  openFolder(): Promise<void>;
 }
 
 /** The terminal pane's bridge surface (see LoomBridge.terminal). Mirrors the

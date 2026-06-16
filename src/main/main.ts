@@ -9,6 +9,7 @@
  * ============================================================ */
 import { readFileSync, writeFileSync, statSync, rmSync } from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { app, BrowserWindow, dialog, ipcMain, screen, shell } from 'electron';
 // Same build-time-inlined app version the MCP server advertises (esbuild
 // inlines package.json), so the discovery file can never drift from a literal.
@@ -70,6 +71,19 @@ const preFullscreenBoundsMap = new WeakMap<BrowserWindow, Electron.Rectangle>();
 // maximized" state (setBounds to workArea without calling win.maximize()).
 // win.isMaximized() always returns false on WSL2 path, so we maintain this.
 const manualMaximizedMap = new WeakMap<BrowserWindow, boolean>();
+
+// Per-window terminal session managers (loom:terminal:*). Terminals are PER
+// WINDOW — each window owns its OWN PTY pool + output sink — so a SECOND
+// same-folder window never steals the first's terminal output (the manager has
+// a single sink) and closing one window never kills the other's PTYs (disposeAll
+// reaps every session in that ONE manager). Keyed by the window's webContents so
+// the sender-scoped TERMINAL_* handlers route to the right window's manager; the
+// Map (not a WeakMap) is also iterated on will-quit for a teardown backstop. An
+// entry is removed when its window closes.
+const windowTerminals = new Map<
+  Electron.WebContents,
+  ReturnType<typeof createTerminalManager>
+>();
 
 /** Parsed --capture invocation. */
 interface CaptureArgs {
@@ -289,9 +303,6 @@ interface Services {
   sandbox: ReturnType<typeof createSandbox>;
   watcher: ReturnType<typeof createWatcher>;
   ipc: ReturnType<typeof createIpcWiring>;
-  /** The human-invoked terminal pane's PTY session manager (loom:terminal:*).
-   *  PTY lives ONLY in main; killed on window close / app quit. */
-  terminal: ReturnType<typeof createTerminalManager>;
   mcp: ReturnType<typeof createMcpServer>;
   ws: ReturnType<typeof createWsFeed> | null;
   rootDir: string;
@@ -500,11 +511,10 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   const watcher = createWatcher(rootDir, bus);
   watcher.start();
 
-  // The terminal pane's PTY session manager (human-invoked; MCP-invisible).
-  // The node-pty factory loads its native binding LAZILY on first open(), so a
-  // missing/ABI-broken node-pty degrades to "terminal unavailable"
-  // ({ sessionId: null }) instead of failing boot.
-  const terminal = createTerminalManager({ factory: createNodePtyFactory(), rootDir });
+  // NOTE: the terminal pane's PTY session manager is now created PER WINDOW (in
+  // createMainWindow), not once here — terminals must not be shared across two
+  // same-folder windows (single sink, shared pool, disposeAll-kills-all). See
+  // windowTerminals + registerTerminalHandlers.
 
   const ipc = createIpcWiring({
     db,
@@ -517,7 +527,6 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
     // session bindings. When the MCP server failed to start (degraded boot)
     // its session map is simply empty — correct: no transport, nothing live.
     liveConnectionIds: () => mcp.liveConnectionIds(),
-    terminal,
   });
   ipc.register();
   notifySessionsReaped = () => ipc.nudgeCounters();
@@ -528,7 +537,7 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
     await ws.start();
   }
 
-  return { db, bus, engine, sandbox, watcher, ipc, terminal, mcp, ws, rootDir, ownsMcpAdvert };
+  return { db, bus, engine, sandbox, watcher, ipc, mcp, ws, rootDir, ownsMcpAdvert };
 }
 
 /** Platform-aware window-chrome options for the MAIN window.
@@ -648,6 +657,124 @@ function registerWindowControlHandlers(): void {
   });
 }
 
+/** Wire the per-window terminal PTY handlers ONCE for the whole process. Each
+ *  resolves the SENDER window's TerminalManager from windowTerminals (never a
+ *  caller-supplied id), so a renderer drives ONLY its own window's terminals. An
+ *  unresolved sender (no manager registered — e.g. the capture window, which
+ *  opens no terminal) degrades to the graceful sentinels ({ sessionId: null } /
+ *  no-op). Guarded so a second window cannot double-register (ipcMain.handle
+ *  throws on a duplicate channel). The manager itself is the authoritative
+ *  re-validation gate for every raw payload (types, the per-spawn sessionId
+ *  token, the input cap, cols/rows ranges — unit-pinned in test/terminal.mjs). */
+let terminalHandlersRegistered = false;
+function registerTerminalHandlers(): void {
+  if (terminalHandlersRegistered) return;
+  terminalHandlersRegistered = true;
+  const managerFor = (
+    evt: Electron.IpcMainInvokeEvent,
+  ): ReturnType<typeof createTerminalManager> | null =>
+    windowTerminals.get(evt.sender) ?? null;
+  ipcMain.handle(
+    IPC.TERMINAL_OPEN,
+    (evt, p: unknown) => managerFor(evt)?.open(p) ?? { sessionId: null },
+  );
+  ipcMain.handle(IPC.TERMINAL_INPUT, (evt, p: unknown) => {
+    managerFor(evt)?.input(p);
+  });
+  ipcMain.handle(IPC.TERMINAL_RESIZE, (evt, p: unknown) => {
+    managerFor(evt)?.resize(p);
+  });
+  ipcMain.handle(IPC.TERMINAL_CLOSE, (evt, p: unknown) => {
+    managerFor(evt)?.close(p);
+  });
+}
+
+/** Wire the multi-window handlers ONCE: open ANOTHER window onto the same folder
+ *  (WINDOW_NEW) and the folder-picker path (WINDOW_OPEN_FOLDER). `services` is
+ *  captured so a new same-folder window reuses the SAME shared db/engine/MCP/
+ *  watcher. Guarded against a second window double-registering. */
+let extraWindowHandlersRegistered = false;
+function registerExtraWindowHandlers(services: Services): void {
+  if (extraWindowHandlersRegistered) return;
+  extraWindowHandlersRegistered = true;
+  // Same folder, same process: a second window SHARES the one in-memory sql.js
+  // store so both views stay consistent. (A second OS process on this folder
+  // would double-write loom.db — that is why same-folder duplication is always
+  // in-process.) No args / no sender trust: it only ever opens THIS process's
+  // already-resolved, sandbox-validated root.
+  ipcMain.handle(IPC.WINDOW_NEW, () => {
+    createMainWindow(services);
+  });
+  // Folder picker: in-process duplicate when the pick IS this folder; a fresh
+  // isolated Loom process for a different folder; decline when a live Loom
+  // already serves the pick.
+  ipcMain.handle(IPC.WINDOW_OPEN_FOLDER, async () => {
+    await openFolderInNewWindow(services);
+  });
+}
+
+/** The native folder picker + the open decision behind WINDOW_OPEN_FOLDER.
+ *  Resolution mirrors the architecture's one-rootDir-per-process rule:
+ *   - pick === this process's root  -> in-process duplicate (shared db).
+ *   - a LIVE Loom already serves it  -> inform + decline (two processes flushing
+ *     one loom.db would clobber chat; we cannot focus a foreign window from here).
+ *   - otherwise                      -> a fresh, fully-isolated Loom process. */
+async function openFolderInNewWindow(services: Services): Promise<void> {
+  const result = await dialog.showOpenDialog({
+    properties: ['openDirectory'],
+    title: 'Open a folder in a new Loom window',
+  });
+  if (result.canceled || result.filePaths.length === 0) return;
+  const picked = result.filePaths[0];
+  if (!picked || !isDirectory(picked)) return;
+  const target = path.resolve(picked);
+
+  if (target === services.rootDir) {
+    createMainWindow(services);
+    return;
+  }
+
+  const existing = readMcpAdvert(target);
+  if (existing !== null && isPidAlive(existing.pid)) {
+    await dialog.showMessageBox({
+      type: 'info',
+      title: 'Loom already open',
+      message: 'A Loom window is already open for that folder.',
+      detail: target,
+      buttons: ['OK'],
+      noLink: true,
+    });
+    return;
+  }
+
+  spawnLoomProcess(target);
+}
+
+/** Spawn a NEW, independent Loom process rooted at `folder` (its OWN db/MCP/
+ *  sandbox/watcher). Mirrors bin/loom.cjs: the folder is passed POSITIONALLY (it
+ *  beats the ambient LOOM_ROOT in resolveRoot) AND echoed into LOOM_ROOT so both
+ *  agree. Detached + unref'd + stdio:'ignore' so the child is fully independent
+ *  of this process's lifetime. Best-effort: a spawn failure is logged, never
+ *  fatal (the human can always launch via the CLI). */
+function spawnLoomProcess(folder: string): void {
+  // Packaged: process.execPath IS the Loom exe — a positional folder suffices.
+  // Dev (electron .): execPath is the Electron binary, so the main bundle path
+  // (dist/main.cjs — beside this file, __dirname) must lead, mirroring bin/loom.cjs.
+  const args = app.isPackaged ? [folder] : [path.join(__dirname, 'main.cjs'), folder];
+  try {
+    const child = spawn(process.execPath, args, {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, LOOM_ROOT: folder },
+    });
+    child.unref();
+  } catch (err) {
+    process.stderr.write(
+      `[loom:boot] could not open a new window for ${folder}: ${String(err)}\n`,
+    );
+  }
+}
+
 /** True for a finite integer (rejects NaN, ±Infinity, non-numbers, floats). */
 function isFiniteInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v);
@@ -754,6 +881,19 @@ function createMainWindow(services: Services): BrowserWindow {
   // toggle. The push is harmless on darwin (the renderer there renders no
   // controls and ignores it).
   registerWindowControlHandlers();
+  // Per-window terminal PTY handlers + the multi-window (new-window / open-folder)
+  // handlers — each registered once for the whole process (guarded), so a 2nd
+  // window does not re-register and crash on a duplicate channel.
+  registerTerminalHandlers();
+  registerExtraWindowHandlers(services);
+  // THIS window's OWN terminal session manager (its own PTY pool + output sink),
+  // keyed by webContents so the sender-scoped TERMINAL_* handlers route to it and
+  // a second same-folder window never shares or steals it. Torn down on close.
+  const terminal = createTerminalManager({
+    factory: createNodePtyFactory(),
+    rootDir: services.rootDir,
+  });
+  windowTerminals.set(win.webContents, terminal);
   // Linux frameless maximize / fullscreen correction: some WMs apply a ~1cm
   // frame-decoration offset to frameless windows when maximizing or entering
   // fullscreen. Override with the correct display geometry after the WM fires,
@@ -810,18 +950,28 @@ function createMainWindow(services: Services): BrowserWindow {
   // DEPENDS on the renderer's onMaximizeChange listener being attached before
   // this fires, so an in-app reload while maximized seeds correctly regardless.
   win.webContents.on('did-finish-load', pushMaximized);
-  const detachRenderer = services.ipc.attachRenderer((channel, payload) => {
+  // ONE send fn drives BOTH this window's renderer pump (events/counters/live-
+  // state/git) AND its terminal output sink, so both target THIS window's
+  // webContents. The pump is given the sender (webContents) so SET_LIVE_STATE can
+  // route a human pause back to the right window's per-window state.
+  const send = (channel: string, payload: unknown): void => {
     if (!win.isDestroyed()) win.webContents.send(channel, payload);
-  });
+  };
+  const detachRenderer = services.ipc.attachRenderer(send, win.webContents);
+  const detachTerminal = terminal.attachSink(send);
   // A full renderer reload loses the sessionId without sending a close — kill
-  // the live PTY so a reload can never orphan it (open() spawns a fresh one).
-  win.webContents.on('did-navigate', () => services.terminal.disposeAll());
-  // Kill-on-window-close: the PTY must never outlive the window that owns it
-  // (the renderer's pane-close path also kills, but a window closed with the
-  // terminal open relies on this). Idempotent with the will-quit disposeAll.
+  // THIS window's live PTYs so a reload can never orphan them (open() spawns a
+  // fresh one). Only this window's manager — never another window's.
+  win.webContents.on('did-navigate', () => terminal.disposeAll());
+  // Kill-on-window-close: a window's PTYs must never outlive it (the renderer's
+  // pane-close path also kills, but a window closed with the terminal open relies
+  // on this). Disposes ONLY this window's manager + drops it from the registry;
+  // idempotent with the will-quit teardown backstop.
   win.on('closed', () => {
     detachRenderer();
-    services.terminal.disposeAll();
+    detachTerminal();
+    terminal.disposeAll();
+    windowTerminals.delete(win.webContents);
   });
   return win;
 }
@@ -1185,10 +1335,14 @@ export function bootstrap(): void {
         services.watcher.stop();
       });
 
-      // Lifecycle safety: never leak a live PTY past the app. disposeAll() is
-      // idempotent (a second call on an already-killed session is a no-op), so
-      // it is safe to fire on BOTH will-quit and window close.
-      app.on('will-quit', () => services.terminal.disposeAll());
+      // Lifecycle safety: never leak a live PTY past the app. Each window's
+      // 'closed' handler already disposes ITS manager; this is the teardown
+      // backstop for a quit that bypasses per-window close (disposeAll() is
+      // idempotent, so a double-dispose is a no-op).
+      app.on('will-quit', () => {
+        for (const mgr of windowTerminals.values()) mgr.disposeAll();
+        windowTerminals.clear();
+      });
 
       if (capture) {
         await runCapture(services, capture);

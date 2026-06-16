@@ -135,7 +135,9 @@ The renderer NEVER touches `ipcRenderer` directly — only `window.loom`.
 | `READ_FILE`         | `loom:file:read`  | invoke | `(path: string) → FileContent` |
 | `GET_TREE`          | `loom:tree:get`   | invoke | `() → FileNode` |
 | `SET_THEME`         | `loom:theme:set`  | invoke | `(theme: Theme) → void` |
-| `SET_LIVE_STATE`    | `loom:live:set`   | invoke | `(state: LiveState) → void` |
+| `SET_LIVE_STATE`    | `loom:live:set`   | invoke | `(state: LiveState) → void` — routed to the SENDER window's per-window live-feed pump (a pause in one window never flips another's). |
+| `WINDOW_NEW`        | `loom:window:new` | invoke | `() → void` — open ANOTHER window onto the SAME folder in THIS process (shared `db`/`engine`/MCP/`watcher`; each window gets its OWN renderer pump + terminal pool). No args, no sender trust. Same-folder duplication is ALWAYS in-process — a second OS process on one folder would double-write `loom.db`. Joins the no-arg `loom:window:*` window-controls family. |
+| `WINDOW_OPEN_FOLDER`| `loom:window:open-folder` | invoke | `() → void` — pop a native folder picker; main decides: pick === current root ⇒ in-process duplicate (`WINDOW_NEW` path); a LIVE Loom already serves the pick (`mcp.json` advert + live pid) ⇒ inform + decline; else spawn a fresh, isolated Loom process on that folder. The renderer NEVER supplies a path — Law 3 containment stays in main. |
 | `EVENT`             | `loom:event`      | send   | `(LoomEvent)` main→renderer |
 | `COUNTERS`          | `loom:counters`   | send   | `(SessionCounters)` main→renderer |
 | `LIVE_STATE`        | `loom:live:state` | send   | `(LiveState)` main→renderer |
@@ -173,7 +175,25 @@ getChanges(): Promise<ChangeSet>
 readFileDiff(path: string): Promise<FileDiff>
 removeAgent(name: string): Promise<boolean>     // human roster curation
 clearStaleAgents(): Promise<number>             // human roster curation (stale sweep)
+windowControls: WindowControls                       // namespaced — frameless chrome + multi-window actions
 terminal: TerminalBridge                              // namespaced, like windowControls
+```
+
+The `windowControls` bridge member (`WindowControls`, `src/shared/types.ts`) —
+the frameless-chrome window controls PLUS the two multi-window actions. Every
+method is no-arg / SENDER-scoped in main (the renderer can only act on its OWN
+window; the multi-window actions take no path — Law 3 stays in main):
+
+```ts
+windowControls.minimize(): Promise<void>
+windowControls.toggleMaximize(): Promise<void>
+windowControls.close(): Promise<void>
+windowControls.isMaximized(): Promise<boolean>
+windowControls.onMaximizeChange(cb: (m: boolean) => void): () => void  // returns unsubscribe
+windowControls.getBounds(): Promise<WindowBounds>
+windowControls.setBounds(b: WindowBounds): Promise<void>
+windowControls.newWindow(): Promise<void>     // open ANOTHER window on the SAME folder (in-process, shared db/MCP)
+windowControls.openFolder(): Promise<void>    // native folder picker → in-process dup / new isolated process / decline
 ```
 
 The `terminal` bridge member (`TerminalBridge`, `src/shared/types.ts`):
@@ -257,11 +277,15 @@ OQ-2 default):** chat PERSISTS across launches. `db.init()` loads an existing
 `<root>/.loom/loom.db` when present (fresh schema only when absent or the file
 is corrupt). Content is removed ONLY by the explicit `purge_all` tool — never on
 close. **Single-writer-per-folder assumption (known limitation, not enforced):**
-each instance loads + flushes the WHOLE serialized image (last-writer-wins), so
-two windows on the SAME folder can durably clobber each other on flush. Mitigated
-(not solved) by `mcp.json` ownership routing agents to one owning instance; no
-folder lock yet (a separate decision). Treat one writer per folder as the
-contract until a lock lands.
+each PROCESS loads + flushes the WHOLE serialized image (last-writer-wins), so
+two **processes** on the SAME folder can durably clobber each other on flush.
+Same-folder duplicate **windows** are SAFE — they run in ONE process sharing the
+single in-memory store, which is exactly why `WINDOW_NEW` always duplicates
+in-process and `WINDOW_OPEN_FOLDER` declines (with a notice) to spawn a second
+process onto a folder a live Loom already serves. Cross-process same-folder is
+mitigated (not solved) by `mcp.json` ownership routing agents to one owning
+instance; no folder lock yet (a separate decision). Treat one writer PROCESS per
+folder as the contract until a lock lands.
 
 ---
 

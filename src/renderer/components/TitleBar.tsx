@@ -185,6 +185,54 @@ function WindowControls(): JSX.Element {
   );
 }
 
+/** App-level window actions (ALL platforms, incl. darwin where the native
+ *  traffic-lights replace .win-controls but these app actions still belong):
+ *    - New window: open ANOTHER window onto the SAME folder (shared db/MCP).
+ *    - Open folder…: pop the native folder picker -> a new window/process.
+ *  Real <button>s mirroring WindowControls' a11y (aria-label + aria-hidden SVG
+ *  glyph, no-drag via .titlebar button). A missing bridge silently no-ops. */
+function WindowActions(): JSX.Element | null {
+  const controls = typeof window !== 'undefined' ? window.loom?.windowControls : undefined;
+  // Render nothing when the bridge (or the multi-window methods) is absent, so a
+  // test harness / older preload never shows dead buttons.
+  if (!controls || typeof controls.newWindow !== 'function') return null;
+  return (
+    <div className="title-actions" role="group" aria-label="Window actions">
+      <button
+        type="button"
+        className="win-ctl"
+        aria-label="New window (same folder)"
+        title="New window (same folder)"
+        onClick={() => void controls.newWindow()}
+      >
+        {/* A window outline with a plus — "open another window". */}
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+          <rect x="0.5" y="1.5" width="8" height="8" rx="1" stroke="currentColor" strokeWidth="1" fill="none" />
+          <path d="M10 6.5v4M8 8.5h4" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className="win-ctl"
+        aria-label="Open folder in new window"
+        title="Open folder in new window…"
+        onClick={() => void controls.openFolder()}
+      >
+        {/* A folder outline — "open another folder". */}
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+          <path
+            d="M0.5 2.5h3l1 1.5h6a0 0 0 0 1 0 0v6a0 0 0 0 1 0 0h-10a0 0 0 0 1 0 0v-7z"
+            stroke="currentColor"
+            strokeWidth="1"
+            fill="none"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 export function TitleBar({ rootName }: TitleBarProps): JSX.Element {
   // Custom controls everywhere EXCEPT darwin (which keeps the native inset
   // traffic-lights). Read once at render — the platform never changes at runtime.
@@ -251,6 +299,9 @@ export function TitleBar({ rootName }: TitleBarProps): JSX.Element {
         </span>
       </h1>
       <div className="title-right">
+        {/* App-level window actions (new window / open folder) — shown on EVERY
+            platform, including darwin (these are app actions, not frame controls). */}
+        <WindowActions />
         <span
           style={{
             fontFamily: 'var(--font-mono)',

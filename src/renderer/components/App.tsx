@@ -2598,6 +2598,16 @@ export function App(): JSX.Element {
           // Ctrl/Cmd+Comma opener hands the gear to openShortcuts).
           openSettings(gearButtonRef.current);
           break;
+        case 'newWindow':
+          // Open ANOTHER window onto the SAME folder (shared db/MCP, own pump +
+          // terminal pool). main resolves everything; the renderer supplies no path.
+          void window.loom?.windowControls?.newWindow();
+          break;
+        case 'openFolderWindow':
+          // Pop the native folder picker; main decides in-process duplicate vs.
+          // a new isolated Loom process vs. decline (a live Loom already serves it).
+          void window.loom?.windowControls?.openFolder();
+          break;
         default:
           break;
       }

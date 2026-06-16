@@ -1925,8 +1925,9 @@ test('FR-54 resolveBindings: user overrides win over defaults; others keep defau
   // toggleReadingWidth, the Viewer reading-width quick toggle, toggleSplitView,
   // the side-by-side compare reading-pane toggle, the three newly-editable
   // shell commands — toggleChanges, openSettings, and toggleMaximizeTerminal —
-  // plus the four multi-terminal commands: focusTerminal1/2/3 and cycleTerminalFocus).
-  assert.equal(Object.keys(resolved).length, 19, 'resolved map covers all 19 commands');
+  // the four multi-terminal commands: focusTerminal1/2/3 and cycleTerminalFocus —
+  // plus the two multi-window commands: newWindow and openFolderWindow).
+  assert.equal(Object.keys(resolved).length, 21, 'resolved map covers all 21 commands');
 });
 
 test('FR-54 resolveBindings: missing/corrupt overrides fall back to defaults', async () => {
@@ -2307,7 +2308,30 @@ test('SEARCH command: the openSearch command exists with its default binding (D)
   assert.equal(spec.label, 'Search file contents', 'label matches the spec');
   assert.equal(spec.defaultBinding, 'Ctrl+Shift+F', 'default binding is Ctrl/Cmd+Shift+F');
   assert.equal(DEFAULT_BINDINGS.openSearch, 'Ctrl+Shift+F', 'resolved default carries the combo');
-  assert.equal(COMMANDS.length, 19, 'there are now 19 customizable commands');
+  assert.equal(COMMANDS.length, 21, 'there are now 21 customizable commands');
+});
+
+test('MULTI-WINDOW commands: newWindow + openFolderWindow are registered, non-colliding, un-reserved', async () => {
+  const { COMMANDS, DEFAULT_BINDINGS, resolveBindings, findConflict, isReserved, bindingAllowedFor } =
+    await kit();
+  const newWin = COMMANDS.find((c) => c.id === 'newWindow');
+  const openFolder = COMMANDS.find((c) => c.id === 'openFolderWindow');
+  assert.ok(newWin, 'a newWindow command is registered');
+  assert.ok(openFolder, 'an openFolderWindow command is registered');
+  assert.equal(newWin.defaultBinding, 'Ctrl+Shift+N', 'newWindow default is Ctrl/Cmd+Shift+N');
+  assert.equal(openFolder.defaultBinding, 'Ctrl+Shift+O', 'openFolderWindow default is Ctrl/Cmd+Shift+O');
+  assert.equal(DEFAULT_BINDINGS.newWindow, 'Ctrl+Shift+N', 'resolved default carries the combo');
+  assert.equal(DEFAULT_BINDINGS.openFolderWindow, 'Ctrl+Shift+O', 'resolved default carries the combo');
+  // Each default must be a structurally-valid binding for its command, free of a
+  // conflict with any OTHER command, and not one of the app-shell RESERVED combos
+  // (so the shortcut actually fires, and the Shortcuts panel never flags it dead).
+  const resolved = resolveBindings({});
+  for (const id of ['newWindow', 'openFolderWindow']) {
+    const combo = DEFAULT_BINDINGS[id];
+    assert.ok(bindingAllowedFor(id, combo), `${id} default is a valid binding`);
+    assert.equal(findConflict(resolved, combo, id), null, `${id} default collides with no other command`);
+    assert.equal(isReserved(combo), false, `${id} default is not an app-shell reserved combo`);
+  }
 });
 
 test('SEARCH matchFile: finds multiple hits per line AND across lines', async () => {

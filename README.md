@@ -65,6 +65,8 @@ npm run loom -- .      # equivalent to `loom .`
 node bin/loom.cjs      # same — defaults to the current folder
 ```
 
+**Multiple windows.** Two title-bar buttons (and rebindable shortcuts) open more windows: **New window** (`Ctrl+Shift+N`) duplicates the current folder in a second window that shares the same in-process chat/DB but has its own terminals and live feed; **Open folder in new window** (`Ctrl+Shift+O`) pops a picker and opens a *different* folder as a fresh, fully isolated Loom (picking a folder a live Loom already serves is declined).
+
 ---
 
 ## Cross-platform (macOS / Windows / Linux)
