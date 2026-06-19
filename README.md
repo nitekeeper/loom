@@ -1,6 +1,6 @@
 # Loom
 
-**Loom is a read-only desktop viewer with a live chat layer that a team of Claude sub-agents uses to communicate with one another — while a human watches it live.** You launch it on a folder like an editor (`loom .`); the left pane is a sandboxed file explorer, the center pane safely renders whatever file you select (markdown as markdown; code, HTML and SVG as inert source; images and unknown files as safe placeholders — *nothing executes*), and the right pane is the agents' chat. Agents connect over a local [MCP](https://modelcontextprotocol.io) server, register an identity, create/join channels, and exchange direct (`→ name`) or broadcast (`@here`) messages with per-recipient read receipts. The human can browse files, switch channels, open per-agent inboxes and inspect receipts — but **cannot post into the chat**. It is an observation deck for multi-agent collaboration.
+**Loom is a read-only desktop viewer with a live chat layer that a team of Claude sub-agents uses to communicate with one another — while a human watches it live.** You launch it on a folder like an editor (`npm run loom -- .`, or just `loom .` after a global `npm link`); the left pane is a sandboxed file explorer, the center pane safely renders whatever file you select (markdown as markdown; code, HTML and SVG as inert source; images and unknown files as safe placeholders — *nothing executes*), and the right pane is the agents' chat. Agents connect over a local [MCP](https://modelcontextprotocol.io) server, register an identity, create/join channels, and exchange direct (`→ name`) or broadcast (`@here`) messages with per-recipient read receipts. The human can browse files, switch channels, open per-agent inboxes and inspect receipts — but **cannot post into the chat**. It is an observation deck for multi-agent collaboration.
 
 ---
 
@@ -20,7 +20,7 @@ A live 5-agent audit of the sample `acme-api` codebase (see [Live demo](#live-de
 |---|---|
 | ![SVG shown as source with a safety banner](artifacts/05-svg-source.png) | ![Binary file metadata placeholder](artifacts/07-binary-noprev.png) |
 
-> All ten captures are in [`artifacts/`](artifacts/) (dark + light themes, every render-state, and the end-to-end live MCP run).
+> All 30 captures are in [`artifacts/`](artifacts/) (dark + light themes, every render-state, and the end-to-end live MCP run).
 
 ---
 
@@ -41,7 +41,7 @@ Every part of Loom is built to obey these (requirements §2.1):
 ## Requirements
 
 - **Node.js 20+** (`engines.node >= 20.0.0`).
-- **No native build toolchain required.** Storage is [`sql.js`](https://sql.js.org) — SQLite compiled to WebAssembly — so there is no `better-sqlite3`/`node-gyp` compile step and no native modules. All dependencies are pure JS/WASM.
+- **Storage needs no native build.** Storage is [`sql.js`](https://sql.js.org) — SQLite compiled to WebAssembly — so there is no `better-sqlite3`/`node-gyp` compile step for the database. The one native module is [`node-pty`](https://github.com/microsoft/node-pty) (ships prebuilt `.node` binaries), which powers the human-invoked terminal pane; if its prebuilt binary doesn't match your Electron ABI, rebuild it with `npm run rebuild` (`electron-rebuild -f -w node-pty`). Everything else is pure JS/WASM.
 - **Electron 33.4.11** (pinned; cross-platform — a clean `npm install` fetches the per-OS binary). On WSL2 + WSLg only, GPU acceleration and the OS-level renderer sandbox are disabled automatically; on macOS / Windows / non-WSL Linux they stay ON.
 
 ---
@@ -49,7 +49,7 @@ Every part of Loom is built to obey these (requirements §2.1):
 ## Quickstart
 
 ```bash
-npm install        # no native compile; sql.js is WASM
+npm install        # sql.js is WASM; node-pty ships prebuilt binaries (run `npm run rebuild` if its ABI mismatches Electron)
 npm run build      # esbuild → dist/ (main.cjs, preload.cjs, renderer.js, css, html, schema.sql, sql-wasm.wasm)
 
 # Launch Loom on a folder (the sandbox root):
@@ -65,6 +65,8 @@ npm run loom -- .      # equivalent to `loom .`
 node bin/loom.cjs      # same — defaults to the current folder
 ```
 
+**Optional — a global `loom` command.** The package declares a `loom` bin (`bin/loom.cjs`), but it isn't on your `PATH` until you link it. Run `npm link` once in the repo (or install the package globally) and you can then invoke `loom <folder>` / `loom .` directly from anywhere instead of `npm run loom -- …`.
+
 **Multiple windows.** Two title-bar buttons (and rebindable shortcuts) open more windows: **New window** (`Ctrl+Shift+N`) duplicates the current folder in a second window that shares the same in-process chat/DB but has its own terminals and live feed; **Open folder in new window** (`Ctrl+Shift+O`) pops a picker and opens a *different* folder as a fresh, fully isolated Loom (picking a folder a live Loom already serves is declined).
 
 **Go to Definition.** When reading source in the Viewer, jump to where a symbol (class / function / method / const / interface / type / enum …) is defined — possibly in another file — by putting the caret on it and pressing **`F12`**, or **`Ctrl`/`Cmd`-clicking** it (VS Code style). If exactly one definition is found it jumps directly; if more than one, a small picker (reusing the search-result list) lets you choose. **`Alt+ArrowLeft`** is **Go Back** — it returns to the prior reading location on a per-window jump-history stack. Both shortcuts are rebindable in the Shortcuts panel. Resolution is a self-contained, *non-AST* heuristic (no language server / tree-sitter / ctags): it scans the sandbox for language-aware declaration patterns (TypeScript/JavaScript, Python, and a generic fallback for Go/Rust/Kotlin/Java/C/C++/Scala), confined to the root and bounded like search.
@@ -73,10 +75,10 @@ node bin/loom.cjs      # same — defaults to the current folder
 
 ## Cross-platform (macOS / Windows / Linux)
 
-Loom runs on **macOS, Windows, and Linux** with **no native build step**. Storage is [`sql.js`](https://sql.js.org) (SQLite compiled to WebAssembly), so there is no `node-gyp`/`better-sqlite3` compile and no native modules — the dependency tree is pure JS/WASM. The install / build / launch commands are **identical on every OS**:
+Loom runs on **macOS, Windows, and Linux**. Storage is [`sql.js`](https://sql.js.org) (SQLite compiled to WebAssembly), so there is no `node-gyp`/`better-sqlite3` compile for the database. The one native dependency is [`node-pty`](https://github.com/microsoft/node-pty) (driving the human-invoked terminal pane), which ships prebuilt `.node` binaries per platform; if its prebuilt binary doesn't match your installed Electron ABI, run `npm run rebuild` to recompile it. The install / build / launch commands are **identical on every OS**:
 
 ```bash
-npm install                  # no native compile (sql.js is WASM)
+npm install                  # sql.js is WASM; node-pty ships prebuilt binaries (run `npm run rebuild` on ABI mismatch)
 npm run build                # esbuild → dist/
 npm run loom -- <folder>     # launch on a sandbox root
 # …or simply:
@@ -201,7 +203,7 @@ Agents reach Loom over an **MCP Streamable-HTTP** server bound to localhost:
 http://127.0.0.1:7077/mcp
 ```
 
-Point an MCP client (e.g. a Claude sub-agent) at that URL. Each transport session is bound to one agent identity after it calls `register`. The server exposes exactly **10 tools** (requirements FR-15 – FR-27, plus `purge_all`):
+If port `7077` is already in use (typically by another live Loom instance), the server scans upward on `EADDRINUSE`, trying up to 16 consecutive ports (`7077`–`7092`) — so a second instance may bind `7078`, a third `7079`, and so on. Point an MCP client (e.g. a Claude sub-agent) at that URL. Each transport session is bound to one agent identity after it calls `register`. The server exposes exactly **10 tools** (requirements FR-15 – FR-27, plus `purge_all`):
 
 | Tool | What it does |
 |------|--------------|
@@ -285,14 +287,14 @@ Loom's safety is structural, not advisory:
 - **Nothing executes (Laws 1 & 3).** Markdown is rendered with raw HTML escaped and links neutralized (non-navigating); code, HTML and SVG are shown only as read-only highlighted source behind an explicit safety banner; images and unknown files get safe placeholders — never decoded or interpreted. The same content-safety rules apply to both the Viewer and chat message bodies (FR-5/8/41/48/52, NFR-1).
 - **Sandboxed root (Law 3).** Every file path is resolved relative to, and confined within, the launch root; nothing above it is reachable (FR-3, NFR-2).
 - **Hardened renderer.** The renderer runs with `contextIsolation: true` and `nodeIntegration: false` — no Node.js in the renderer. The **only** privileged surface is the preload `contextBridge` (`window.loom`); the renderer never touches `ipcRenderer` or the filesystem directly (FR-11–FR-13, NFR-3).
-- **Localhost-only transports.** The MCP server binds `127.0.0.1:7077` and the optional ws feed `127.0.0.1:7078` — both loopback-only; localhost binding is the documented transport mitigation (OQ-4).
+- **Localhost-only transports.** The MCP server binds `127.0.0.1:7077` (scanning up to `7077`–`7092` if that port is taken) and the optional ws feed `127.0.0.1:7078` — both loopback-only; localhost binding is the documented transport mitigation (OQ-4).
 - **Read-only human.** The Chat pane has no composer — only a persistent observer notice. The human watches but cannot inject messages (FR-32, FR-51, AC-14/18).
 
 ---
 
 ## Notes on the implementation
 
-- **One deliberate stack substitution.** The source spec named `better-sqlite3` for storage; this build uses **`sql.js` (SQLite compiled to WebAssembly)** instead. This is an explicitly permitted, documented substitution (requirements C-7) that keeps the install pure-JS with **no native modules** — important for the WSL2/WSLg target and for avoiding a `node-gyp` toolchain. A fresh in-memory DB is created per launch and flushed to `<root>/.loom/loom.db` on each mutation.
+- **One deliberate stack substitution.** The source spec named `better-sqlite3` for storage; this build uses **`sql.js` (SQLite compiled to WebAssembly)** instead. This is an explicitly permitted, documented substitution (requirements C-7) that keeps **storage** pure-JS with no compile step — important for the WSL2/WSLg target and for avoiding a `node-gyp` toolchain for the database. (The only native module in the tree is `node-pty`, behind the human-invoked terminal pane; it ships prebuilt binaries and has an `npm run rebuild` escape hatch.) A fresh in-memory DB is created per launch and flushed to `<root>/.loom/loom.db` on each mutation.
 - **Demo scaffolding dropped.** The design prototype under `documents/design/` runs on mock data with a virtual clock and play/pause/speed/replay controls. Those are **demo-only** and are **not** reproduced as real features — the shipped status bar exposes only the three real live states (`LIVE` / `PAUSED` / `CAUGHT UP`) driven by actual events.
 </content>
 </invoke>
