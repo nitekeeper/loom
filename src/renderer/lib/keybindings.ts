@@ -48,7 +48,9 @@ export type CommandId =
   | 'focusTerminal1'
   | 'focusTerminal2'
   | 'focusTerminal3'
-  | 'cycleTerminalFocus';
+  | 'cycleTerminalFocus'
+  | 'goToDefinition'
+  | 'goBack';
 
 /** A command entry shown in the Shortcuts panel. */
 export interface CommandSpec {
@@ -84,6 +86,15 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'focusTerminal2', label: 'Focus terminal 2', defaultBinding: 'Ctrl+2' },
   { id: 'focusTerminal3', label: 'Focus terminal 3', defaultBinding: 'Ctrl+3' },
   { id: 'cycleTerminalFocus', label: 'Cycle terminal focus', defaultBinding: 'Ctrl+Alt+`' },
+  // Go to Definition: jump from the symbol under the caret/selection in the
+  // Viewer to where it is defined (IDE-standard F12). NOT an editable-target
+  // command, so the dispatcher's isEditableTarget guard suppresses it inside a
+  // focused terminal/textarea — a modifier-less F12 is safe because it fires
+  // ONLY in the non-editable Viewer.
+  { id: 'goToDefinition', label: 'Go to definition', defaultBinding: 'F12' },
+  // Go Back: return to the prior reading location on the jump-history stack
+  // (IDE/browser-standard Alt+ArrowLeft "navigate back").
+  { id: 'goBack', label: 'Go back', defaultBinding: 'Alt+ArrowLeft' },
 ] as const;
 
 /** Resolved default bindings as a plain id -> combo record. Frozen so a

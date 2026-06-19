@@ -67,6 +67,8 @@ node bin/loom.cjs      # same — defaults to the current folder
 
 **Multiple windows.** Two title-bar buttons (and rebindable shortcuts) open more windows: **New window** (`Ctrl+Shift+N`) duplicates the current folder in a second window that shares the same in-process chat/DB but has its own terminals and live feed; **Open folder in new window** (`Ctrl+Shift+O`) pops a picker and opens a *different* folder as a fresh, fully isolated Loom (picking a folder a live Loom already serves is declined).
 
+**Go to Definition.** When reading source in the Viewer, jump to where a symbol (class / function / method / const / interface / type / enum …) is defined — possibly in another file — by putting the caret on it and pressing **`F12`**, or **`Ctrl`/`Cmd`-clicking** it (VS Code style). If exactly one definition is found it jumps directly; if more than one, a small picker (reusing the search-result list) lets you choose. **`Alt+ArrowLeft`** is **Go Back** — it returns to the prior reading location on a per-window jump-history stack. Both shortcuts are rebindable in the Shortcuts panel. Resolution is a self-contained, *non-AST* heuristic (no language server / tree-sitter / ctags): it scans the sandbox for language-aware declaration patterns (TypeScript/JavaScript, Python, and a generic fallback for Go/Rust/Kotlin/Java/C/C++/Scala), confined to the root and bounded like search.
+
 ---
 
 ## Cross-platform (macOS / Windows / Linux)

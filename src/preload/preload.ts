@@ -30,6 +30,8 @@ import type {
   LoomEvent,
   SearchQuery,
   SearchResults,
+  DefinitionQuery,
+  DefinitionResult,
   SessionCounters,
   Theme,
   WindowBounds,
@@ -55,6 +57,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.GET_TREE,
   IPC.READ_DIR,
   IPC.SEARCH,
+  IPC.FIND_DEFINITION,
   IPC.SET_THEME,
   IPC.SET_KEYBINDINGS,
   IPC.SET_LIVE_STATE,
@@ -147,6 +150,14 @@ export function createBridge(): LoomBridge {
       // The query is forwarded as-is; the main-process sandbox is the authority
       // on containment (Law 3). The renderer cannot widen scope.
       return ipcRenderer.invoke(assertInvoke(IPC.SEARCH), q);
+    },
+    findDefinition(req: DefinitionQuery): Promise<DefinitionResult> {
+      // Forwarded as-is; main RE-VALIDATES the symbol (string, single
+      // identifier, length-capped, not a keyword/literal) and OWNS every
+      // returned path from its own confined walk — the renderer never supplies
+      // a definition path, and the advisory fromPath is re-confined + dropped on
+      // escape in main (Law 3). The renderer cannot widen scope.
+      return ipcRenderer.invoke(assertInvoke(IPC.FIND_DEFINITION), req);
     },
     setTheme(theme: Theme): Promise<void> {
       return ipcRenderer.invoke(assertInvoke(IPC.SET_THEME), theme);

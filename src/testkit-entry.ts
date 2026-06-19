@@ -120,10 +120,89 @@ export {
   createSearch,
   MAX_TOTAL_SCAN_BYTES,
   MAX_FILE_NAME_MATCHES,
+  MAX_FILES,
 } from './main/search.js';
 export type { Search } from './main/search.js';
 export { createSandbox } from './main/sandbox.js';
 export type { Sandbox } from './main/sandbox.js';
+
+// Heuristic, non-AST "go to definition" (Law 3 confined + bounded). The PURE
+// regex core (findDefinitionsInText) is the direct unit-test target; the
+// resolver (createDefinitionFinder) is exercised over a REAL temp dir +
+// Sandbox (finds class/function/const/interface/type/enum/python-def across
+// files, ranks locality/kind, rejects uses-as-definitions, returns empty on a
+// malformed/keyword/over-long symbol, stays inside the root). MAX_DEFS + the
+// SHARED MAX_FILES cap are re-exported so the suite pins the bounds + the
+// GTD-8 parity without re-deriving literals. Electron-free: definition*.ts
+// depend only on the sandbox + shared dispatch + the pure search-core constant.
+export {
+  findDefinitionsInText,
+  MAX_DEFS_PER_FILE,
+  MAX_DEF_SCAN_LINE_LENGTH,
+  MAX_GENERIC_OCCURRENCES,
+  KIND_STRENGTH,
+  USE_BAND_FLOOR,
+  // CI-1: the single source of truth for "is this kind a real declaration?"
+  // (vs a pure use). The resolver ranks declarations above uses regardless of
+  // locality, and the dispatch mirror in definition-dispatch.ts is pinned
+  // against THIS by a lock-step test.
+  isDeclarationKind,
+} from './main/definition-core.js';
+export type { DefMatch } from './main/definition-core.js';
+export {
+  createDefinitionFinder,
+  MAX_DEFS,
+  MAX_SYMBOL_LENGTH,
+} from './main/definition.js';
+export type { DefinitionFinder } from './main/definition.js';
+
+// RENDERER-side PURE go-to-definition helpers (DOM-free, so they unit-test as
+// plain strings under node --test with NO jsdom). wordAt extracts the
+// identifier under a (lineText, 0-based column) caret using the SAME identifier
+// class + keyword/literal rejection as the highlighter; highlightedMatchHtml /
+// hitText are the single shared Law-1 escaped-slice match highlighter (GTD-6)
+// used by BOTH SearchView and the DefinitionPicker. KEYWORDS/LITERALS are
+// re-exported so the suite can prove wordAt and the highlighter share ONE
+// keyword source. Electron-free: highlight.ts / symbol-at.ts / match-highlight.ts
+// depend on nothing but each other.
+// wordAt extracts the identifier under a caret; lineIdentifiers (A11Y-GTD-01)
+// lists every resolvable identifier on a line (the keyboard symbol chooser
+// source) — both DOM-free string fns, jsdom-free unit tests.
+export { wordAt, lineIdentifiers } from './renderer/lib/symbol-at.js';
+export type { WordSpan } from './renderer/lib/symbol-at.js';
+
+// The PURE caret -> (line, 0-based column) reconstruction extracted from
+// CodeView's inline glue (TA-3): the TreeWalker offset sum + the GTD-3
+// lnEl.contains guard that rejects a caret on a collapsed-header decoration.
+// resolveSelectionSymbol (TA-R2) lifts CodeView's selection -> live-caret ->
+// lastCaret PRECEDENCE (incl. the GTD-CORR-2 RTL-anchor handling) so the
+// jsdom-reachable branches of the F12 symbol-resolution chain are unit-testable.
+// Re-exported so the jsdom tier can prove the column math + the contains guard +
+// the precedence without Electron (the production glue delegates to THESE fns).
+export { columnAt, resolveSelectionSymbol } from './renderer/lib/caret-column.js';
+export type { CaretColumn, ResolvedSymbol, SelectionLike } from './renderer/lib/caret-column.js';
+
+// PURE go-to-definition dispatch + history decisions (TA-5 / GTD-CORR-3 / CI-2 /
+// TA-R1): the DECLARATION-AWARE jump-vs-pick fork (CI-2 — counts real
+// declarations, not raw candidates), the GTD-9 same-location / history-push
+// predicates, the declaration/use partition mirror (pinned lock-step with
+// definition-core.ts isDeclarationKind), and the pure jump-history stack
+// push/cap/pop helpers (TA-R1) — extracted out of App's useCallback so they are
+// unit-testable under node --test without Electron.
+export {
+  classifyDefinitionResult,
+  shouldPushHistory,
+  isSameLocation,
+  isDeclarationCandidate,
+  pushJumpHistory,
+  popJumpHistory,
+} from './renderer/lib/definition-dispatch.js';
+export type { DefinitionAction, JumpLocation } from './renderer/lib/definition-dispatch.js';
+export {
+  highlightedMatchHtml,
+  hitText,
+} from './renderer/lib/match-highlight.js';
+export { KEYWORDS, LITERALS } from './renderer/lib/highlight.js';
 
 // The recursive file watcher (FR-14, FR-39). Electron-free: node:fs/node:path
 // + bus + chokidar fallback. Re-exported so the acceptance suite can prove the

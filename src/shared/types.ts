@@ -371,6 +371,76 @@ export interface FileNameMatch {
   matchEnd: number;
 }
 
+/* ------------------------------------------------------------------ */
+/* 5c. Go to Definition (ADDITIVE) — a self-contained, non-AST symbol  */
+/*     resolver confined to the sandbox root (Law 3) and bounded       */
+/*     (Law 1 / DoS), mirroring the search request/response shapes. The */
+/*     renderer sends ONLY a bounded symbol string (+ advisory          */
+/*     fromPath for ranking); MAIN owns every returned path.            */
+/* ------------------------------------------------------------------ */
+
+/** What kind of declaration a definition candidate represents. Drives the
+ *  resolver's ranking (a real declaration must outrank a mere USE): the
+ *  low-rank 'import' / 'parameter' / 'property' / 'other' kinds tag pure USES
+ *  (an import binding, object-literal-property shorthand, a parameter, a bare
+ *  occurrence) so a genuine top-level declaration ANYWHERE always wins the
+ *  single-jump decision over a use, EVEN a same-file use (GTD-5 / CI-1). */
+export type DefinitionKind =
+  | 'class'
+  | 'interface'
+  | 'type'
+  | 'enum'
+  | 'function'
+  | 'method'
+  | 'variable'
+  | 'destructured'
+  | 're-export'
+  | 'generic'
+  // --- USE kinds (NOT real declarations; sunk below every declaration; CI-1) ---
+  | 'import'
+  | 'property'
+  | 'parameter'
+  | 'other';
+
+/** A go-to-definition request from the renderer. `symbol` is the identifier
+ *  under the caret/selection (re-validated + length-capped in MAIN). `fromPath`
+ *  is an OPTIONAL advisory root-relative POSIX path used ONLY for ranking; main
+ *  re-confines it via sandbox.resolveInRoot and DROPS it on any escape — it is
+ *  NEVER a read target and is never trusted as a definition path. */
+export interface DefinitionQuery {
+  /** The identifier to resolve (a single ASCII+$/_ word). */
+  symbol: string;
+  /** Advisory: the file the caret is in, for locality ranking only. */
+  fromPath?: string;
+}
+
+/** One resolved definition site. `path` is OWNED by main (from its own confined
+ *  walk — the renderer never supplies it); `line`/`col` are 1-based (aligning
+ *  with the Viewer's rendered rows + the targetLine reveal primitive);
+ *  `lineText` is RAW, attacker-influenced file content (MUST be escaped at the
+ *  render sink, like SearchMatch.lineText — never raw innerHTML). */
+export interface DefinitionCandidate {
+  /** Root-relative POSIX path (same shape as FileNode.path; owned by main). */
+  path: string;
+  /** 1-based line number (aligns with the Viewer's rendered rows). */
+  line: number;
+  /** 1-based column of the symbol on that line. */
+  col: number;
+  /** The line's (truncated) raw text. MUST be escaped before rendering. */
+  lineText: string;
+  /** The declaration kind (drives ranking + a picker chip). */
+  kind: DefinitionKind;
+}
+
+/** The full result set for a go-to-definition run. 0 candidates -> the renderer
+ *  shows a status toast; exactly 1 -> auto-jump; >1 -> a chooser picker. */
+export interface DefinitionResult {
+  /** Resolved definition sites, ranked (strongest/closest first). */
+  candidates: DefinitionCandidate[];
+  /** True when a scan/match bound was hit (results may be incomplete). */
+  truncated: boolean;
+}
+
 /** The full result set for a search run. */
 export interface SearchResults {
   /** Files with at least one CONTENT match, in tree order. */
@@ -674,6 +744,11 @@ export const IPC = {
   /** invoke(q: SearchQuery): SearchResults — project-wide content search,
    *  confined to the sandbox root + bounded (Law 1/3). */
   SEARCH: 'loom:search',
+  /** invoke(req: DefinitionQuery): DefinitionResult — heuristic, non-AST
+   *  "go to definition" over the sandbox root. main RE-VALIDATES the symbol and
+   *  OWNS every returned path (the renderer never supplies one); confined +
+   *  bounded (Law 1/3). */
+  FIND_DEFINITION: 'loom:definition:find',
   /** invoke(theme: Theme): void — persist the chosen theme. */
   SET_THEME: 'loom:theme:set',
   /** invoke(map: Record<string,string>): void — persist user keyboard
@@ -851,6 +926,11 @@ export interface LoomBridge {
   readDir(path: string): Promise<FileNode[]>;
   /** Project-wide content search over the sandbox root (confined + bounded). */
   search(q: SearchQuery): Promise<SearchResults>;
+  /** Heuristic "go to definition" over the sandbox root (confined + bounded).
+   *  The renderer sends ONLY a bounded symbol (+ advisory fromPath); main
+   *  RE-VALIDATES it and returns candidate {path,line,col,...} from its own
+   *  confined walk — the renderer never supplies a definition path. */
+  findDefinition(req: DefinitionQuery): Promise<DefinitionResult>;
   setTheme(theme: Theme): Promise<void>;
   /** Persist the user keyboard-shortcut OVERRIDES (sparse id -> combo map,
    *  only entries differing from defaults). Mirrors setTheme. */

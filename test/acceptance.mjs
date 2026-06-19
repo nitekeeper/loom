@@ -1926,8 +1926,9 @@ test('FR-54 resolveBindings: user overrides win over defaults; others keep defau
   // the side-by-side compare reading-pane toggle, the three newly-editable
   // shell commands — toggleChanges, openSettings, and toggleMaximizeTerminal —
   // the four multi-terminal commands: focusTerminal1/2/3 and cycleTerminalFocus —
-  // plus the two multi-window commands: newWindow and openFolderWindow).
-  assert.equal(Object.keys(resolved).length, 21, 'resolved map covers all 21 commands');
+  // plus the two multi-window commands: newWindow and openFolderWindow —
+  // plus the go-to-definition pair: goToDefinition and goBack).
+  assert.equal(Object.keys(resolved).length, 23, 'resolved map covers all 23 commands');
 });
 
 test('FR-54 resolveBindings: missing/corrupt overrides fall back to defaults', async () => {
@@ -2308,7 +2309,7 @@ test('SEARCH command: the openSearch command exists with its default binding (D)
   assert.equal(spec.label, 'Search file contents', 'label matches the spec');
   assert.equal(spec.defaultBinding, 'Ctrl+Shift+F', 'default binding is Ctrl/Cmd+Shift+F');
   assert.equal(DEFAULT_BINDINGS.openSearch, 'Ctrl+Shift+F', 'resolved default carries the combo');
-  assert.equal(COMMANDS.length, 21, 'there are now 21 customizable commands');
+  assert.equal(COMMANDS.length, 23, 'there are now 23 customizable commands');
 });
 
 test('MULTI-WINDOW commands: newWindow + openFolderWindow are registered, non-colliding, un-reserved', async () => {

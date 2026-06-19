@@ -25,10 +25,18 @@ import type {
   PointerEvent as ReactPointerEvent,
   KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
-import type { FileContent, Theme } from '../../shared/types.js';
+import type { FileContent, Theme, DefinitionCandidate } from '../../shared/types.js';
 import { createStore } from '../lib/client.js';
 import type { LoomStore, ViewModel } from '../lib/client.js';
 import { decideEscapeClose } from '../lib/closefile.js';
+import {
+  classifyDefinitionResult,
+  isSameLocation,
+  shouldPushHistory,
+  pushJumpHistory,
+  popJumpHistory,
+} from '../lib/definition-dispatch.js';
+import type { JumpLocation } from '../lib/definition-dispatch.js';
 import { eventToCombo, isReserved, resolveBindings } from '../lib/keybindings.js';
 import type { CommandId } from '../lib/keybindings.js';
 import { TitleBar } from './TitleBar.js';
@@ -36,8 +44,11 @@ import { WindowResizeHandles } from './WindowResizeHandles.js';
 import { StatusBar } from './StatusBar.js';
 import { Explorer } from './Explorer.js';
 import { SearchView } from './SearchView.js';
+import { DefinitionPicker } from './DefinitionPicker.js';
+import { SymbolChooser } from './SymbolChooser.js';
 import { ChangesView } from './ChangesView.js';
 import { Viewer } from './Viewer.js';
+import type { SymbolChoice } from './Viewer.js';
 import { Chat } from './Chat.js';
 import { ShortcutsPanel } from './ShortcutsPanel.js';
 import { SettingsPanel } from './SettingsPanel.js';
@@ -150,6 +161,10 @@ const TERMINAL_EDITABLE_EXEMPT: ReadonlySet<CommandId> = new Set<CommandId>([
   'focusTerminal3',
   'cycleTerminalFocus',
 ]);
+
+/** Cap on the per-window go-to-definition jump-history stack (drop oldest).
+ *  Window/session-scoped, no persistence — like browser back. */
+const MAX_JUMP_HISTORY = 50;
 
 /* ============================================================
  * Chat-pane resize (FR-54 / WCAG 2.4.7, 2.1.1)
@@ -1913,6 +1928,18 @@ export function App(): JSX.Element {
     setCopyCommand({ nonce: copyNonceRef.current });
   }, []);
 
+  // Go-to-definition signal lifted to the active CodeView (goToDefinition / F12
+  // shortcut). An incrementing nonce so each press fires exactly once; the
+  // active CodeView derives the symbol under the caret/selection on a fresh
+  // nonce. Threaded ONLY into the active store/left/single Viewer (GTD-1) so
+  // exactly one CodeView consumes F12 — no multi-pane selection race.
+  const [gotoCommand, setGotoCommand] = useState<{ nonce: number } | null>(null);
+  const gotoNonceRef = useRef(0);
+  const fireGotoCommand = useCallback((): void => {
+    gotoNonceRef.current += 1;
+    setGotoCommand({ nonce: gotoNonceRef.current });
+  }, []);
+
   /* ============================================================
    * Project-wide content search (Explorer SEARCH mode)
    * ------------------------------------------------------------
@@ -1952,42 +1979,56 @@ export function App(): JSX.Element {
   const searchOpenerRef = useRef<HTMLElement | null>(null);
   const explorerSearchBtnRef = useRef<HTMLButtonElement>(null);
 
-  // Open a search match in the Viewer at its line: select the file, then raise
-  // the reveal-line signal. The Viewer scrolls the line into view + flashes it
-  // (and CodeView unfolds any collapsed region containing it).
-  const openSearchMatch = useCallback(
-    (path: string, line: number): void => {
+  // The shared "select a file + reveal a 1-based line" primitive (extracted from
+  // openSearchMatch so openSearchMatch, jumpToDefinition, and goBack all reuse
+  // ONE proven reveal path). It selects the file, raises the reveal-line signal
+  // (Viewer scrolls the line into view + flashes it; CodeView unfolds any region
+  // containing it), and announces `message`.
+  //
+  // GTD-4 EXTRACTION DISCIPLINE: revealAt MUST keep setDiffMode(false) (a reveal
+  // over an open diff surfaces the line in a real Viewer, exactly as the search
+  // path does) AND setActiveSearchFile(null) (clearing the search "you are here"
+  // marker on ANY navigation is correct). It targets the LEFT/store Viewer — the
+  // only pane with a targetLine pipeline (GTD-1).
+  const revealAt = useCallback(
+    (path: string, line: number, message: string): void => {
       store.selectFile(path);
-      // A search-reveal targets the store-selected (LEFT/single) Viewer, which is
-      // HIDDEN behind ChangesView while diffMode is on (the diff occupies the same
-      // center track; in a diff+file split the right pane gets targetLine=null).
-      // So the reveal flash would land nowhere and the file would change silently
-      // behind the diff. Drop diffMode so the revealed line surfaces in a real
-      // Viewer — exactly the precedent the Explorer onSelect already sets when it
-      // opens a file while diffMode is on (regression-finding). setDiffMode(false)
-      // directly (NOT closeChanges) so focus/announcement are owned by the reveal.
-      //
-      // DIFF+FILE NOTE (correctness-finding): unlike the Explorer onSelect — which
-      // routes a pick to the RIGHT (file) pane via effectiveActivePane while a
-      // diff+file split is rendered — a search-reveal here DELIBERATELY drops
-      // diffMode and surfaces the line in the LEFT/store Viewer instead. The right
-      // pane has no targetLine reveal pipeline (it is content-only, targetLine=null
-      // by construction), so routing a LINE reveal into it would require a whole
-      // new right-pane reveal mechanism — a speculative extra beyond the diff+file
-      // capability (§7). Collapsing to a two-doc reading split (revealed file LEFT,
-      // prior selectedRight RIGHT) surfaces the line in a real Viewer and never
-      // strands focus, so it is the correct minimal behavior; the diff is restored
-      // with one Ctrl/Cmd+Shift+G when the user wants it back.
+      // A reveal targets the store-selected (LEFT/single) Viewer, which is HIDDEN
+      // behind ChangesView while diffMode is on (the diff occupies the same center
+      // track; in a diff+file split the right pane gets targetLine=null). Drop
+      // diffMode so the revealed line surfaces in a real Viewer — the same
+      // precedent the Explorer onSelect sets when opening a file while diffMode is
+      // on. setDiffMode(false) directly (NOT closeChanges) so the announcement is
+      // owned by the reveal.
       setDiffMode(false);
-      const name = path.split('/').filter(Boolean).pop() ?? path;
-      setStatusMessage(`Opened ${name} at line ${line}`);
+      setStatusMessage(message);
       targetLineNonceRef.current += 1;
       setTargetLine({ path, line, nonce: targetLineNonceRef.current });
-      // A line-level open is NOT a whole-file open — clear the file-row marker so
-      // the active cue lands on the content row, not the file-NAME row (UX-NAME-04).
+      // A line-level reveal is NOT a whole-file open — clear the file-row marker
+      // so the active cue lands on the content row (UX-NAME-04).
       setActiveSearchFile(null);
     },
     [store],
+  );
+
+  // Open a search match in the Viewer at its line: delegates to the shared
+  // revealAt primitive with the search-style announcement.
+  //
+  // DIFF+FILE NOTE: unlike the Explorer onSelect — which routes a pick to the
+  // RIGHT (file) pane via effectiveActivePane while a diff+file split is rendered
+  // — a reveal here DELIBERATELY drops diffMode and surfaces the line in the
+  // LEFT/store Viewer. The right pane has no targetLine reveal pipeline (it is
+  // content-only, targetLine=null by construction), so routing a LINE reveal into
+  // it would require a whole new right-pane reveal mechanism — out of scope (§7,
+  // GTD-1). Collapsing to a two-doc reading split surfaces the line in a real
+  // Viewer and never strands focus; the diff is restored with one
+  // Ctrl/Cmd+Shift+G.
+  const openSearchMatch = useCallback(
+    (path: string, line: number): void => {
+      const name = path.split('/').filter(Boolean).pop() ?? path;
+      revealAt(path, line, `Opened ${name} at line ${line}`);
+    },
+    [revealAt],
   );
 
   // Open a WHOLE file from a file-NAME search match: select it with NO target
@@ -2016,6 +2057,210 @@ export function App(): JSX.Element {
     },
     [store],
   );
+
+  /* ============================================================
+   * Go to Definition (F12) + Go Back (Alt+ArrowLeft)
+   * ------------------------------------------------------------
+   * F12 in the active Viewer derives the symbol under the caret/selection
+   * (in the CodeView glue), calls window.loom.findDefinition, then dispatches
+   * DECLARATION-AWARE (CI-2 — not a raw candidate count):
+   *   exactly 1 real declaration -> auto-jump via the shared revealAt primitive
+   *     (even when low-rank uses also exist — they never outrank it, CI-1);
+   *   2+ declarations (or 0 declarations + multiple uses) -> a small
+   *     DefinitionPicker chooser overlay;
+   *   0 candidates / a lone use -> a status toast (no navigation, no push).
+   * A per-window jump-history stack (a useRef so the document keydown
+   * dispatcher closes over it without re-subscribing or stale-closure
+   * bugs) backs Go Back.
+   * ============================================================ */
+  // Per-window ephemeral jump-history stack (window/session-scoped, no
+  // persistence — like browser back). Each window has its own App instance, so
+  // each gets its own stack. A useRef (NOT useState) so the keydown dispatcher
+  // closes over the LIVE array (mirrors targetLineNonceRef/foldNonceRef).
+  const jumpHistoryRef = useRef<JumpLocation[]>([]);
+  // A staleness nonce so a slow findDefinition result whose user has since moved
+  // on is ignored (same discipline as the search debounce).
+  const findDefNonceRef = useRef(0);
+  // Multi-candidate chooser state (>1 definitions). null = no picker shown.
+  const [defPicker, setDefPicker] = useState<{
+    symbol: string;
+    candidates: DefinitionCandidate[];
+    truncated: boolean;
+  } | null>(null);
+  // A11Y-GTD-01: keyboard SYMBOL chooser state — shown when F12 fires in the
+  // pure-keyboard path on a top line with MORE THAN ONE identifier, so a
+  // keyboard-only user can pick which symbol (pointer parity). null = none.
+  const [symbolChooser, setSymbolChooser] = useState<{
+    line: number;
+    choices: SymbolChoice[];
+    fromPath: string;
+  } | null>(null);
+
+  // GTD-A11Y-5 (SC 4.1.3): the polite live region announces only when its text
+  // node CHANGES, so setting the SAME string twice (F12 twice on an
+  // unresolvable symbol, Alt+ArrowLeft twice on an empty history, F12 twice on a
+  // symbol's own declaration) would stay silent on the repeat. The
+  // go-to-definition flow is especially prone to identical repeat outcomes, so
+  // its status writes go through this helper: it toggles a trailing zero-width
+  // space (invisible, but a DOM text mutation) whenever the new message equals
+  // the current one, forcing the polite region to re-fire. App-wide messages are
+  // left untouched (out of scope); only the GTD outcomes opt in.
+  const setStatusReannounce = useCallback((text: string): void => {
+    setStatusMessage((prev) => {
+      const stripped = prev.replace(/​+$/, '');
+      return stripped === text ? text + '​' : text;
+    });
+  }, []);
+
+  // The 1-based line the user is currently READING in the active LEFT/store
+  // CodeView: the topmost VISIBLE .ln-wrap[data-line] (a getBoundingClientRect
+  // scan — the SAME source the F12 glue uses, so Go-Back returns to the reading
+  // VIEWPORT, not a stale prior reveal). Falls back to the prior targetLine.line
+  // then 1. GTD-4: deliberately browser-back-COARSE but tracks where the user
+  // reads. Scans the FIRST visible .code (the left/store Viewer; GTD-1).
+  const currentReadingLine = useCallback((): number => {
+    const codes = document.querySelectorAll<HTMLElement>('.viewer .code');
+    for (const code of Array.from(codes)) {
+      const codeRect = code.getBoundingClientRect();
+      if (codeRect.width === 0 && codeRect.height === 0) continue; // not rendered
+      const wraps = code.querySelectorAll<HTMLElement>('.ln-wrap[data-line]');
+      for (const wrap of Array.from(wraps)) {
+        const r = wrap.getBoundingClientRect();
+        if (r.bottom <= codeRect.top) continue; // scrolled off the top
+        const dataLine = wrap.getAttribute('data-line');
+        const rowIdx = dataLine === null ? NaN : Number.parseInt(dataLine, 10);
+        if (Number.isFinite(rowIdx)) return rowIdx + 1; // 0-based -> 1-based
+      }
+      return targetLine?.line ?? 1; // a visible .code with no visible row
+    }
+    return targetLine?.line ?? 1;
+  }, [targetLine]);
+
+  // Jump to a chosen definition candidate. GTD-9: if the top candidate is the
+  // SAME location as where the user already is (same path + line), it is an
+  // in-place no-op — show "Already at definition", do NOT flash, do NOT push a
+  // history entry (so Go-Back is never polluted). Otherwise push the current
+  // reading location, then reveal the candidate.
+  //
+  // GTD-CORR-1: the same-location check + the history push compare against the
+  // PRECISE trigger line (the caret/click line the CodeView reported) when one
+  // is available, falling back to the coarse viewport-top reading line only when
+  // a caller has no precise line. The history push always records the coarse
+  // reading line (where the eye is), per the GTD-4 "return to the reading
+  // viewport" contract. The pure decision (same-location predicate) lives in
+  // definition-dispatch.ts so it is unit-testable (TA-5).
+  const jumpToDefinition = useCallback(
+    (c: DefinitionCandidate, triggerLine?: number): void => {
+      const fromPath = vm?.selected ?? null;
+      const readingLine = currentReadingLine();
+      // The line used for the GTD-9 equality test: the precise trigger line if
+      // the caller supplied one, else the coarse reading line.
+      const compareLine = triggerLine ?? readingLine;
+      const name = c.path.split('/').filter(Boolean).pop() ?? c.path;
+      // GTD-9: already at the definition (e.g. F12 on its own declaration).
+      if (isSameLocation({ path: fromPath, line: compareLine }, c)) {
+        setStatusReannounce('Already at definition'); // GTD-A11Y-5: re-fire on repeat
+        return;
+      }
+      // Push the current reading location (capped, drop oldest) for Go Back —
+      // recorded at the coarse reading viewport (GTD-4), gated by the GTD-9
+      // predicate so a self-jump never pollutes the stack. The push/cap/drop-
+      // oldest invariant lives in the pure pushJumpHistory helper (TA-R1) so it
+      // is unit-testable without React.
+      if (shouldPushHistory({ path: fromPath, line: compareLine }, c) && fromPath) {
+        pushJumpHistory(
+          jumpHistoryRef.current,
+          { path: fromPath, line: readingLine },
+          MAX_JUMP_HISTORY,
+        );
+      }
+      revealAt(c.path, c.line, `Go to ${name}:${c.line}`);
+    },
+    [vm?.selected, currentReadingLine, revealAt, setStatusReannounce],
+  );
+
+  // Resolve a symbol to its definition(s) and dispatch by count. Called from the
+  // CodeView (F12 nonce effect AND Ctrl/Cmd-click) with the PRECISE trigger line
+  // (GTD-CORR-1). A staleness nonce guards a slow result against the user moving
+  // on. The count/use-only dispatch decision is the pure classifyDefinitionResult
+  // (TA-5 / GTD-CORR-3).
+  const onGoToDefinition = useCallback(
+    (symbol: string, fromPath: string, fromLine: number): void => {
+      findDefNonceRef.current += 1;
+      const myNonce = findDefNonceRef.current;
+      void window.loom
+        .findDefinition({ symbol, fromPath })
+        .then((res) => {
+          if (myNonce !== findDefNonceRef.current) return; // stale — user moved on
+          const candidates = res?.candidates ?? [];
+          const decision = classifyDefinitionResult(candidates);
+          if (decision.action === 'jump') {
+            jumpToDefinition(decision.candidate, fromLine);
+            return;
+          }
+          if (decision.action === 'pick') {
+            // 2+ real declarations (or 0 declarations + multiple uses) -> show
+            // the chooser overlay (declaration-aware dispatch, CI-2).
+            setDefPicker({ symbol, candidates, truncated: res?.truncated === true });
+            return;
+          }
+          // 'none': 0 candidates OR a lone pure-use match (GTD-CORR-3).
+          setStatusReannounce(`No definition found for '${symbol}'.`);
+        })
+        .catch(() => {
+          if (myNonce !== findDefNonceRef.current) return;
+          setStatusReannounce(`No definition found for '${symbol}'.`);
+        });
+    },
+    [jumpToDefinition, setStatusReannounce],
+  );
+
+  // A11Y-GTD-01: F12 fired in the pure-keyboard path on a top line with MORE
+  // THAN ONE identifier. Open the keyboard symbol chooser so the user can pick
+  // which symbol; the pick then runs the normal go-to-definition flow. A single
+  // choice never reaches here (CodeView resolves it directly); guard anyway.
+  const onChooseSymbol = useCallback(
+    (choices: SymbolChoice[], fromPath: string, fromLine: number): void => {
+      if (choices.length === 0) return; // nothing to choose -> clean no-op
+      if (choices.length === 1) {
+        onGoToDefinition(choices[0]!.symbol, fromPath, fromLine);
+        return;
+      }
+      setSymbolChooser({ line: fromLine, choices, fromPath });
+    },
+    [onGoToDefinition],
+  );
+
+  // Go Back: pop the prior reading location off the jump-history stack and
+  // reveal it. Empty stack -> a polite "No previous location" no-op.
+  const goBack = useCallback((): void => {
+    // TA-R1: the pop lives in the pure popJumpHistory helper so the LIFO + empty
+    // -> null contract is unit-testable without React.
+    const entry = popJumpHistory(jumpHistoryRef.current);
+    if (!entry) {
+      setStatusReannounce('No previous location'); // GTD-A11Y-5: re-fire on repeat
+      return;
+    }
+    const name = entry.path.split('/').filter(Boolean).pop() ?? entry.path;
+    revealAt(entry.path, entry.line, `Back to ${name}:${entry.line}`);
+  }, [revealAt, setStatusReannounce]);
+
+  // A11Y-GTD-01 (SC 2.4.3): restore focus to the active source view after the
+  // DefinitionPicker closes — for BOTH the Escape/scrim path (no jump) AND the
+  // primary Enter/Space/click pick path (which jumps). When the picker's focused
+  // role=listbox unmounts, the browser would otherwise drop focus to
+  // document.body, breaking the codebase's "never strand focus on document.body"
+  // invariant exactly where it matters most (after a keyboard user confirms a
+  // jump). A single shared helper keeps the two paths from drifting. Deferred to
+  // rAF because a pick triggers revealAt -> store.selectFile, which loads the
+  // destination content ASYNC (bumping fileRev); a synchronous focus() could land
+  // on the stale/old .code, so we wait one frame for the destination .code to
+  // re-render (mirrors closeSearch / closeShortcuts).
+  const restoreViewerFocus = useCallback((): void => {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>('.viewer .code')?.focus();
+    });
+  }, []);
 
   // Open + focus the Explorer search view. Ensures the Explorer pane is shown
   // (un-collapse it if needed) so the search input is actually visible. Records
@@ -2441,9 +2686,19 @@ export function App(): JSX.Element {
    * ============================================================ */
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      // Suspend entirely while a modal panel (Shortcuts or Settings) owns the
-      // keyboard — each handles its own keys (focus trap + Escape-to-close).
-      if (shortcutsOpen || settingsOpen) return;
+      // Suspend entirely while a modal panel (Shortcuts, Settings, or the
+      // go-to-definition picker) owns the keyboard — each handles its own keys
+      // (focus trap + roving nav + Escape-to-close), so the global dispatcher
+      // must not ALSO act on the same press (e.g. Escape closing a file behind
+      // an open picker).
+      if (
+        shortcutsOpen ||
+        settingsOpen ||
+        defPicker !== null ||
+        symbolChooser !== null
+      ) {
+        return;
+      }
 
       const combo = eventToCombo(e);
 
@@ -2608,6 +2863,30 @@ export function App(): JSX.Element {
           // a new isolated Loom process vs. decline (a live Loom already serves it).
           void window.loom?.windowControls?.openFolder();
           break;
+        case 'goToDefinition':
+          // CI-R1: when a diff is open, the LEFT/store/single Viewer that
+          // consumes the F12 signal is replaced by ChangesView (and the right
+          // file pane in a diff+file split is wired gotoCommand={null} per the
+          // endorsed GTD-1 right-pane deferral), so NO CodeView consumes F12.
+          // Rather than a SILENT no-op, announce why (so a reader pressing F12
+          // over a diff gets feedback instead of nothing). The reveal pipeline
+          // (revealAt -> setDiffMode(false)) only targets the left/store Viewer,
+          // hence go-to-definition is unavailable while a diff is on for v1.
+          if (diffMode) {
+            setStatusReannounce(
+              'Go to definition is unavailable while a diff is open',
+            );
+            break;
+          }
+          // Raise the F12 signal; the active CodeView derives the symbol under
+          // the caret/selection and calls onGoToDefinition. A no-op when no
+          // CodeView is the active consumer (non-source view / no caret).
+          fireGotoCommand();
+          break;
+        case 'goBack':
+          // Pop the prior reading location off the jump-history stack.
+          goBack();
+          break;
         default:
           break;
       }
@@ -2618,6 +2897,8 @@ export function App(): JSX.Element {
   }, [
     shortcutsOpen,
     settingsOpen,
+    defPicker,
+    symbolChooser,
     vm?.keybindings,
     vm?.theme,
     store,
@@ -2638,6 +2919,9 @@ export function App(): JSX.Element {
     toggleMaximizeTerminal,
     focusTerminalAt,
     cycleTerminalFocus,
+    fireGotoCommand,
+    goBack,
+    setStatusReannounce,
   ]);
 
   if (vm === null) {
@@ -2979,6 +3263,15 @@ export function App(): JSX.Element {
                 onClose={closeSplit}
                 foldCommand={liveActivePane === 'right' ? foldCommand : null}
                 copyCommand={liveActivePane === 'right' ? copyCommand : null}
+                // GTD-1 / CI-R1: F12 is gated to the LEFT/store Viewer only, so
+                // the right pane never consumes it (no multi-pane selection race)
+                // and a Ctrl/Cmd-click here is inert. Reading source in the right
+                // file pane while a diff is open is the endorsed v1 right-pane
+                // deferral; the F12 dispatch announces "unavailable while a diff
+                // is open" instead of a silent no-op. No targetLine pipeline here.
+                gotoCommand={null}
+                onGoToDefinition={null}
+                onChooseSymbol={null}
                 targetLine={null}
                 mdWidth={mdWidth}
                 onToggleMdWidth={toggleMdWidth}
@@ -3008,6 +3301,14 @@ export function App(): JSX.Element {
               onClose={closeFileFromButton}
               foldCommand={liveActivePane === 'left' ? foldCommand : null}
               copyCommand={liveActivePane === 'left' ? copyCommand : null}
+              // GTD-1: F12 (gotoCommand) is consumed by the LEFT pane only when it
+              // is the active pane, so exactly one CodeView handles the keystroke.
+              // onGoToDefinition is always wired on the left/store pane (Ctrl/Cmd-
+              // click is naturally pane-scoped) since the reveal always routes
+              // through the left/store targetLine pipeline.
+              gotoCommand={liveActivePane === 'left' ? gotoCommand : null}
+              onGoToDefinition={onGoToDefinition}
+              onChooseSymbol={onChooseSymbol}
               targetLine={targetLine}
               mdWidth={mdWidth}
               onToggleMdWidth={toggleMdWidth}
@@ -3031,6 +3332,11 @@ export function App(): JSX.Element {
               onClose={closeSplit}
               foldCommand={liveActivePane === 'right' ? foldCommand : null}
               copyCommand={liveActivePane === 'right' ? copyCommand : null}
+              // GTD-1: F12 is gated to the LEFT/store Viewer only; the right pane
+              // has no targetLine reveal pipeline (targetLine=null by construction).
+              gotoCommand={null}
+              onGoToDefinition={null}
+              onChooseSymbol={null}
               targetLine={null}
               mdWidth={mdWidth}
               onToggleMdWidth={toggleMdWidth}
@@ -3047,6 +3353,10 @@ export function App(): JSX.Element {
             onClose={closeFileFromButton}
             foldCommand={foldCommand}
             copyCommand={copyCommand}
+            // GTD-1: the single pane is always the active F12 consumer.
+            gotoCommand={gotoCommand}
+            onGoToDefinition={onGoToDefinition}
+            onChooseSymbol={onChooseSymbol}
             targetLine={targetLine}
             mdWidth={mdWidth}
             onToggleMdWidth={toggleMdWidth}
@@ -3208,6 +3518,57 @@ export function App(): JSX.Element {
           bindings={vm.keybindings}
           onPersist={(resolved) => void store.setKeybindings(resolved)}
           onClose={closeShortcuts}
+        />
+      )}
+      {/* Go-to-definition multi-candidate chooser (shown ONLY when >1 candidates;
+          exactly 1 auto-jumps, 0 toasts). Enter/Space jumps + closes; Escape
+          dismisses with NO jump and NO history mutation and restores Viewer
+          focus. Reuses SearchView's search-hit/search-match affordances via the
+          shared match highlighter (GTD-6). */}
+      {defPicker && (
+        <DefinitionPicker
+          symbol={defPicker.symbol}
+          candidates={defPicker.candidates}
+          truncated={defPicker.truncated}
+          onPick={(c) => {
+            setDefPicker(null);
+            jumpToDefinition(c);
+            // A11Y-GTD-01 (SC 2.4.3): restore focus to the destination viewer so
+            // the primary keyboard path is symmetric with onClose and never
+            // strands focus on document.body. Deferred to rAF (revealAt loads the
+            // destination content async) by the shared helper.
+            restoreViewerFocus();
+          }}
+          onClose={() => {
+            setDefPicker(null);
+            // Restore focus to the active source view (SC 2.4.3) — no jump, no
+            // history mutation. Same shared helper as onPick so the two paths
+            // cannot drift (A11Y-GTD-01).
+            restoreViewerFocus();
+          }}
+        />
+      )}
+      {/* A11Y-GTD-01: keyboard symbol chooser (shown ONLY when F12 fires in the
+          pure-keyboard path on a top line with MORE THAN ONE identifier). Picking
+          a symbol runs the normal go-to-definition flow; Escape dismisses with no
+          action. Both paths restore Viewer focus (SC 2.4.3). */}
+      {symbolChooser && (
+        <SymbolChooser
+          line={symbolChooser.line}
+          choices={symbolChooser.choices}
+          onPick={(c) => {
+            const { fromPath, line } = symbolChooser;
+            setSymbolChooser(null);
+            onGoToDefinition(c.symbol, fromPath, line);
+            // The go-to flow may open the DefinitionPicker (>1 candidate) which
+            // takes its own focus; otherwise restore Viewer focus so the keyboard
+            // path is never stranded on document.body.
+            restoreViewerFocus();
+          }}
+          onClose={() => {
+            setSymbolChooser(null);
+            restoreViewerFocus();
+          }}
         />
       )}
     </div>

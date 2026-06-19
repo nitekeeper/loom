@@ -29,14 +29,20 @@ export function escapeHtml(s: string): string {
     .replace(/>/g, '&gt;');
 }
 
-const KEYWORDS: ReadonlySet<string> = new Set([
+/** Reserved words the highlighter paints as keywords. Exported so the
+ *  go-to-definition word-under-caret extractor (symbol-at.ts) shares ONE
+ *  keyword-rejection source instead of forking a second copy — a caret on a
+ *  keyword must never be offered as a resolvable symbol. */
+export const KEYWORDS: ReadonlySet<string> = new Set([
   'import', 'from', 'export', 'default', 'const', 'let', 'var', 'function',
   'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break',
   'continue', 'async', 'await', 'new', 'class', 'extends', 'try', 'catch',
   'finally', 'throw', 'type', 'interface', 'as', 'of', 'in', 'typeof',
   'instanceof', 'void', 'yield', 'this', 'super',
 ]);
-const LITERALS: ReadonlySet<string> = new Set(['true', 'false', 'null', 'undefined', 'NaN']);
+/** Boolean/nullish/NaN literals the highlighter paints as keywords. Exported
+ *  alongside KEYWORDS for the same single-source reuse (symbol-at.ts). */
+export const LITERALS: ReadonlySet<string> = new Set(['true', 'false', 'null', 'undefined', 'NaN']);
 
 /* Tokenize one line. No multi-line constructs in the sample set, so
    per-line scanning is safe and keeps the gutter aligned.

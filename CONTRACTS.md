@@ -134,6 +134,7 @@ The renderer NEVER touches `ipcRenderer` directly — only `window.loom`.
 | `GET_INITIAL_STATE` | `loom:state:get`  | invoke | `() → InitialState` |
 | `READ_FILE`         | `loom:file:read`  | invoke | `(path: string) → FileContent` |
 | `GET_TREE`          | `loom:tree:get`   | invoke | `() → FileNode` |
+| `FIND_DEFINITION`   | `loom:definition:find` | invoke | `(req: DefinitionQuery) → DefinitionResult` — heuristic, **non-AST** "go to definition" over the sandbox root. The renderer sends ONLY a bounded `symbol` string (the identifier under the caret/selection) plus an OPTIONAL advisory `fromPath` (used for ranking ONLY). main RE-VALIDATES the symbol — coerced to string, trimmed, rejected if empty / `> 128` chars / not a single `^[A-Za-z_$][A-Za-z0-9_$]*$` identifier / a keyword or literal — and OWNS every returned candidate path from its OWN confined `sandbox.walkFiles` walk: **the renderer never supplies a definition path.** `fromPath` is re-confined via `sandbox.resolveInRoot` inside a `try/catch` and DROPPED on any escape (`..`, NUL, symlink) — it never reaches a read. Bounded exactly like search (MAX_FILES, MAX_TOTAL_SCAN_BYTES, `MAX_DEFS=200` candidate cap, per-line prefix scan); a cap sets `truncated:true`. Fail-soft: a malformed/keyword/over-long/non-identifier symbol returns `{ candidates: [], truncated: false }` (Law 1/3). |
 | `SET_THEME`         | `loom:theme:set`  | invoke | `(theme: Theme) → void` |
 | `SET_LIVE_STATE`    | `loom:live:set`   | invoke | `(state: LiveState) → void` — routed to the SENDER window's per-window live-feed pump (a pause in one window never flips another's). |
 | `WINDOW_NEW`        | `loom:window:new` | invoke | `() → void` — open ANOTHER window onto the SAME folder in THIS process (shared `db`/`engine`/MCP/`watcher`; each window gets its OWN renderer pump + terminal pool). No args, no sender trust. Same-folder duplication is ALWAYS in-process — a second OS process on one folder would double-write `loom.db`. Joins the no-arg `loom:window:*` window-controls family. |
@@ -164,6 +165,7 @@ Preload bridge (`window.loom: LoomBridge`):
 getInitialState(): Promise<InitialState>
 readFile(path: string): Promise<FileContent>
 getTree(): Promise<FileNode>
+findDefinition(req: DefinitionQuery): Promise<DefinitionResult>  // heuristic go-to-definition (confined + bounded; main owns every returned path)
 setTheme(theme: Theme): Promise<void>
 setLiveState(state: LiveState): Promise<void>
 onEvent(h: (e: LoomEvent) => void): () => void       // returns unsubscribe
@@ -218,6 +220,52 @@ silent no-op), and each input write capped at `MAX_TERMINAL_INPUT_BYTES`
 spawns nor kills. Each PTY is killed on window close. The terminal is **MCP-invisible**: the
 agent-facing tool surface in §(a) is unchanged — no agent can reach, observe,
 or drive the PTY.
+
+**Go to Definition (ADDITIVE).** The `loom:definition:find` channel backs the
+Viewer's "go to definition" (jump from the symbol under the caret/selection to
+where it is defined). It is a self-contained, **non-AST** heuristic resolver — no
+language server, tree-sitter, ctags, or external indexer — that walks the
+sandbox and matches language-aware DEFINITION patterns by file extension (TS/JS
+families, Python, and a generic declaration-keyword fallback covering
+Go/Rust/Kotlin/Java/C/C++/Scala). Shapes are frozen in `src/shared/types.ts`:
+
+```ts
+DefinitionQuery     = { symbol: string; fromPath?: string }
+DefinitionCandidate = { path: string; line: number; col: number; lineText: string; kind: DefinitionKind }
+DefinitionResult    = { candidates: DefinitionCandidate[]; truncated: boolean }
+DefinitionKind =
+  | 'class' | 'interface' | 'type' | 'enum' | 'function' | 'method'
+  | 'variable' | 'destructured' | 're-export' | 'generic'
+  // USE kinds (NOT real declarations; ranked BELOW every declaration):
+  | 'import' | 'property' | 'parameter' | 'other'
+```
+
+- **`symbol`** is the identifier under the caret/selection (the renderer derives
+  it from the text caret/selection Range, NOT token spans). main RE-VALIDATES it
+  (string, trimmed, `≤ 128` chars, single `^[A-Za-z_$][A-Za-z0-9_$]*$`
+  identifier, not a keyword/literal) — the symbol arrives over IPC and is never
+  trusted.
+- **`fromPath`** is ADVISORY only — a root-relative POSIX path used solely for
+  locality ranking. main re-confines it via `sandbox.resolveInRoot` and DROPS it
+  on any escape; **it is never a read target and never a definition path.**
+- **`path`** (every candidate) is OWNED by main — produced by its own confined
+  `sandbox.walkFiles` walk. **The renderer NEVER supplies a definition path.**
+  When a candidate is opened, the navigation round-trips
+  `READ_FILE → sandbox.readFile → resolveInRoot`, which re-proves containment on
+  every read (Law 3). `line`/`col` are 1-based (aligning with the Viewer's
+  rendered rows + the existing reveal primitive).
+- **`lineText`** is RAW, attacker-influenced file content (like
+  `SearchMatch.lineText`) — escaped at the render sink, never raw innerHTML
+  (Law 1).
+- **Ranking** sinks USE kinds (`import`/`property`/`parameter`/`other`) below
+  every real declaration, so a single jump always prefers a genuine declaration
+  over a mere use. The result drives the UI: **0** candidates → status toast;
+  exactly **1** → auto-jump; **>1** → a chooser picker (reusing search-result
+  affordances). A companion "Go Back" pops a per-window jump-history stack.
+- **Bounded (Law 1 / DoS):** shares search's caps — `MAX_FILES`,
+  `MAX_TOTAL_SCAN_BYTES`, `MAX_DEFS=200`, per-line prefix scan; a cap sets
+  `truncated:true`. Non-text kinds are never scanned. This channel adds NO new
+  agent-facing surface — it is renderer↔main only.
 
 ---
 
@@ -314,6 +362,8 @@ Roles: `backend-engineer`, `agent-systems-architect`, `realtime-engineer`,
 | `src/main/sandbox.ts` | security-engineer | Law 3 boundary; tree build; file read + dispatch. |
 | `src/main/config.ts` | backend-engineer | Persisted theme in userData/loom-config.json. |
 | `src/main/ipc.ts` | backend-engineer | ipcMain handlers + live-feed/counters/live-state pump. |
+| `src/main/definition-core.ts` | backend-engineer | PURE (fs/DOM-free) `findDefinitionsInText(text, symbol, ext)` — language-aware DEFINITION regex table by ext family (TS/JS/Python/generic). |
+| `src/main/definition.ts` | backend-engineer | `createDefinitionFinder(sandbox)` — validates the symbol, walks the sandbox, ranks + caps candidates (confined + bounded; Law 1/3). |
 
 ### Preload
 | Path | Owner | Purpose |
@@ -330,6 +380,12 @@ Roles: `backend-engineer`, `agent-systems-architect`, `realtime-engineer`,
 | `src/renderer/lib/highlight.ts` | security-engineer | Read-only syntax tokenizer (port of highlight.jsx). |
 | `src/renderer/lib/client.ts` | frontend-engineer | Store over window.loom; reduces LoomEvents. |
 | `src/renderer/lib/format.ts` | frontend-engineer | Pure presentation formatters (bytes/clock/type). |
+| `src/renderer/lib/symbol-at.ts` | frontend-engineer | PURE `wordAt(lineText, columnOffset)` — expand the identifier under a caret offset (same IDENT class as highlight.ts); rejects keywords/literals/numbers. |
+| `src/renderer/lib/caret-column.ts` | frontend-engineer | PURE caret→column mapping helpers for the go-to-definition glue. |
+| `src/renderer/lib/definition-dispatch.ts` | frontend-engineer | PURE go-to-definition dispatch logic (0→toast / 1→jump / >1→picker; staleness). |
+| `src/renderer/lib/match-highlight.ts` | security-engineer | Single shared Law-1 escaped-slice match highlighter (`highlightedMatchHtml`/`hitText`) shared by SearchView + DefinitionPicker. |
+| `src/renderer/components/DefinitionPicker.tsx` | frontend-engineer | Multi-candidate go-to-definition chooser overlay (reuses search-result affordances; modal listbox a11y). |
+| `src/renderer/components/SymbolChooser.tsx` | frontend-engineer | Keyboard-only symbol chooser: when F12 fires with no caret on a multi-identifier line, pick WHICH symbol to resolve. |
 | `src/renderer/components/App.tsx` | frontend-engineer | Window shell grid; top-level UI state. |
 | `src/renderer/components/TitleBar.tsx` | frontend-engineer | Root name + lock glyph + product identity (FR-35). |
 | `src/renderer/components/StatusBar.tsx` | frontend-engineer | Live state machine, real counters, pause, theme toggle (FR-36/37). |

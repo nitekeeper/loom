@@ -1244,6 +1244,82 @@ mark.search-hit {
 }
 
 /* ============================================================
+   Go to Definition — multi-candidate chooser (DefinitionPicker)
+   ------------------------------------------------------------
+   A small modal listbox shown only when a definition resolves to >1 site.
+   Reuses the .search-results / .search-match / .search-match-line /
+   .search-match-text affordances + mark.search-hit, wrapped in the shared
+   modal-backdrop idiom (mirrors .sc-backdrop / .sc-dialog) so it themes for
+   free in dark + light and snaps under prefers-reduced-motion.
+   ============================================================ */
+.def-picker-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: color-mix(in oklab, var(--bg) 62%, transparent);
+  backdrop-filter: blur(2px);
+}
+.def-picker {
+  width: min(620px, 92%);
+  max-height: min(70%, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: sc-pop 0.16s cubic-bezier(0.2, 0.8, 0.25, 1);
+}
+.def-picker:focus { outline: none; }
+/* The listbox is the focus host (GTD-A11Y-2); the selection cue is the
+   .active row, so suppress the default focus ring on the list itself. */
+.def-picker-list:focus { outline: none; }
+.def-picker-list:focus-visible { outline: none; }
+.def-picker-head {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 14px; font-weight: 700; color: var(--text);
+}
+.def-picker-symbol {
+  font-family: var(--font-mono); font-weight: 700;
+  color: var(--accent);
+}
+.def-picker-caveat {
+  padding: 6px 16px;
+  font-size: 12px; color: var(--text-dim);
+  border-bottom: 1px solid var(--border-soft);
+}
+.def-picker-list { padding: 6px; }
+/* Each row reuses .search-match geometry; the extra kind chip + basename sit
+   inline before the marked source line. */
+.def-picker-row { padding-left: 8px; }
+.def-picker-row.active {
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+.def-picker-row.active:hover {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+}
+.def-picker-kind {
+  flex: 0 0 auto; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.03em; color: var(--text-dim);
+  background: var(--panel-3); border-radius: 8px; padding: 1px 7px;
+  user-select: none; align-self: center;
+}
+.def-picker-path {
+  flex: 0 0 auto; color: var(--text); font-weight: 600;
+  white-space: nowrap; user-select: none;
+}
+.def-picker-hint {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 11px; color: var(--text-faint); user-select: none;
+}
+
+/* ============================================================
    Viewer
    ============================================================ */
 .viewer-head {
@@ -2192,6 +2268,17 @@ mark.search-hit {
   /* Settings sections keep a visible divider; native radios already adopt
      system colors in forced-colors mode, so they need no override. */
   .set-section { border-bottom-color: CanvasText; }
+
+  /* GTD-A11Y-3: the definition picker. forced-colors flattens our color-mix
+     active-row tint and drops the inset box-shadow, so a SIGHTED High-Contrast
+     keyboard user would lose the selection cue and the dialog boundary. Pin a
+     perceivable system-color border + a system Highlight outline on the active
+     row (mirrors the .sc-dialog / .sc-binding.capturing treatment above). */
+  .def-picker { border-color: CanvasText; }
+  .def-picker-row.active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }
 
 @media (max-width: 1080px) {

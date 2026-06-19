@@ -64,7 +64,11 @@ export interface Search {
   run(query: SearchQuery): SearchResults;
 }
 
-/** Max number of files we attempt to read+scan in a single run (bound). */
+/** Max number of files we attempt to read+scan in a single run (bound).
+ *  Exported (GTD-8) so the go-to-definition resolver re-uses ONE source of
+ *  truth for the file-walk cap instead of hand-copying 2000 — a parity test
+ *  fails CI if the two ever drift. */
+export { MAX_FILES };
 const MAX_FILES = 2_000;
 /** Max total matches collected across all files before we stop early. */
 const MAX_TOTAL_MATCHES = 2_000;

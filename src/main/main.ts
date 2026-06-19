@@ -24,6 +24,7 @@ import { createEngine } from './engine.js';
 import { createMcpServer } from './mcp.js';
 import { createSandbox } from './sandbox.js';
 import { createSearch } from './search.js';
+import { createDefinitionFinder } from './definition.js';
 import { createWatcher } from './watcher.js';
 import { createConfigStore } from './config.js';
 import { createIpcWiring } from './ipc.js';
@@ -508,6 +509,10 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
   // Content search reuses the SAME sandbox for all file access (Law 3) — no
   // second, unconfined walker. It walks the confined tree + reads via readFile.
   const search = createSearch(sandbox);
+  // Go-to-definition reuses the SAME confined sandbox (Law 3) — no second,
+  // unconfined walker. It walks the confined tree + reads via readFile, exactly
+  // like search, and RE-VALIDATES the renderer-supplied symbol itself.
+  const definitionFinder = createDefinitionFinder(sandbox);
   const watcher = createWatcher(rootDir, bus);
   watcher.start();
 
@@ -522,6 +527,7 @@ async function bootServices(rootDir: string, capturing = false): Promise<Service
     config,
     bus,
     search,
+    definitionFinder,
     rootPath: rootDir,
     // The stale-agent sweep + staleAgents counter consult the LIVE MCP
     // session bindings. When the MCP server failed to start (degraded boot)

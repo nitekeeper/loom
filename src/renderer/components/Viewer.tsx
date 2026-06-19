@@ -17,10 +17,12 @@
  * may inject markup; image bytes are NEVER decoded.
  * ============================================================ */
 import { Fragment, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import type { JSX, RefObject } from 'react';
+import type { JSX, RefObject, MouseEvent as ReactMouseEvent } from 'react';
 import type { FileContent, RenderState } from '../../shared/types.js';
 import { renderMarkdown } from '../lib/markdown.js';
 import { highlightCode } from '../lib/highlight.js';
+import { wordAt, lineIdentifiers } from '../lib/symbol-at.js';
+import { columnAt, resolveSelectionSymbol } from '../lib/caret-column.js';
 import { computeFoldRanges } from '../lib/fold.js';
 import type { FoldRange } from '../lib/fold.js';
 import { serializeRenderedForCopy } from '../lib/copy-serialize.js';
@@ -208,6 +210,23 @@ function topLevelHeaders(ranges: readonly FoldRange[]): number[] {
     .map((r) => r.header);
 }
 
+/** One candidate identifier on a line, for the A11Y-GTD-01 keyboard symbol
+ *  chooser: the identifier text + its 1-based start column. */
+export interface SymbolChoice {
+  symbol: string;
+  /** 1-based start column of the identifier on its line. */
+  col: number;
+}
+
+/** The result of resolving the F12 target. Either a single resolved symbol
+ *  (sources 1-3, or the topmost-visible line with exactly one identifier), OR —
+ *  A11Y-GTD-01, the pure-keyboard path only — the topmost-visible line with
+ *  MORE THAN ONE identifier, surfaced as a chooser so a keyboard-only user can
+ *  pick which symbol. */
+type GotoResolution =
+  | { kind: 'symbol'; symbol: string; line: number; col: number }
+  | { kind: 'choices'; line: number; choices: SymbolChoice[] };
+
 /** Highlighted, read-only source view with honest line numbers + folding.
  *
  *  Law 1: highlightCode() still produces the per-line escaped HTML; folding
@@ -222,6 +241,9 @@ function CodeView({
   startFolded,
   registerFoldAll,
   foldCommand,
+  gotoCommand,
+  onGoToDefinition,
+  onChooseSymbol,
   targetLine,
 }: {
   code: string;
@@ -235,6 +257,25 @@ function CodeView({
    *  + intent. CodeView applies it via an effect (fold-all / unfold-all),
    *  no-op when the file has no foldable ranges. null = no command yet. */
   foldCommand: { nonce: number; intent: 'fold' | 'unfold' } | null;
+  /** A "go to definition" keyboard signal lifted from App (an incrementing
+   *  nonce, foldCommand idiom). On each fresh nonce this CodeView derives the
+   *  symbol under the caret/selection (selection -> live caret -> lastCaret ->
+   *  topmost-visible row) and calls onGoToDefinition. null when no CodeView is
+   *  the active F12 consumer (GTD-1: gated to the active store/left Viewer). */
+  gotoCommand: { nonce: number } | null;
+  /** Resolve a symbol to its definition. Called from the F12 nonce effect AND
+   *  the Ctrl/Cmd-click handler. fromPath is this file's path (advisory
+   *  locality hint only; main owns every returned definition path). fromLine is
+   *  the 1-based line the trigger sat on — the PRECISE caret/click line (GTD-
+   *  CORR-1) used for the GTD-9 same-location short-circuit, NOT the coarse
+   *  viewport-top. null when this CodeView is not the active consumer. */
+  onGoToDefinition: ((symbol: string, fromPath: string, fromLine: number) => void) | null;
+  /** A11Y-GTD-01: offer a SYMBOL chooser when F12 fires in the pure-keyboard
+   *  path (no caret/selection) on a top line with MORE THAN ONE identifier — so
+   *  a keyboard-only user can pick which symbol (pointer parity). App shows a
+   *  small picker; choosing one calls onGoToDefinition. null when not the active
+   *  consumer. */
+  onChooseSymbol: ((choices: SymbolChoice[], fromPath: string, fromLine: number) => void) | null;
   /** A "reveal line" signal from a search-result open: an incrementing nonce +
    *  the target file path + 1-based line. CodeView unfolds any collapsed region
    *  containing the line, scrolls it into view, and briefly flashes it. The
@@ -429,8 +470,198 @@ function CodeView({
     return () => cancelAnimationFrame(raf);
   }, [activeLine]);
 
+  // ---- Go to Definition: word-under-caret/click extraction ------------------
+  // The LAST known caret position inside this CodeView (1-based line + 0-based
+  // column), tracked on mouseup/keyup/click so F12 in normal reading flow (no
+  // live selection) still resolves a symbol. Reset on file change so a stale
+  // caret from the prior file is never reused.
+  const lastCaretRef = useRef<{ line: number; col: number } | null>(null);
+  useEffect(() => {
+    lastCaretRef.current = null;
+  }, [path]);
+
+  // Map a (DOM container node, offset) caret position to (lineText, columnOffset)
+  // for THIS CodeView, or null when the caret is not inside a real source row.
+  // Delegates to the PURE columnAt helper (caret-column.ts) so the error-prone
+  // column math + the GTD-3 lnEl.contains guard are unit-testable under jsdom
+  // (TA-3) — the production glue and the tested helper are the SAME code.
+  const caretToLineCol = useCallback(
+    (container: Node | null, offset: number): { line: number; col: number; lineText: string } | null => {
+      const root = containerRef.current;
+      if (!root) return null;
+      return columnAt(root, container, offset);
+    },
+    [],
+  );
+
+  // Resolve the symbol the user is targeting, in priority order:
+  //   1. a non-collapsed selection within ONE .ln whose trimmed text is exactly
+  //      one identifier -> use it directly (precise user intent),
+  //   2. the live caret if it is inside this .code,
+  //   3. the lastCaretRef (F12 in reading flow with no live caret),
+  //   4. the topmost VISIBLE .ln-wrap[data-line] (so F12 always does something
+  //      predictable for a reader).
+  // Returns { symbol, fromPath } or null (silent no-op).
+  const resolveTargetSymbol = useCallback((): GotoResolution | null => {
+    const root = containerRef.current;
+    if (!root) return null;
+
+    // (1) selection -> (2) live caret -> (3) lastCaret: the jsdom-reachable
+    // precedence, lifted into the PURE resolveSelectionSymbol helper (TA-R2) so
+    // it is unit-testable under jsdom — the production glue and the tested helper
+    // are the SAME code. Returns null when none of those three resolve a symbol.
+    const fromSelection = resolveSelectionSymbol(
+      root,
+      window.getSelection?.() ?? null,
+      lastCaretRef.current,
+    );
+    if (fromSelection) return { kind: 'symbol', ...fromSelection };
+
+    // (4) The topmost VISIBLE .ln-wrap[data-line] (getBoundingClientRect scan).
+    // This is the PURE-KEYBOARD path (no caret/selection a keyboard-only user
+    // could place). A11Y-GTD-01: when the top line has MORE THAN ONE resolvable
+    // identifier, we do NOT silently take the first — we surface ALL of them as
+    // a small chooser so the keyboard user can pick WHICH symbol (pointer parity:
+    // Ctrl/Cmd-click already targets per-symbol). Exactly one identifier -> that
+    // symbol; zero -> a clean no-op.
+    const rootRect = root.getBoundingClientRect();
+    const wraps = root.querySelectorAll<HTMLElement>('.ln-wrap[data-line]');
+    for (const wrap of Array.from(wraps)) {
+      const r = wrap.getBoundingClientRect();
+      if (r.bottom <= rootRect.top) continue; // scrolled off the top
+      const lnEl = wrap.querySelector<HTMLElement>('.ln');
+      const lineText = lnEl?.textContent ?? '';
+      const dataLine = wrap.getAttribute('data-line');
+      const rowIdx = dataLine === null ? NaN : Number.parseInt(dataLine, 10);
+      if (!Number.isFinite(rowIdx)) continue;
+      const line = rowIdx + 1;
+      // One O(n) left-to-right pass over the SAME IDENT class the highlighter
+      // uses (lineIdentifiers calls wordAt per run, so keyword/literal/digit-
+      // start rejection still applies). De-duped by symbol text.
+      const idents = lineIdentifiers(lineText);
+      if (idents.length === 0) break; // no symbol on the top line -> clean no-op
+      if (idents.length === 1) {
+        const w = idents[0]!;
+        return { kind: 'symbol', symbol: w.symbol, line, col: w.start + 1 };
+      }
+      // A11Y-GTD-01: multiple identifiers, keyboard-only -> offer a chooser.
+      return {
+        kind: 'choices',
+        line,
+        choices: idents.map((w) => ({ symbol: w.symbol, col: w.start + 1 })),
+      };
+    }
+    return null;
+    // Reads only stable refs (containerRef/lastCaretRef) + module-level helpers
+    // (resolveSelectionSymbol/lineIdentifiers) + window — no reactive deps. TA-R2:
+    // sources 1-3 now delegate to resolveSelectionSymbol, so caretToLineCol is no
+    // longer referenced here.
+  }, []);
+
+  // Track the live caret on user interaction so F12 in reading flow resolves.
+  const trackCaret = useCallback((): void => {
+    const sel = window.getSelection?.();
+    if (!sel || sel.rangeCount === 0) return;
+    const mapped = caretToLineCol(sel.anchorNode, sel.anchorOffset);
+    if (mapped) lastCaretRef.current = { line: mapped.line, col: mapped.col };
+  }, [caretToLineCol]);
+
+  // Apply the F12 go-to-definition signal: each fresh nonce derives the symbol
+  // and calls onGoToDefinition. foldCommand idiom — seed the seen-nonce at mount
+  // so switching files never re-fires a stale command.
+  const lastGotoNonce = useRef<number | null>(gotoCommand?.nonce ?? null);
+  useEffect(() => {
+    if (gotoCommand === null) return;
+    if (lastGotoNonce.current === gotoCommand.nonce) return;
+    lastGotoNonce.current = gotoCommand.nonce;
+    if (!onGoToDefinition) return; // not the active consumer (GTD-1)
+    const target = resolveTargetSymbol();
+    if (!target) return; // blank/keyword/no-symbol -> clean no-op
+    if (target.kind === 'choices') {
+      // A11Y-GTD-01: pure-keyboard fallback on a multi-identifier top line — let
+      // the user pick which symbol (pointer parity). Falls back to resolving the
+      // first symbol directly if App did not wire the chooser.
+      if (onChooseSymbol) {
+        onChooseSymbol(target.choices, path, target.line);
+      } else {
+        const first = target.choices[0]!;
+        onGoToDefinition(first.symbol, path, target.line);
+      }
+      return;
+    }
+    // GTD-CORR-1: pass the PRECISE trigger line so the same-location short-
+    // circuit compares against where the caret actually is, not the viewport top.
+    onGoToDefinition(target.symbol, path, target.line);
+  }, [gotoCommand, onGoToDefinition, onChooseSymbol, resolveTargetSymbol, path]);
+
+  // Ctrl/Cmd-click on a token -> go to definition (IDE/VS-Code style). Maps the
+  // click point to a caret via caretRangeFromPoint (Electron/Chromium), with a
+  // caretPositionFromPoint fallback, then derives the symbol via wordAt. A plain
+  // click never triggers (only Ctrl on win/linux, Cmd/meta on macOS).
+  const onCodeClick = useCallback(
+    (e: ReactMouseEvent<HTMLDivElement>): void => {
+      if (!onGoToDefinition) return; // not the active consumer
+      if (!(e.metaKey || e.ctrlKey)) return; // plain click -> normal behaviour
+      // Resolve the caret under the pointer.
+      type CaretFromPoint = {
+        caretRangeFromPoint?(x: number, y: number): { startContainer: Node; startOffset: number } | null;
+        caretPositionFromPoint?(x: number, y: number): { offsetNode: Node; offset: number } | null;
+      };
+      const doc = document as Document & CaretFromPoint;
+      let container: Node | null = null;
+      let offset = 0;
+      if (typeof doc.caretRangeFromPoint === 'function') {
+        const r = doc.caretRangeFromPoint(e.clientX, e.clientY);
+        if (r) {
+          container = r.startContainer;
+          offset = r.startOffset;
+        }
+      } else if (typeof doc.caretPositionFromPoint === 'function') {
+        const p = doc.caretPositionFromPoint(e.clientX, e.clientY);
+        if (p) {
+          container = p.offsetNode;
+          offset = p.offset;
+        }
+      }
+      const mapped = caretToLineCol(container, offset);
+      if (!mapped) return;
+      const w = wordAt(mapped.lineText, mapped.col);
+      if (!w) return; // whitespace/punct/keyword -> no-op
+      // A Ctrl/Cmd-click on a symbol should not also drop a text selection.
+      e.preventDefault();
+      // GTD-CORR-1: the click's own line is the precise trigger line.
+      onGoToDefinition(w.symbol, path, mapped.line);
+    },
+    [onGoToDefinition, caretToLineCol, path],
+  );
+
   return (
-    <div className="code" ref={containerRef}>
+    <div
+      className="code"
+      ref={containerRef}
+      // GTD-2: focusable so F12 works in reading flow (and so the topmost-line
+      // fallback has a deterministic home). The picker/dispatcher restore focus
+      // here on Escape.
+      tabIndex={0}
+      // A11Y-GTD-03 (SC 4.1.2 / 1.3.1): the newly-focusable .code is a tab stop,
+      // so it MUST have a programmatic role + accessible name. role="group"
+      // bundles the source rows; aria-label names which file's source this is
+      // (terse — just the basename, the parent region already says "File
+      // viewer"); aria-roledescription surfaces the F12 affordance so a screen
+      // reader landing here announces "Source code, <file>" plus the available
+      // command instead of a bare "group". KEYBOARD-OP NOTE (A11Y-GTD-02): the
+      // source view is non-editable, so a pure keyboard user cannot position a
+      // caret/selection on a chosen symbol; F12 then falls back to the first
+      // identifier on the topmost VISIBLE line (resolveTargetSymbol source 4).
+      // The command stays operable (not a total SC 2.1.1 failure); choosing
+      // among multiple identifiers without a pointer is a documented v1 limit,
+      // tracked as a follow-up to extend the picker over a line's identifiers.
+      role="group"
+      aria-label={`Source code: ${path.split('/').filter(Boolean).pop() ?? path}`}
+      aria-roledescription="Source code (press F12 to go to definition)"
+      onMouseUp={trackCaret}
+      onKeyUp={trackCaret}
+      onClick={onGoToDefinition ? onCodeClick : undefined}>
       {/* A11Y-FOLD-03 / SC 4.1.3: a single visually-hidden polite live region.
           Terse fold-change messages ("Collapsed N lines" / "Folded all N
           regions") are written here so AT conveys the magnitude of the change
@@ -728,6 +959,9 @@ export function Viewer({
   onClose,
   foldCommand,
   copyCommand,
+  gotoCommand,
+  onGoToDefinition,
+  onChooseSymbol,
   targetLine,
   mdWidth,
   onToggleMdWidth,
@@ -845,6 +1079,9 @@ export function Viewer({
       onClose={onClose}
       foldCommand={foldCommand}
       copyCommand={copyCommand}
+      gotoCommand={gotoCommand}
+      onGoToDefinition={onGoToDefinition}
+      onChooseSymbol={onChooseSymbol}
       targetLine={targetLine}
       mdWidth={mdWidth}
       onToggleMdWidth={onToggleMdWidth}
@@ -933,6 +1170,9 @@ function ViewerContent({
   onClose,
   foldCommand,
   copyCommand,
+  gotoCommand,
+  onGoToDefinition,
+  onChooseSymbol,
   targetLine,
   mdWidth,
   onToggleMdWidth,
@@ -947,6 +1187,16 @@ function ViewerContent({
   onClose(): void;
   foldCommand: { nonce: number; intent: 'fold' | 'unfold' } | null;
   copyCommand: { nonce: number } | null;
+  /** Go-to-definition F12 signal (nonce) — threaded to the CodeView. null when
+   *  this Viewer is not the active F12 consumer (GTD-1). */
+  gotoCommand: { nonce: number } | null;
+  /** Resolve a symbol to its definition (F12 + Ctrl/Cmd-click). The third arg
+   *  is the 1-based trigger line (GTD-CORR-1). null when this Viewer is not the
+   *  active go-to-definition consumer. */
+  onGoToDefinition: ((symbol: string, fromPath: string, fromLine: number) => void) | null;
+  /** A11Y-GTD-01 keyboard symbol chooser (multi-identifier top line). null when
+   *  not the active consumer. */
+  onChooseSymbol: ((choices: SymbolChoice[], fromPath: string, fromLine: number) => void) | null;
   targetLine: { path: string; line: number; nonce: number } | null;
   mdWidth: WidthMode;
   onToggleMdWidth(): void;
@@ -1074,6 +1324,9 @@ function ViewerContent({
         startFolded={startFolded}
         registerFoldAll={registerFoldAll}
         foldCommand={foldCommand}
+        gotoCommand={gotoCommand}
+        onGoToDefinition={onGoToDefinition}
+        onChooseSymbol={onChooseSymbol}
         targetLine={targetLine}
       />
     );
@@ -1245,6 +1498,22 @@ export interface ViewerProps {
    *  incrementing nonce. ViewerContent copies the rendered content once per
    *  nonce; no-op when the open file is not RENDERED markdown. */
   copyCommand: { nonce: number } | null;
+  /** Keyboard-shortcut go-to-definition command lifted from App (goToDefinition,
+   *  F12) as an incrementing nonce. The active CodeView derives the symbol under
+   *  the caret/selection on each fresh nonce and calls onGoToDefinition. null
+   *  when this Viewer is NOT the active F12 consumer (GTD-1: gated to the active
+   *  store/left/single Viewer so exactly one CodeView consumes F12). */
+  gotoCommand: { nonce: number } | null;
+  /** Resolve a symbol to its definition (the F12 nonce effect AND the
+   *  Ctrl/Cmd-click handler call this). The third arg is the 1-based trigger
+   *  line (GTD-CORR-1). null when this Viewer is not the active go-to-definition
+   *  consumer — then F12/Ctrl-click are inert here. */
+  onGoToDefinition: ((symbol: string, fromPath: string, fromLine: number) => void) | null;
+  /** A11Y-GTD-01: offer a SYMBOL chooser when F12 fires with no caret/selection
+   *  (pure-keyboard path) on a top line with MORE THAN ONE identifier, so a
+   *  keyboard-only user can pick which symbol (pointer parity with Ctrl/Cmd-
+   *  click). null when this Viewer is not the active F12 consumer. */
+  onChooseSymbol: ((choices: SymbolChoice[], fromPath: string, fromLine: number) => void) | null;
   /** A "reveal line" signal from a search-result open (incrementing nonce +
    *  target path + 1-based line). CodeView unfolds any region containing the
    *  line, scrolls it into view, and briefly flashes it. null = no reveal. */

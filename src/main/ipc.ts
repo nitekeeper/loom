@@ -32,6 +32,7 @@ import {
   type SessionCounters,
   type SearchQuery,
   type SearchResults,
+  type DefinitionResult,
   type GitFileStatus,
   type ChangeSet,
   type FileDiff,
@@ -49,6 +50,7 @@ import type { LoomDb } from './db.js';
 import type { EventBus } from './eventbus.js';
 import type { Sandbox } from './sandbox.js';
 import type { Search } from './search.js';
+import type { DefinitionFinder } from './definition.js';
 import { wsEnabled } from './ws.js';
 // Pure (DOM/Node-free) keybinding core — merges persisted user overrides
 // over the defaults so the boot snapshot carries the FULL resolved map.
@@ -91,6 +93,9 @@ export interface IpcDeps {
   bus: EventBus;
   /** Project-wide content search (confined to the sandbox + bounded). */
   search: Search;
+  /** Heuristic go-to-definition resolver (confined to the sandbox + bounded).
+   *  RE-VALIDATES the renderer symbol; OWNS every returned path. */
+  definitionFinder: DefinitionFinder;
   /** Absolute path of the sandbox root (for git status). */
   rootPath: string;
   /** The connection_ids bound to currently-LIVE MCP sessions (from
@@ -233,7 +238,7 @@ class IpcWiringImpl implements IpcWiring {
   // --- request/response handlers -------------------------------
 
   register(): void {
-    const { sandbox, config, search } = this.deps;
+    const { sandbox, config, search, definitionFinder } = this.deps;
 
     ipcMain.handle(IPC.GET_INITIAL_STATE, (): InitialState => this.buildInitialState());
 
@@ -249,6 +254,19 @@ class IpcWiringImpl implements IpcWiring {
     ipcMain.handle(
       IPC.SEARCH,
       (_evt, query: SearchQuery): SearchResults => search.run(query),
+    );
+
+    // Heuristic "go to definition" (Law 3 confined + bounded). main is the
+    // authority: definitionFinder.find RE-VALIDATES the symbol (string, single
+    // identifier, length-capped, not a keyword/literal — never trust the
+    // renderer, the symbol arrives over IPC) and OWNS every returned candidate
+    // path from its OWN confined sandbox walk. The advisory fromPath is
+    // re-confined via sandbox.resolveInRoot inside the finder and dropped on any
+    // escape; it never reaches a read. Pass `req` as unknown so the finder is
+    // the single re-validation gate (mirror of REMOVE_AGENT / COPY_TO_CLIPBOARD).
+    ipcMain.handle(
+      IPC.FIND_DEFINITION,
+      (_evt, req: unknown): DefinitionResult => definitionFinder.find(req),
     );
 
     ipcMain.handle(IPC.SET_THEME, (_evt, theme: Theme): void => {
