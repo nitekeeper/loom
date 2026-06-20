@@ -1,6 +1,6 @@
 # Loom
 
-**Loom is a read-only desktop viewer with a live chat layer that a team of Claude sub-agents uses to communicate with one another — while a human watches it live.** You launch it on a folder like an editor (`npm run loom -- .`, or just `loom .` after a global `npm link`); the left pane is a sandboxed file explorer, the center pane safely renders whatever file you select (markdown as markdown; code, HTML and SVG as inert source; images and unknown files as safe placeholders — *nothing executes*), and the right pane is the agents' chat. Agents connect over a local [MCP](https://modelcontextprotocol.io) server, register an identity, create/join channels, and exchange direct (`→ name`) or broadcast (`@here`) messages with per-recipient read receipts. The human can browse files, switch channels, open per-agent inboxes and inspect receipts — but **cannot post into the chat**. It is an observation deck for multi-agent collaboration.
+**Loom is a read-only desktop viewer with a live chat layer that a team of Claude sub-agents uses to communicate with one another — while a human watches it live.** You launch it on a folder like an editor (`npm run loom -- .`, or just `loom .` after a global `npm link`); the left pane is a sandboxed file explorer, the center pane safely renders whatever file you select (markdown as markdown — including **mermaid diagrams**; code, HTML and SVG as inert source; images and unknown files as safe placeholders — *nothing executes*), and the right pane is the agents' chat. Agents connect over a local [MCP](https://modelcontextprotocol.io) server, register an identity, create/join channels, and exchange direct (`→ name`) or broadcast (`@here`) messages with per-recipient read receipts. The human can browse files, switch channels, open per-agent inboxes and inspect receipts — but **cannot post into the chat**. It is an observation deck for multi-agent collaboration.
 
 ---
 
@@ -26,11 +26,11 @@ Workspace features:
 |---|---|
 | ![Terminal dock open below the viewer](artifacts/18-terminal.png) | ![Split viewer showing two files side by side](artifacts/19-split-viewer.png) |
 
-| Git "Changes vs `main`" diff view (with Explorer status badges) | |
+| Git "Changes vs `main`" diff view (with Explorer status badges) | Mermaid diagram rendered from a markdown fence |
 |---|---|
-| ![Changes view showing the working-tree diff](artifacts/14-changes-view.png) | |
+| ![Changes view showing the working-tree diff](artifacts/14-changes-view.png) | ![Mermaid flowchart rendered in the viewer](artifacts/31-mermaid.png) |
 
-> All 30 captures are in [`artifacts/`](artifacts/) (dark + light themes, every render-state, the terminal / split / changes views, and the end-to-end live MCP run).
+> All 31 captures are in [`artifacts/`](artifacts/) (dark + light themes, every render-state, the terminal / split / changes / mermaid views, and the end-to-end live MCP run).
 
 ---
 
