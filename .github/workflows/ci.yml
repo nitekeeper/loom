@@ -1,0 +1,34 @@
+name: Type-check
+
+# Fast merge gate: type-checks the TS sources AND the e2e artifacts with no
+# display, no build, and no Electron launch. The Playwright Electron e2e suite
+# (formerly e2e.yml) is intentionally NOT a merge gate — it is slow and must be
+# run locally (see test/e2e/README.md). This job is the required PR check.
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+jobs:
+  typecheck:
+    name: Type-check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      - name: Type-check sources (tsc --noEmit)
+        run: npm run typecheck
+
+      - name: Type-check e2e artifacts (tsc --noEmit -p tsconfig.e2e.json)
+        run: npm run typecheck:e2e
