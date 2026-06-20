@@ -48,7 +48,7 @@
     "@types/react-dom": "^18.3.1",
     "@types/sql.js": "^1.4.9",
     "@types/ws": "^8.18.0",
-    "electron": "33.4.11",
+    "electron": "39.8.5",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.24.2",
     "jsdom": "^29.1.1",
