@@ -918,26 +918,6 @@ test('AC-22 (string-level): escapeHtml-style transform neutralizes angle bracket
 /* ================================================================== */
 import { WebSocket } from 'ws';
 
-/** Connect a ws client and resolve with the FIRST JSON message it receives,
- *  or reject on timeout. Closes the socket on settle. */
-function firstWsMessage(url, timeoutMs = 4000) {
-  return new Promise((resolve, reject) => {
-    const sock = new WebSocket(url);
-    const timer = setTimeout(() => {
-      try { sock.terminate(); } catch { /* ignore */ }
-      reject(new Error(`no ws message within ${timeoutMs}ms`));
-    }, timeoutMs);
-    sock.on('message', (data) => {
-      clearTimeout(timer);
-      let parsed;
-      try { parsed = JSON.parse(String(data)); } catch (e) { reject(e); return; }
-      try { sock.close(); } catch { /* ignore */ }
-      resolve(parsed);
-    });
-    sock.on('error', (err) => { clearTimeout(timer); reject(err); });
-  });
-}
-
 function waitWsOpen(url, timeoutMs = 4000) {
   return new Promise((resolve, reject) => {
     const sock = new WebSocket(url);

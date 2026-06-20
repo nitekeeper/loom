@@ -17,7 +17,7 @@ export function createNodePtyFactory(): PtyFactory {
   return (opts: PtySpawnOpts): PtyLike => {
     // Lazy load on FIRST spawn (not at import time) so a missing/ABI-broken
     // native binding degrades gracefully per open() instead of failing boot.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- node-pty is a native module kept EXTERNAL by esbuild and require()'d lazily on first spawn (see build.mjs); a static ESM import would break the bundle and fail boot on a missing binding
     const nodePty = require('node-pty') as typeof import('node-pty');
 
     // Drop undefined values: node-pty's env is Record<string, string>.

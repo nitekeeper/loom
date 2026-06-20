@@ -34,6 +34,7 @@ const instances = new WeakMap<object, PurifyInstance>();
    scheme; we strip them before testing the scheme/fragment. Built via
    `new RegExp` from \u-escapes so the SOURCE stays pure ASCII (no raw control
    bytes in the file). */
+// eslint-disable-next-line no-control-regex -- intentional: matching C0 control chars (NUL..space) is the whole point — they are stripped to defeat "java\tscript:" scheme-spoofing before the scheme test
 const URL_NOISE = new RegExp('[\\u0000-\\u0020]+', 'g');
 
 /* Whether an href / xlink:href value is safe to keep. mermaid in strict mode

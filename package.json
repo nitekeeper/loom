@@ -22,6 +22,7 @@
     "rebuild": "electron-rebuild -f -w node-pty",
     "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs test/mermaid.mjs test/bundle-split.mjs test/copy-serialize.mjs test/md-width.mjs test/window-resize.mjs test/linux-maximize.mjs test/git-diff.mjs test/diff-render.mjs test/agent-remove.mjs test/terminal.mjs test/terminal-pane.mjs test/viewer-split.mjs test/terminal-columns.mjs test/config.mjs test/root-resolve.mjs test/definition.mjs test/caret-column.mjs test/mouse-bindings.mjs",
     "test:e2e": "playwright test",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json"
   },
@@ -41,6 +42,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "@eslint/js": "^9.39.4",
     "@playwright/test": "^1.60.0",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.19.0",
@@ -51,8 +53,14 @@
     "electron": "39.8.5",
     "electron-builder": "^26.8.1",
     "esbuild": "^0.24.2",
+    "eslint": "^9.39.4",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^15.15.0",
     "jsdom": "^29.1.1",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.61.1"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -116,7 +116,6 @@ export function createWsFeed(bus: EventBus): WsFeedHandle {
         // Subsequent runtime errors (post-listen) must not crash the app.
         srv.on('error', (err: Error) => {
           try {
-            // eslint-disable-next-line no-console
             console.error('[loom:ws] server error:', err);
           } catch {
             /* ignore */

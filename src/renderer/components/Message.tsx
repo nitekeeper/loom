@@ -68,6 +68,7 @@ export function Message(props: MessageProps): JSX.Element {
           className="msg-body"
           onClick={blockBodyNavigation}
           onKeyDown={blockBodyNavigation}
+          // eslint-disable-next-line react/no-danger -- renderInline output is sanitized (markdown-it html:false escapes embedded HTML, links neutralized; FR-48/FR-52/AC-21)
           dangerouslySetInnerHTML={{ __html: renderInline(message.body) }}
         />
         <ReceiptStrip

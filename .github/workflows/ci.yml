@@ -1,17 +1,18 @@
-name: Type-check
+name: Lint & type-check
 
-# Fast merge gate: type-checks the TS sources AND the e2e artifacts with no
-# display, no build, and no Electron launch. The Playwright Electron e2e suite
-# (formerly e2e.yml) is intentionally NOT a merge gate — it is slow and must be
-# run locally (see test/e2e/README.md). This job is the required PR check.
+# Fast merge gate: lints + type-checks the TS sources AND the e2e artifacts
+# with no display, no build, and no Electron launch. The Playwright Electron
+# e2e suite (formerly e2e.yml) is intentionally NOT a merge gate — it is slow
+# and must be run locally (see test/e2e/README.md). This job is the required
+# PR check.
 on:
   pull_request: {}
   push:
     branches: [main]
 
 jobs:
-  typecheck:
-    name: Type-check
+  lint-and-typecheck:
+    name: Lint & type-check
     runs-on: ubuntu-latest
 
     steps:
@@ -26,6 +27,9 @@ jobs:
 
       - name: Install dependencies (npm ci)
         run: npm ci
+
+      - name: Lint (eslint .)
+        run: npm run lint
 
       - name: Type-check sources (tsc --noEmit)
         run: npm run typecheck

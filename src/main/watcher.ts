@@ -177,7 +177,6 @@ export function createWatcher(rootDir: string, bus: EventBus): WatcherHandle {
    *  the main process: transient EPERM, a deleted root, fd pressure, etc.). */
   function logError(err: unknown): void {
     try {
-      // eslint-disable-next-line no-console
       console.error('[loom:watcher] error:', err);
     } catch {
       /* ignore */
