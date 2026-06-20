@@ -91,6 +91,17 @@ jobs:
         # message, but building here keeps the failure mode obvious.
         run: npm run build
 
+      - name: Allow Chromium's sandbox on the runner (Ubuntu 24.04 userns)
+        # ubuntu-latest moved to Ubuntu 24.04, which enables an AppArmor restriction
+        # on UNPRIVILEGED user namespaces (kernel.apparmor_restrict_unprivileged_userns=1).
+        # Electron/Chromium's sandbox needs unprivileged userns to spawn its zygote +
+        # renderer; when blocked, the renderer never starts, the BrowserWindow never
+        # loads, and EVERY e2e times out at 60s ("errors were not a part of any test").
+        # Relaxing the restriction lets the sandbox initialize — we keep the sandbox
+        # ENABLED (no --no-sandbox), so the launch stays faithful to production.
+        # `|| true` so older runner images without this knob don't fail the job.
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Run Playwright Electron e2e (under xvfb + fluxbox)
         # xvfb-run -a provides the virtual display Electron requires on a
         # headless runner; -a picks a free display number automatically. We then
