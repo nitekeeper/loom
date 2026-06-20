@@ -1,6 +1,7 @@
 {
   "name": "loom",
   "version": "0.11.0",
+  "license": "MIT",
   "description": "A desktop viewer with a built-in chat layer that AI agents use to communicate, watched live by a human.",
   "private": true,
   "author": "nitekeeper",
