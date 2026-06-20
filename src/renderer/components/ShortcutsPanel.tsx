@@ -56,9 +56,12 @@ import {
   eventToCombo,
   findConflict,
   formatCombo,
+  isMouseCombo,
+  isMouseForbiddenCommand,
   isPlatformCritical,
   isReserved,
   isValidBinding,
+  mouseEventToCombo,
   planReassign,
   resolveBindings,
 } from '../lib/keybindings.js';
@@ -228,7 +231,7 @@ export function ShortcutsPanel({
       setConfirmingReset(false);
       setCapturingId(id);
       announce(
-        `Recording new shortcut for ${labelFor(id)}. Press a key combination, or press Escape to cancel.`,
+        `Recording new shortcut for ${labelFor(id)}. Press a key combination, or hold a modifier and click, middle-click, or right-click — then press Escape to cancel.`,
       );
     },
     [announce],
@@ -256,13 +259,22 @@ export function ShortcutsPanel({
       }
       // Per-command guard (bindingAllowedFor): toggleTerminal must keep at
       // least one modifier — it fires even inside editable targets, so a bare
-      // key would kill the shell on every plain keystroke. Refuse and explain
+      // key would kill the shell on every plain keystroke; AND closeFile cannot
+      // take a mouse combo at all (the document mouse dispatcher hard-skips it,
+      // so a mouse binding would be a silent dead binding). Refuse and explain
       // exactly like a reserved combo, so the panel can never capture+persist
-      // a binding that resolveBindings would silently drop (UI/live skew).
+      // a binding that resolveBindings would silently drop (UI/live skew). The
+      // message is REASON-SPECIFIC: a mouse-forbidden command gets a clear
+      // "cannot be a mouse shortcut" note; everything else gets the
+      // needs-a-modifier text.
       if (!bindingAllowedFor(id, combo)) {
         setLiveCombo(combo);
+        const reason =
+          isMouseForbiddenCommand(id) && isMouseCombo(combo)
+            ? `cannot be a mouse shortcut — use a keyboard combination instead`
+            : `this shortcut needs a modifier key (like Ctrl)`;
         announce(
-          `${formatCombo(combo)} cannot be assigned to ${labelFor(id)} — this shortcut needs a modifier key (like Ctrl). Press another key combination, or press Escape to cancel.`,
+          `${formatCombo(combo)} cannot be assigned to ${labelFor(id)} — ${reason}. Press another key combination, or press Escape to cancel.`,
         );
         return;
       }
@@ -479,10 +491,97 @@ export function ShortcutsPanel({
     [onClose, capturingId],
   );
 
+  // MOUSE CAPTURE — wired (below) as onClickCapture / onAuxClickCapture /
+  // onContextMenuCapture on the backdrop. While a row is ARMED, a MODIFIER-held
+  // click / middle-click / right-click is recorded as the binding (via
+  // mouseEventToCombo -> assignCombo, the SAME validate/conflict/commit flow the
+  // keyboard path uses). It runs in React's CAPTURE phase so it fires BEFORE the
+  // row button's bubble onClick (which would otherwise toggle/disarm capture) —
+  // THE arm-vs-bind disambiguation that finally makes 'Ctrl+Click' reachable.
+  //
+  // SINGLE-SOURCE button rule (matches the App dispatcher + the Viewer): a
+  // right-button release fires BOTH 'auxclick' AND 'contextmenu' natively, so to
+  // record it EXACTLY ONCE, onContextMenuCapture OWNS the right button and
+  // onAuxClickCapture owns the MIDDLE button ONLY (a right-button auxclick is
+  // dropped). onClickCapture owns the primary button. contextmenu's e.button is
+  // unreliable across engines -> normalized to 2.
+  const onMouseCapture = useCallback(
+    (e: ReactMouseEvent<HTMLDivElement>): void => {
+      // Not armed -> let the row button's onClick arm/disarm normally, and leave
+      // a non-capturing contextmenu / middle-click completely untouched.
+      if (capturingId === null) return;
+      // A prompt (conflict / reserved / escape-confirm) owns interaction — let
+      // its own buttons handle their clicks; do not intercept.
+      if (
+        pendingConflict !== null ||
+        pendingReserved !== null ||
+        pendingEscape !== null
+      ) {
+        return;
+      }
+      // SINGLE-SOURCE: drop a right-button auxclick (contextmenu owns right) and
+      // a non-primary click; normalize contextmenu's button to 2.
+      if (e.type === 'auxclick' && e.button !== 1) return; // middle only
+      if (e.type === 'click' && e.button !== 0) return; // primary only
+      const button = e.type === 'contextmenu' ? 2 : e.button;
+      // While CAPTURING, always suppress the native context menu so a right-click
+      // is recordable (even before the modifier decision below).
+      if (e.type === 'contextmenu') e.preventDefault();
+
+      const hasMod = e.ctrlKey || e.metaKey || e.altKey || e.shiftKey;
+      if (!hasMod) {
+        // A modifier-less click is NOT a mouse shortcut (a bare click would
+        // hijack normal clicking), so it is NEVER recorded.
+        //   - A modifier-less PRIMARY click is allowed to FALL THROUGH (no
+        //     stopPropagation) to the row button's onClick, preserving the
+        //     documented "click the same shortcut again to cancel" disarm
+        //     affordance — a fumbled bare left-click simply disarms, as before.
+        //   - A modifier-less MIDDLE/RIGHT click can never reach the row button's
+        //     onClick (React onClick fires only for the primary button), so it
+        //     would otherwise be a silent no-op; suppress it and ANNOUNCE the
+        //     modifier requirement so the gesture is not mistaken for broken.
+        if (e.type !== 'click') {
+          e.preventDefault();
+          e.stopPropagation();
+          announce(
+            'Mouse shortcuts need a modifier key (like Ctrl). Hold a modifier and click, middle-click, or right-click — or press a key combination.',
+          );
+        }
+        return;
+      }
+      // A MODIFIER-held click is the binding. stopPropagation prevents the row
+      // button's onClick from toggling/disarming capture (the disambiguation);
+      // preventDefault avoids any incidental selection/menu. Route through the
+      // SAME assignCombo path as the keyboard capture (isReserved hard-block ->
+      // bindingAllowedFor's >=1-modifier rule -> findConflict reassign/cancel ->
+      // platform-critical soft warning -> commit + stopCapture's focus restore).
+      e.preventDefault();
+      e.stopPropagation();
+      const combo = mouseEventToCombo({
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        button,
+      });
+      assignCombo(capturingId, combo);
+    },
+    [capturingId, pendingConflict, pendingReserved, pendingEscape, assignCombo, announce],
+  );
+
   return (
     <div
       className="sc-backdrop"
       onMouseDown={onBackdropMouseDown}
+      // MOUSE CAPTURE (capture phase, so it runs BEFORE a row button's bubble
+      // onClick): a modifier-held click / middle-click / right-click while a row
+      // is armed is recorded as the binding. onClickCapture owns the primary
+      // button, onAuxClickCapture owns the MIDDLE button only, and
+      // onContextMenuCapture owns the right button (single-source rule). When no
+      // row is armed these no-op and the native gestures are untouched.
+      onClickCapture={onMouseCapture}
+      onAuxClickCapture={onMouseCapture}
+      onContextMenuCapture={onMouseCapture}
       // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
       onKeyDown={onKeyDown}
     >
@@ -528,9 +627,11 @@ export function ShortcutsPanel({
         </div>
 
         <p className="sc-hint" id={hintId}>
-          Click a shortcut to rebind it, then press the new key combination.
-          Modifier-only presses (e.g. just Ctrl) are ignored until you add a
-          key. Click the same shortcut again, or press Escape, to cancel.
+          Click a shortcut to rebind it, then press a key combination — or hold a
+          modifier and click, middle-click, or right-click to bind a mouse
+          shortcut. Modifier-only presses (e.g. just Ctrl) are ignored until you
+          add a key, and mouse shortcuts always need a modifier. Click the same
+          shortcut again, or press Escape, to cancel.
         </p>
 
         <ul className="sc-list" role="list">
@@ -607,8 +708,8 @@ export function ShortcutsPanel({
                 </button>
                 {capturing && (
                   <span id={captureHintId} className="sc-sr-live">
-                    Recording. Press a key combination, or press Escape to
-                    cancel.
+                    Recording. Press a key combination, or hold a modifier and
+                    click, middle-click, or right-click. Press Escape to cancel.
                   </span>
                 )}
                 {isConflicting && pendingConflict && (

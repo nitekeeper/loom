@@ -23,6 +23,8 @@ import { renderMarkdown } from '../lib/markdown.js';
 import { highlightCode } from '../lib/highlight.js';
 import { wordAt, lineIdentifiers } from '../lib/symbol-at.js';
 import { columnAt, resolveSelectionSymbol } from '../lib/caret-column.js';
+import { mouseEventToCombo } from '../lib/keybindings.js';
+import { mouseEventDispatchButton } from '../lib/mouse-dispatch.js';
 import { computeFoldRanges } from '../lib/fold.js';
 import type { FoldRange } from '../lib/fold.js';
 import { serializeRenderedForCopy } from '../lib/copy-serialize.js';
@@ -245,6 +247,7 @@ function CodeView({
   onGoToDefinition,
   onChooseSymbol,
   targetLine,
+  gotoBinding,
 }: {
   code: string;
   path: string;
@@ -281,6 +284,15 @@ function CodeView({
    *  containing the line, scrolls it into view, and briefly flashes it. The
    *  path gate ignores a signal meant for a different (now-closed) file. */
   targetLine: { path: string; line: number; nonce: number } | null;
+  /** The RESOLVED goToDefinition binding (defaults merged with user override) —
+   *  e.g. 'Ctrl+Click' (the default), or a KEY like 'F12' if the user rebound
+   *  the slot, or another mouse combo like 'Alt+RightClick'. onCodeClick fires
+   *  the jump ONLY when the click's combo (mouseEventToCombo) EQUALS this. When
+   *  goToDefinition is bound to a KEY, no click combo ever equals it, so clicking
+   *  never jumps (the keyboard path runs via the App dispatcher). Optional with a
+   *  '' default — a non-consumer pane (onGoToDefinition===null) early-returns
+   *  before ever reading it, so it is harmless there. */
+  gotoBinding?: string;
 }): JSX.Element {
   // Per-line escaped display HTML — unchanged highlight path (Law 1).
   const lines = useMemo(() => highlightCode(code), [code]);
@@ -594,14 +606,43 @@ function CodeView({
     onGoToDefinition(target.symbol, path, target.line);
   }, [gotoCommand, onGoToDefinition, onChooseSymbol, resolveTargetSymbol, path]);
 
-  // Ctrl/Cmd-click on a token -> go to definition (IDE/VS-Code style). Maps the
-  // click point to a caret via caretRangeFromPoint (Electron/Chromium), with a
-  // caretPositionFromPoint fallback, then derives the symbol via wordAt. A plain
-  // click never triggers (only Ctrl on win/linux, Cmd/meta on macOS).
+  // BINDING-AWARE go-to-definition click (IDE/VS-Code style). The click's combo
+  // (mouseEventToCombo) is fired ONLY when it equals the RESOLVED goToDefinition
+  // binding (gotoBinding) — 'Ctrl+Click' by default, or any mouse combo the user
+  // rebound the slot to (e.g. 'Alt+RightClick'). When goToDefinition is bound to
+  // a KEY (e.g. F12), the click's combo is a mouse string that never equals the
+  // key string, so clicking never jumps (the keyboard path runs in the App
+  // dispatcher). Maps the click point to a caret via caretRangeFromPoint
+  // (Electron/Chromium), with a caretPositionFromPoint fallback, then derives the
+  // symbol via wordAt.
+  //
+  // SINGLE-SOURCE right button: wired to onClick (primary), onAuxClick (MIDDLE
+  // only — a right-button auxclick is dropped below), and onContextMenu (right).
+  // The contextmenu event's e.button is unreliable across engines, so it is
+  // normalized to 2. This guarantees a right-button gesture fires exactly once
+  // (via onContextMenu), never twice (auxclick + contextmenu).
   const onCodeClick = useCallback(
     (e: ReactMouseEvent<HTMLDivElement>): void => {
       if (!onGoToDefinition) return; // not the active consumer
-      if (!(e.metaKey || e.ctrlKey)) return; // plain click -> normal behaviour
+      // SINGLE-SOURCE button routing (shared mouse-dispatch helper — the SAME
+      // rule the App document dispatcher uses, pinned by the unit suite).
+      // onAuxClick owns the MIDDLE button only; a right-button auxclick is
+      // dropped so onContextMenu is the sole right-button source. contextmenu's
+      // e.button is unreliable across engines -> normalized to 2. A null result
+      // means SKIP this event.
+      const button = mouseEventDispatchButton(
+        e.type as 'click' | 'auxclick' | 'contextmenu',
+        e.button,
+      );
+      if (button === null) return;
+      const combo = mouseEventToCombo({
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        button,
+      });
+      if (combo !== gotoBinding) return; // only the exact resolved mouse combo jumps
       // Resolve the caret under the pointer.
       type CaretFromPoint = {
         caretRangeFromPoint?(x: number, y: number): { startContainer: Node; startOffset: number } | null;
@@ -627,12 +668,17 @@ function CodeView({
       if (!mapped) return;
       const w = wordAt(mapped.lineText, mapped.col);
       if (!w) return; // whitespace/punct/keyword -> no-op
-      // A Ctrl/Cmd-click on a symbol should not also drop a text selection.
+      // A go-to-definition click on a symbol should not also drop a text
+      // selection — and for a RightClick binding this same preventDefault
+      // suppresses the native context menu. It also sets defaultPrevented so the
+      // App-level bubble mouse dispatcher bails (belt-and-suspenders with the
+      // positional skip). A non-matching click returns ABOVE without
+      // preventDefault, so a normal right-click still shows the native menu.
       e.preventDefault();
       // GTD-CORR-1: the click's own line is the precise trigger line.
       onGoToDefinition(w.symbol, path, mapped.line);
     },
-    [onGoToDefinition, caretToLineCol, path],
+    [onGoToDefinition, caretToLineCol, path, gotoBinding],
   );
 
   return (
@@ -656,12 +702,28 @@ function CodeView({
       // The command stays operable (not a total SC 2.1.1 failure); choosing
       // among multiple identifiers without a pointer is a documented v1 limit,
       // tracked as a follow-up to extend the picker over a line's identifiers.
+      //
+      // BINDING NOTE: Ctrl/Cmd-click is the DEFAULT *mouse* binding for go-to-
+      // definition (rebindable like any command), while F12 is the FIXED, always-
+      // on keyboard affordance (handled in the App dispatcher). The
+      // aria-roledescription keeps "press F12" because F12 is the stable
+      // keyboard path a screen-reader user can always rely on, regardless of how
+      // the mouse slot is rebound — so the label stays factually correct.
       role="group"
       aria-label={`Source code: ${path.split('/').filter(Boolean).pop() ?? path}`}
       aria-roledescription="Source code (press F12 to go to definition)"
       onMouseUp={trackCaret}
       onKeyUp={trackCaret}
-      onClick={onGoToDefinition ? onCodeClick : undefined}>
+      // SINGLE-SOURCE mouse wiring so MiddleClick/RightClick goToDefinition
+      // bindings work (React onClick fires only for the primary button):
+      // onClick owns primary, onAuxClick owns MIDDLE only (onCodeClick drops a
+      // right-button auxclick), onContextMenu owns right (and onCodeClick's
+      // preventDefault on a real jump suppresses the native menu). A non-matching
+      // click on any of them returns without preventDefault, so normal
+      // selection / middle-paste / the native context menu are untouched.
+      onClick={onGoToDefinition ? onCodeClick : undefined}
+      onAuxClick={onGoToDefinition ? onCodeClick : undefined}
+      onContextMenu={onGoToDefinition ? onCodeClick : undefined}>
       {/* A11Y-FOLD-03 / SC 4.1.3: a single visually-hidden polite live region.
           Terse fold-change messages ("Collapsed N lines" / "Folded all N
           regions") are written here so AT conveys the magnitude of the change
@@ -963,6 +1025,7 @@ export function Viewer({
   onGoToDefinition,
   onChooseSymbol,
   targetLine,
+  gotoBinding,
   mdWidth,
   onToggleMdWidth,
   splitView,
@@ -1083,6 +1146,7 @@ export function Viewer({
       onGoToDefinition={onGoToDefinition}
       onChooseSymbol={onChooseSymbol}
       targetLine={targetLine}
+      gotoBinding={gotoBinding}
       mdWidth={mdWidth}
       onToggleMdWidth={onToggleMdWidth}
       splitView={splitView}
@@ -1174,6 +1238,7 @@ function ViewerContent({
   onGoToDefinition,
   onChooseSymbol,
   targetLine,
+  gotoBinding,
   mdWidth,
   onToggleMdWidth,
   splitView,
@@ -1198,6 +1263,9 @@ function ViewerContent({
    *  not the active consumer. */
   onChooseSymbol: ((choices: SymbolChoice[], fromPath: string, fromLine: number) => void) | null;
   targetLine: { path: string; line: number; nonce: number } | null;
+  /** Resolved goToDefinition binding — threaded to CodeView's binding-aware
+   *  onCodeClick. Optional ('' default); non-consumer panes ignore it. */
+  gotoBinding?: string;
   mdWidth: WidthMode;
   onToggleMdWidth(): void;
   splitView: boolean;
@@ -1328,6 +1396,7 @@ function ViewerContent({
         onGoToDefinition={onGoToDefinition}
         onChooseSymbol={onChooseSymbol}
         targetLine={targetLine}
+        gotoBinding={gotoBinding}
       />
     );
     body = dispatch.kind === 'svg' && content.imageData ? (
@@ -1518,6 +1587,13 @@ export interface ViewerProps {
    *  target path + 1-based line). CodeView unfolds any region containing the
    *  line, scrolls it into view, and briefly flashes it. null = no reveal. */
   targetLine: { path: string; line: number; nonce: number } | null;
+  /** The RESOLVED goToDefinition binding (defaults merged with the user
+   *  override) — e.g. 'Ctrl+Click' (default), 'F12'/any key if rebound to a key,
+   *  or another mouse combo. CodeView's binding-aware onCodeClick fires the jump
+   *  only when the click's combo equals this. OPTIONAL ('' default) so the
+   *  non-consumer panes (onGoToDefinition===null) are unaffected — they
+   *  early-return before reading it. */
+  gotoBinding?: string;
   /** Viewer reading-column width mode, lifted to App (seeded from the capture
    *  hint > localStorage > default via md-width.ts and persisted on change).
    *  Applied as data-mdwidth on the Viewer <section> so the CSS picks the

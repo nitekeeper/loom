@@ -198,6 +198,19 @@ export {
   popJumpHistory,
 } from './renderer/lib/definition-dispatch.js';
 export type { DefinitionAction, JumpLocation } from './renderer/lib/definition-dispatch.js';
+
+// PURE mouse-dispatch DECISION helpers (TA-MOUSE): the single-source right-
+// button routing (mouseEventDispatchButton) + the matched-command fire/skip
+// decision (shouldFireMouseCommand), extracted out of App's onMouse closure +
+// the Viewer onCodeClick so the dispatch contract is unit-testable under
+// node --test WITHOUT a DOM. The App dispatcher AND the Viewer onCodeClick are
+// the live consumers, so the unit suite pins the PRODUCTION logic — any drift
+// breaks the build/tests (the definition-dispatch.ts idiom). DOM/React-free.
+export {
+  mouseEventDispatchButton,
+  shouldFireMouseCommand,
+} from './renderer/lib/mouse-dispatch.js';
+export type { MouseDispatchType, MouseFireFacts } from './renderer/lib/mouse-dispatch.js';
 export {
   highlightedMatchHtml,
   hitText,
@@ -325,6 +338,7 @@ export type { WindowBounds, ResizeDir, MinSize } from './renderer/lib/window-res
 // DOM. No React/DOM-instance state.
 export {
   eventToCombo,
+  mouseEventToCombo,
   resolveBindings,
   findConflict,
   isValidBinding,
@@ -334,6 +348,10 @@ export {
   planReassign,
   isReserved,
   isPlatformCritical,
+  isMouseCombo,
+  isMouseForbiddenCommand,
+  isPositionalCommand,
+  MOUSE_KEYS,
   RESERVED_COMBOS,
   COMMANDS,
   DEFAULT_BINDINGS,
@@ -342,6 +360,7 @@ export type {
   CommandId,
   CommandSpec,
   KeyComboEvent,
+  MouseComboEvent,
   ReassignPlan,
 } from './renderer/lib/keybindings.js';
 

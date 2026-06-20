@@ -14,6 +14,16 @@
  *     shared revealAt (store.selectFile + targetLine reveal) OR shows the picker.
  *   Alt+ArrowLeft (goBack) pops the jump-history stack and reveals the prior line.
  *
+ * MOUSE-BINDINGS NOTE (FR-54): the goToDefinition REBINDABLE default is now
+ * 'Ctrl+Click' (was 'F12'), promoted into the binding system. F12 is NO LONGER
+ * the slot default but REMAINS a FIXED, always-on, non-rebindable keyboard
+ * affordance handled directly in the App keydown dispatcher (the WCAG 2.1.1
+ * guarantee), so the three F12 keypress tests below (and the Ctrl/Cmd-click
+ * test, now exercising the DEFAULT binding) intentionally STAY GREEN with no
+ * assertion change. The new mouse-bindings.e2e.ts spec proves the rebindable
+ * side (Ctrl+Click default, a key rebind disabling the click jump while F12
+ * survives, global mouse bindings, and the right-click single-source rule).
+ *
  * GTD-10: this spec is CHEAP INSURANCE — CI-only (it launches Electron, which
  * the WSL sandbox cannot do). Here it must only TYPECHECK (npm run
  * typecheck:e2e) and ENUMERATE (npx playwright test --list); it is NEVER

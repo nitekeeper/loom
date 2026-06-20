@@ -267,6 +267,70 @@ DefinitionKind =
   `truncated:true`. Non-text kinds are never scanned. This channel adds NO new
   agent-facing surface — it is renderer↔main only.
 
+**Mouse-combo shortcuts (ADDITIVE — no new IPC / no shape change).** A click
+with modifier(s) is now a first-class shortcut, recorded in the Shortcuts panel
+and persisted exactly like a keyboard combo. There is **no new channel and no
+new payload**: a mouse binding is an ordinary string in the SAME
+`Record<CommandId, string>` config the keyboard bindings already use, so the
+keybindings persistence path (`config.keybindings` / `coerceKeybindings`, which
+stays string-only) and `resolveBindings` / `diffOverrides` round-trip it
+unchanged once the validity layer (`src/renderer/lib/keybindings.ts`) accepts the
+mouse tokens. The contract:
+
+- **Grammar.** A mouse combo's FINAL (key-position) token is one of three
+  canonical, PERSISTED tokens — `Click` (left), `MiddleClick` (middle),
+  `RightClick` (right). The modifier order is UNCHANGED: `Ctrl`, then `Alt`, then
+  `Shift`, then the click token, joined by `+` (e.g. `Ctrl+Click`,
+  `Alt+Shift+RightClick`, `Ctrl+Shift+MiddleClick`). `metaKey` OR `ctrlKey` both
+  collapse to the single `Ctrl` token (Cmd == Ctrl), exactly as for keys.
+- **`>= 1` modifier required.** EVERY mouse combo (for ANY command) MUST carry at
+  least one modifier — a bare `Click` is structurally valid but DISALLOWED for
+  every command (`bindingAllowedFor`), so it is refused on capture, dropped on
+  resolve, and never persisted. A bare click can never hijack normal clicking.
+- **`closeFile` is MOUSE-FORBIDDEN (no dead bindings).** `closeFile` cannot be
+  bound to ANY mouse combo — the document mouse dispatcher hard-skips it
+  (keyboard-only: its tooltip/focus-rescue needs the `KeyboardEvent`), so a mouse
+  binding would be a SILENT DEAD BINDING (shown as live, never able to fire).
+  `bindingAllowedFor('closeFile', <mouseCombo>)` is therefore `false` (refused on
+  capture with a precise "cannot be a mouse shortcut" message, dropped on resolve,
+  never persisted). `goToDefinition` is the OTHER dispatcher-skip, but it is NOT
+  mouse-forbidden: it is `positional` and its mouse path is owned by the Viewer's
+  `onCodeClick`, so a mouse binding there is LIVE.
+- **`goToDefinition` click gesture is EXACTLY `Ctrl`/`Cmd`-click.** The default
+  binding `Ctrl+Click` is matched as the EXACT canonical combo — the primary
+  modifier with NO other modifier. `Ctrl`+`Shift`-click / `Ctrl`+`Alt`-click etc.
+  produce a DIFFERENT combo that does not equal `Ctrl+Click`, so they do NOT
+  jump (and remain freely bindable to other commands). This is a deliberate
+  change from the previously-hardcoded Viewer check (`if (!(e.metaKey ||
+  e.ctrlKey)) return;`), which jumped on ANY click with `Ctrl`/`Cmd` held
+  regardless of extra modifiers — matching VS Code's exact-modifier behaviour.
+- **goToDefinition default flip + the FIXED-F12 a11y rule.** The rebindable
+  `goToDefinition` slot's default is now `Ctrl+Click` (promoted out of the old
+  hardcoded Viewer check; was `F12`). `F12` is NO LONGER the slot default but
+  REMAINS a FIXED, always-on, **non-rebindable** keyboard affordance handled
+  directly in the App keydown dispatcher (mirroring the fixed `Ctrl+,` Shortcuts
+  opener), so a keyboard-only user always retains go-to-definition regardless of
+  how the slot is rebound (WCAG 2.1.1). `goToDefinition` is marked `positional`
+  (`CommandSpec.positional`): the document mouse dispatcher SKIPS it (it has no
+  per-pane caret context) and the Viewer's binding-aware `onCodeClick` owns the
+  click path.
+- **Right-button SINGLE-SOURCE rule.** A right-button release fires BOTH
+  `auxclick` AND `contextmenu` natively, and `defaultPrevented` does not carry
+  across the two events. So right-button is dispatched ONLY from `contextmenu`
+  (its unreliable `e.button` is normalized to `2`); the `auxclick` listener
+  handles the MIDDLE button only (a right-button `auxclick` is dropped). This
+  rule holds identically in the App dispatcher, the Viewer `onCodeClick`, and the
+  panel's mouse capture, so a `RightClick`-bound command fires EXACTLY ONCE.
+- **Rendered-markdown links WIN over a global mouse binding.** The capture-phase
+  anchor-guard (`src/renderer/lib/anchor-guard.ts`) calls `e.preventDefault()`
+  for every anchor click inside rendered markdown (`.md`/`.msg-body`/`.ib-body`),
+  including modified clicks, BEFORE the bubble-phase document mouse dispatcher
+  runs; the dispatcher bails on `e.defaultPrevented`, so a `Ctrl+Click`-bound
+  global command intentionally does NOT fire over a rendered link (an
+  intentional, testable precedence — links win). The anchor-guard listens on
+  `click` (primary) only, so a `MiddleClick`/`RightClick` binding over a link is
+  unaffected and fires normally.
+
 ---
 
 ## (c) EventBus — the `LoomEvent` union
