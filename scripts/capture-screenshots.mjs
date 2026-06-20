@@ -732,6 +732,21 @@ async function captureStatic() {
       await shot(page, '30-titlebar-linux.png');
     });
   }
+
+  // 31: a mermaid diagram rendered from a markdown fence (docs/architecture.md).
+  if (wants('31-mermaid.png')) {
+    await withApp(ACME, '31-mermaid.png', async (page) => {
+      await page.getByRole('treeitem', { name: 'docs folder' }).first().click();
+      await sleep(400);
+      await openFile(page, 'architecture.md');
+      // The fence -> <svg> upgrade is async (lib/mermaid-render.ts); wait for it.
+      await page
+        .waitForSelector('.mermaid-diagram svg, .mermaid-done', { timeout: 20_000 })
+        .catch(() => undefined);
+      await sleep(700);
+      await shot(page, '31-mermaid.png');
+    });
+  }
 }
 
 /* ------------------------------------------------------------------ */
