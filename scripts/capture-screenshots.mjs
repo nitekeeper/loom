@@ -516,7 +516,7 @@ async function captureChat() {
 
 /** GIT-rooted shots: Explorer git-status badges (13) + branch Changes view (14). */
 async function captureGit() {
-  if (!wants('13-explorer-wide.png') && !wants('14-explorer-narrow.png')) return;
+  if (!wants('13-explorer-wide.png') && !wants('14-changes-view.png')) return;
   log('=== git-rooted shots (badges + Changes view) ===');
   const root = makeGitAcme();
 
@@ -529,8 +529,8 @@ async function captureGit() {
       await shot(page, '13-explorer-wide.png');
     });
   }
-  if (wants('14-explorer-narrow.png')) {
-    await withApp(root, '14-explorer-narrow.png', async (page) => {
+  if (wants('14-changes-view.png')) {
+    await withApp(root, '14-changes-view.png', async (page) => {
       // Open the branch Changes view (StatusBar Changes toggle).
       await page.locator('.statusbar button[aria-label="Changes"]').click();
       await page.waitForSelector('.pane.viewer.changes', { timeout: 10_000 });
@@ -540,7 +540,7 @@ async function captureGit() {
         await modified.click();
         await sleep(400);
       }
-      await shot(page, '14-explorer-narrow.png');
+      await shot(page, '14-changes-view.png');
     });
   }
 }
@@ -630,17 +630,17 @@ async function captureStatic() {
   }
 
   // 18: the human terminal dock (NEW) ; 19: the split viewer / file-diff (NEW).
-  if (wants('18-close-button.png')) {
-    await withApp(ACME, '18-close-button.png', async (page) => {
+  if (wants('18-terminal.png')) {
+    await withApp(ACME, '18-terminal.png', async (page) => {
       await openFile(page, 'README.md');
       await openTerminal(page);
       await runInTerminal(page, 'echo "loom — a real human shell, never reachable by agents"');
       await runInTerminal(page, 'ls -1');
-      await shot(page, '18-close-button.png');
+      await shot(page, '18-terminal.png');
     });
   }
-  if (wants('19-viewer-empty.png')) {
-    await withApp(ACME, '19-viewer-empty.png', async (page) => {
+  if (wants('19-split-viewer.png')) {
+    await withApp(ACME, '19-split-viewer.png', async (page) => {
       await openFile(page, 'README.md');
       await page.locator('.split-view-btn').first().click();
       await page
@@ -649,7 +649,7 @@ async function captureStatic() {
       // Open a second file into the now-active split pane.
       await page.getByRole('treeitem', { name: 'package.json' }).first().click();
       await sleep(600);
-      await shot(page, '19-viewer-empty.png');
+      await shot(page, '19-split-viewer.png');
     });
   }
 

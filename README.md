@@ -20,7 +20,17 @@ A live 5-agent audit of the sample `acme-api` codebase (see [Live demo](#live-de
 |---|---|
 | ![SVG shown as source with a safety banner](artifacts/05-svg-source.png) | ![Binary file metadata placeholder](artifacts/07-binary-noprev.png) |
 
-> All 30 captures are in [`artifacts/`](artifacts/) (dark + light themes, every render-state, and the end-to-end live MCP run).
+Workspace features:
+
+| Human terminal dock (a real shell — never reachable by agents) | Split viewer / side-by-side file compare |
+|---|---|
+| ![Terminal dock open below the viewer](artifacts/18-terminal.png) | ![Split viewer showing two files side by side](artifacts/19-split-viewer.png) |
+
+| Git "Changes vs `main`" diff view (with Explorer status badges) | |
+|---|---|
+| ![Changes view showing the working-tree diff](artifacts/14-changes-view.png) | |
+
+> All 30 captures are in [`artifacts/`](artifacts/) (dark + light themes, every render-state, the terminal / split / changes views, and the end-to-end live MCP run).
 
 ---
 
