@@ -37,7 +37,17 @@ import {
   popJumpHistory,
 } from '../lib/definition-dispatch.js';
 import type { JumpLocation } from '../lib/definition-dispatch.js';
-import { eventToCombo, isReserved, resolveBindings } from '../lib/keybindings.js';
+import {
+  mouseEventDispatchButton,
+  shouldFireMouseCommand,
+} from '../lib/mouse-dispatch.js';
+import {
+  eventToCombo,
+  mouseEventToCombo,
+  isReserved,
+  isPositionalCommand,
+  resolveBindings,
+} from '../lib/keybindings.js';
 import type { CommandId } from '../lib/keybindings.js';
 import { TitleBar } from './TitleBar.js';
 import { WindowResizeHandles } from './WindowResizeHandles.js';
@@ -2661,6 +2671,124 @@ export function App(): JSX.Element {
     [store, closeFileFromButton, diffMode],
   );
 
+  // The go-to-definition KEYBOARD body — the SINGLE source of truth for what the
+  // fixed-F12 affordance AND the (rebindable) goToDefinition keydown case run.
+  // When a diff is open the F12 consumer (the left/store Viewer) is replaced by
+  // ChangesView, so announce why instead of a silent no-op; otherwise raise the
+  // gotoCommand signal so the active CodeView resolves the symbol under the
+  // caret/selection (topmost-visible-line fallback + multi-identifier chooser
+  // included) and calls onGoToDefinition. The MOUSE path is Viewer-owned
+  // (onCodeClick) and never routes here.
+  const fireGotoCommandOrAnnounce = useCallback((): void => {
+    if (diffMode) {
+      setStatusReannounce('Go to definition is unavailable while a diff is open');
+      return;
+    }
+    fireGotoCommand();
+  }, [diffMode, setStatusReannounce, fireGotoCommand]);
+
+  // The EVENT-SOURCE-AGNOSTIC command dispatch — every command that does NOT
+  // read the triggering event. Shared by the keydown switch AND the document
+  // mouse dispatcher so a mouse-bound global command runs the identical action.
+  // DELIBERATELY EXCLUDED (never reachable here):
+  //   - goToDefinition: POSITIONAL — its KEYBOARD path runs via
+  //     fireGotoCommandOrAnnounce (special-cased in keydown + the fixed-F12
+  //     branch), its MOUSE path is Viewer-owned (onCodeClick). The mouse
+  //     dispatcher skips it via isPositionalCommand; keydown special-cases it.
+  //   - closeFile: handled by runCloseFileCommand BEFORE the switch (it needs
+  //     the KeyboardEvent for its tooltip/focus-rescue coordination), and the
+  //     mouse dispatcher excludes it entirely (a mouse-bound closeFile is inert).
+  // So runCommand legitimately has no goToDefinition/closeFile case.
+  const runCommand = useCallback(
+    (id: CommandId): void => {
+      switch (id) {
+        case 'toggleExplorer':
+          toggleExplorer(true);
+          break;
+        case 'toggleChat':
+          toggleChat(true);
+          break;
+        case 'toggleTerminal':
+          toggleTerminal();
+          break;
+        case 'toggleMaximizeTerminal':
+          toggleMaximizeTerminal();
+          break;
+        case 'focusTerminal1':
+          focusTerminalAt(0);
+          break;
+        case 'focusTerminal2':
+          focusTerminalAt(1);
+          break;
+        case 'focusTerminal3':
+          focusTerminalAt(2);
+          break;
+        case 'cycleTerminalFocus':
+          cycleTerminalFocus();
+          break;
+        case 'toggleChanges':
+          toggleChanges();
+          break;
+        case 'foldAll':
+          fireFoldCommand('fold');
+          break;
+        case 'unfoldAll':
+          fireFoldCommand('unfold');
+          break;
+        case 'copyRendered':
+          fireCopyCommand();
+          break;
+        case 'toggleTheme':
+          void store.setTheme(vm?.theme === 'dark' ? 'light' : 'dark');
+          break;
+        case 'toggleReadingWidth':
+          toggleMdWidth();
+          break;
+        case 'toggleSplitView':
+          toggleSplitView();
+          break;
+        case 'togglePause':
+          void store.togglePause();
+          break;
+        case 'openSearch':
+          openSearch();
+          break;
+        case 'openSettings':
+          openSettings(gearButtonRef.current);
+          break;
+        case 'newWindow':
+          void window.loom?.windowControls?.newWindow();
+          break;
+        case 'openFolderWindow':
+          void window.loom?.windowControls?.openFolder();
+          break;
+        case 'goBack':
+          goBack();
+          break;
+        default:
+          break;
+      }
+    },
+    [
+      toggleExplorer,
+      toggleChat,
+      toggleTerminal,
+      toggleMaximizeTerminal,
+      focusTerminalAt,
+      cycleTerminalFocus,
+      toggleChanges,
+      fireFoldCommand,
+      fireCopyCommand,
+      store,
+      vm?.theme,
+      toggleMdWidth,
+      toggleSplitView,
+      openSearch,
+      openSettings,
+      goBack,
+    ],
+  );
+
   /* ============================================================
    * UNIFIED keyboard-shortcut dispatcher (FR-54)
    * ------------------------------------------------------------
@@ -2744,6 +2872,22 @@ export function App(): JSX.Element {
         return;
       }
 
+      // FIXED, always-on F12 keyboard affordance for go-to-definition
+      // (independent of the rebindable goToDefinition slot, which now defaults to
+      // 'Ctrl+Click'), so a keyboard-only user — including the topmost-visible-
+      // line fallback and the multi-identifier symbol chooser in Viewer.tsx —
+      // ALWAYS retains the command (WCAG 2.1.1). Mirrors the fixed Ctrl+, opener
+      // above: matched SPECIFICALLY (not via the binding slot), skipped in
+      // editable controls. A keydown is NOT a mouse event, so this never
+      // double-fires with the Viewer's mouse onCodeClick path. Placed before the
+      // resolveBindings match loop so it wins even if a user ALSO bound some
+      // command to F12 (F12 stays an ordinary rebindable target too).
+      if (combo === 'F12' && !isEditableTarget(e.target)) {
+        e.preventDefault();
+        fireGotoCommandOrAnnounce();
+        return;
+      }
+
       const active = resolveBindings(vm?.keybindings);
       // Find the command whose binding matches this combo. A defensive guard:
       // never let a RESERVED combo (e.g. a corrupt persisted config that holds
@@ -2777,151 +2921,162 @@ export function App(): JSX.Element {
         return;
 
       e.preventDefault();
-      switch (matched) {
-        case 'toggleExplorer':
-          toggleExplorer(true);
-          break;
-        case 'toggleChat':
-          toggleChat(true);
-          break;
-        case 'toggleTerminal':
-          toggleTerminal();
-          break;
-        case 'toggleMaximizeTerminal':
-          // Solo-maximize/restore the active terminal (opens dock if closed).
-          toggleMaximizeTerminal();
-          break;
-        case 'focusTerminal1':
-          // Focus terminal N (1-based command → 0-based slot). Opens the dock
-          // first when closed; clamps the index into the LIVE count so a focus
-          // command for a slot above the live count is a no-op-on-the-last, not
-          // a crash. Fires from inside another terminal (R7 editable exception).
-          focusTerminalAt(0);
-          break;
-        case 'focusTerminal2':
-          focusTerminalAt(1);
-          break;
-        case 'focusTerminal3':
-          focusTerminalAt(2);
-          break;
-        case 'cycleTerminalFocus':
-          // Advance focus to the next terminal, wrapping within the live count
-          // (Ctrl+Alt+`). Opens the dock first when closed.
-          cycleTerminalFocus();
-          break;
-        case 'toggleChanges':
-          // Open/close the branch Changes viewer (the StatusBar toggle action).
-          toggleChanges();
-          break;
-        case 'foldAll':
-          fireFoldCommand('fold');
-          break;
-        case 'unfoldAll':
-          fireFoldCommand('unfold');
-          break;
-        case 'copyRendered':
-          // Copy the rendered Viewer content. ViewerContent no-ops unless the
-          // open file is RENDERED markdown, so the shortcut is harmless on
-          // source/image/binary/empty views. Ctrl+C stays native (selection
-          // copy) — only the distinct Ctrl/Cmd+Shift+C combo maps here.
-          fireCopyCommand();
-          break;
-        case 'toggleTheme':
-          void store.setTheme(vm?.theme === 'dark' ? 'light' : 'dark');
-          break;
-        case 'toggleReadingWidth':
-          // Flip the Viewer reading column fit↔full (persists + announces).
-          // Global like toggleTheme — meaningful whatever file (if any) is
-          // open, since the mode is sticky across files and restarts.
-          toggleMdWidth();
-          break;
-        case 'toggleSplitView':
-          // Open/close the second (side-by-side compare) reading pane. Global
-          // like toggleReadingWidth — opening sets the right pane active so the
-          // next Explorer pick fills it; closing restores the single pane.
-          toggleSplitView();
-          break;
-        case 'togglePause':
-          void store.togglePause();
-          break;
-        case 'openSearch':
-          openSearch();
-          break;
-        case 'openSettings':
-          // Open Settings the same way the StatusBar gear does — pass the gear
-          // ref as the opener so focus returns there on close (mirrors how the
-          // Ctrl/Cmd+Comma opener hands the gear to openShortcuts).
-          openSettings(gearButtonRef.current);
-          break;
-        case 'newWindow':
-          // Open ANOTHER window onto the SAME folder (shared db/MCP, own pump +
-          // terminal pool). main resolves everything; the renderer supplies no path.
-          void window.loom?.windowControls?.newWindow();
-          break;
-        case 'openFolderWindow':
-          // Pop the native folder picker; main decides in-process duplicate vs.
-          // a new isolated Loom process vs. decline (a live Loom already serves it).
-          void window.loom?.windowControls?.openFolder();
-          break;
-        case 'goToDefinition':
-          // CI-R1: when a diff is open, the LEFT/store/single Viewer that
-          // consumes the F12 signal is replaced by ChangesView (and the right
-          // file pane in a diff+file split is wired gotoCommand={null} per the
-          // endorsed GTD-1 right-pane deferral), so NO CodeView consumes F12.
-          // Rather than a SILENT no-op, announce why (so a reader pressing F12
-          // over a diff gets feedback instead of nothing). The reveal pipeline
-          // (revealAt -> setDiffMode(false)) only targets the left/store Viewer,
-          // hence go-to-definition is unavailable while a diff is on for v1.
-          if (diffMode) {
-            setStatusReannounce(
-              'Go to definition is unavailable while a diff is open',
-            );
-            break;
-          }
-          // Raise the F12 signal; the active CodeView derives the symbol under
-          // the caret/selection and calls onGoToDefinition. A no-op when no
-          // CodeView is the active consumer (non-source view / no caret).
-          fireGotoCommand();
-          break;
-        case 'goBack':
-          // Pop the prior reading location off the jump-history stack.
-          goBack();
-          break;
-        default:
-          break;
+      // goToDefinition is special-cased here (it routes to the SAME body the
+      // fixed-F12 affordance runs) so a user who REBINDS goToDefinition to some
+      // OTHER key still works. Its mouse path is Viewer-owned; this keyboard path
+      // raises the gotoCommand signal (or announces over a diff). Every OTHER
+      // command is event-source-agnostic and dispatched via the shared
+      // runCommand (the identical action a mouse binding fires).
+      if (matched === 'goToDefinition') {
+        fireGotoCommandOrAnnounce();
+        return;
       }
+      runCommand(matched);
     };
     // Bubble phase (NOT capture) so ReceiptStrip's stopPropagation can win.
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
+  }, [
+    // Modal-suspend guards.
+    shortcutsOpen,
+    settingsOpen,
+    defPicker,
+    symbolChooser,
+    // Binding resolution + the fixed-opener / Escape / fixed-F12 branches.
+    vm?.keybindings,
+    openShortcuts,
+    diffMode,
+    closeChanges,
+    fireGotoCommandOrAnnounce,
+    // closeFile (keyboard-only) + the shared event-agnostic dispatch.
+    runCloseFileCommand,
+    runCommand,
+  ]);
+
+  /* ============================================================
+   * MOUSE-COMBO dispatcher (a sibling to the keydown dispatcher)
+   * ------------------------------------------------------------
+   * A document-level dispatcher that lets a MOUSE click with modifier(s) fire a
+   * bound command, exactly as the keyboard one does for keys. It listens on
+   * THREE native events to cover all three buttons (Chromium fires 'click' only
+   * for the primary button):
+   *   - 'click'       -> PRIMARY button (0)
+   *   - 'auxclick'    -> MIDDLE button (1) ONLY (a right-button auxclick is
+   *                      dropped; 'contextmenu' is the SINGLE right-button source)
+   *   - 'contextmenu' -> RIGHT button (2)
+   * The single-source rule prevents a right-button gesture (which fires BOTH
+   * auxclick AND contextmenu natively, with defaultPrevented NOT carrying across
+   * them) from dispatching twice.
+   *
+   * It reuses the SAME guards as the keyboard dispatcher: modal-suspend,
+   * resolveBindings(vm?.keybindings), isReserved, isEditableTarget +
+   * TERMINAL_EDITABLE_EXEMPT, and the shared runCommand. It SKIPS positional
+   * commands (goToDefinition — Viewer-owned) and closeFile (keyboard-only), and
+   * preventDefaults ONLY on a real match so normal clicks / the native context
+   * menu / middle-click paste are untouched when nothing matches.
+   * ============================================================ */
+  useEffect(() => {
+    const onMouse = (e: MouseEvent): void => {
+      // Suspend while a modal owns input — identical to the keydown dispatcher.
+      if (
+        shortcutsOpen ||
+        settingsOpen ||
+        defPicker !== null ||
+        symbolChooser !== null
+      ) {
+        return;
+      }
+
+      // BAIL on a consumed event. Load-bearing precedence (issue #7,
+      // links-win): the capture-phase anchor-guard (anchor-guard.ts) calls
+      // e.preventDefault() for every anchor click inside rendered markdown
+      // (.md/.msg-body/.ib-body) — including MODIFIED clicks — so a Ctrl/Cmd+
+      // Click-bound global command intentionally does NOT fire over a rendered
+      // link (this bubble-phase handler bails here). This is the endorsed
+      // precedence (rendered links win). The Viewer's go-to-definition
+      // onCodeClick ALSO preventDefaults on a real jump, so a positional click is
+      // belt-and-suspenders excluded here too. NOTE: the anchor-guard listens on
+      // 'click' (primary) only, so a MiddleClick/RightClick binding over a link
+      // is unaffected and fires normally.
+      if (e.defaultPrevented) return;
+
+      // SINGLE-SOURCE right-button rule (shared mouse-dispatch helper — the unit
+      // suite pins the EXACT routing this dispatcher uses). The 'auxclick'
+      // listener owns the MIDDLE button only; a right-button auxclick is dropped
+      // (contextmenu owns it). contextmenu's e.button is unreliable across
+      // engines -> normalized to 2. A null result means SKIP this event.
+      const button = mouseEventDispatchButton(
+        e.type as 'click' | 'auxclick' | 'contextmenu',
+        e.button,
+      );
+      if (button === null) return;
+
+      // Normal clicks / menus / middle-paste / the native context menu must be
+      // untouched — only a MODIFIED click can ever be a binding (and a bare mouse
+      // combo is never persisted anyway).
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) return;
+
+      const combo = mouseEventToCombo({
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        shiftKey: e.shiftKey,
+        altKey: e.altKey,
+        button,
+      });
+
+      const active = resolveBindings(vm?.keybindings);
+      let matched: CommandId | null = null;
+      if (!isReserved(combo)) {
+        for (const id of Object.keys(active) as CommandId[]) {
+          if (active[id] === combo) {
+            matched = id;
+            break;
+          }
+        }
+      }
+      if (matched === null) return; // no command — let the click fall through
+
+      // Fire/skip decision (shared mouse-dispatch helper — the unit suite pins
+      // this EXACT decision). SKIPS a positional command (goToDefinition — the
+      // document dispatcher has no per-pane caret context; the Viewer's
+      // binding-aware onCodeClick owns that click path), SKIPS closeFile
+      // (keyboard-only; its tooltip/focus-rescue needs the KeyboardEvent — a
+      // mouse-bound closeFile is intentionally inert), and SUPPRESSES inside a
+      // textarea/terminal unless the command is terminal-exempt (mouse combos
+      // are never in TERMINAL_EDITABLE_EXEMPT).
+      if (
+        !shouldFireMouseCommand({
+          defaultPrevented: false, // already bailed above on e.defaultPrevented
+          isPositional: isPositionalCommand(matched),
+          isCloseFile: matched === 'closeFile',
+          isEditable: isEditableTarget(e.target),
+          isTerminalExempt: TERMINAL_EDITABLE_EXEMPT.has(matched),
+        })
+      ) {
+        return;
+      }
+
+      // preventDefault ONLY now, on a real match — so a matched RightClick's
+      // native menu is suppressed while an UNMATCHED right-click still shows its
+      // menu and middle-click paste still works.
+      e.preventDefault();
+      runCommand(matched);
+    };
+    document.addEventListener('click', onMouse);
+    document.addEventListener('auxclick', onMouse);
+    document.addEventListener('contextmenu', onMouse);
+    return () => {
+      document.removeEventListener('click', onMouse);
+      document.removeEventListener('auxclick', onMouse);
+      document.removeEventListener('contextmenu', onMouse);
+    };
   }, [
     shortcutsOpen,
     settingsOpen,
     defPicker,
     symbolChooser,
     vm?.keybindings,
-    vm?.theme,
-    store,
-    toggleExplorer,
-    toggleChat,
-    toggleTerminal,
-    fireFoldCommand,
-    fireCopyCommand,
-    toggleMdWidth,
-    toggleSplitView,
-    openShortcuts,
-    openSettings,
-    runCloseFileCommand,
-    openSearch,
-    diffMode,
-    closeChanges,
-    toggleChanges,
-    toggleMaximizeTerminal,
-    focusTerminalAt,
-    cycleTerminalFocus,
-    fireGotoCommand,
-    goBack,
-    setStatusReannounce,
+    runCommand,
   ]);
 
   if (vm === null) {
@@ -2983,6 +3138,12 @@ export function App(): JSX.Element {
       .map((id) => resolvedTerminalBindings[id])
       .filter((c): c is string => typeof c === 'string'),
   );
+  // The RESOLVED goToDefinition binding (reuses the same resolveBindings call) —
+  // threaded to every Viewer so its binding-aware onCodeClick fires the jump
+  // only when the click's combo equals this. 'Ctrl+Click' by default; a key
+  // (e.g. 'F12') if rebound to a key (clicking then never jumps — the keyboard
+  // path runs in the dispatcher); or another mouse combo if rebound to one.
+  const gotoBinding = resolvedTerminalBindings.goToDefinition;
 
   return (
     <div className="win">
@@ -3273,6 +3434,9 @@ export function App(): JSX.Element {
                 onGoToDefinition={null}
                 onChooseSymbol={null}
                 targetLine={null}
+                // Harmless on a non-consumer pane (onGoToDefinition===null ->
+                // onCodeClick early-returns); passed for consistency.
+                gotoBinding={gotoBinding}
                 mdWidth={mdWidth}
                 onToggleMdWidth={toggleMdWidth}
                 splitView={splitRendered}
@@ -3310,6 +3474,7 @@ export function App(): JSX.Element {
               onGoToDefinition={onGoToDefinition}
               onChooseSymbol={onChooseSymbol}
               targetLine={targetLine}
+              gotoBinding={gotoBinding}
               mdWidth={mdWidth}
               onToggleMdWidth={toggleMdWidth}
               splitView={splitRendered}
@@ -3338,6 +3503,9 @@ export function App(): JSX.Element {
               onGoToDefinition={null}
               onChooseSymbol={null}
               targetLine={null}
+              // Harmless on a non-consumer pane (onGoToDefinition===null ->
+              // onCodeClick early-returns); passed for consistency.
+              gotoBinding={gotoBinding}
               mdWidth={mdWidth}
               onToggleMdWidth={toggleMdWidth}
               splitView={splitRendered}
@@ -3358,6 +3526,7 @@ export function App(): JSX.Element {
             onGoToDefinition={onGoToDefinition}
             onChooseSymbol={onChooseSymbol}
             targetLine={targetLine}
+            gotoBinding={gotoBinding}
             mdWidth={mdWidth}
             onToggleMdWidth={toggleMdWidth}
             splitView={splitRendered}

@@ -1127,9 +1127,13 @@ test('keybindings: goToDefinition + goBack are registered, valid, non-colliding,
   const back = COMMANDS.find((c) => c.id === 'goBack');
   assert.ok(gtd, 'a goToDefinition command is registered');
   assert.ok(back, 'a goBack command is registered');
-  assert.equal(gtd.defaultBinding, 'F12', 'goToDefinition default is F12');
+  // The REBINDABLE default is now 'Ctrl+Click' (the IDE/VS-Code Ctrl/Cmd-click
+  // affordance, promoted into the binding system). F12 is no longer this slot's
+  // default — it is a FIXED, always-on keyboard affordance handled in the App
+  // dispatcher — but it stays an ordinary rebindable TARGET (asserted below).
+  assert.equal(gtd.defaultBinding, 'Ctrl+Click', 'goToDefinition default is Ctrl+Click');
   assert.equal(back.defaultBinding, 'Alt+ArrowLeft', 'goBack default is Alt+ArrowLeft');
-  assert.equal(DEFAULT_BINDINGS.goToDefinition, 'F12', 'resolved default carries F12');
+  assert.equal(DEFAULT_BINDINGS.goToDefinition, 'Ctrl+Click', 'resolved default carries Ctrl+Click');
   assert.equal(DEFAULT_BINDINGS.goBack, 'Alt+ArrowLeft', 'resolved default carries Alt+ArrowLeft');
 
   const resolved = resolveBindings({});
@@ -1139,9 +1143,17 @@ test('keybindings: goToDefinition + goBack are registered, valid, non-colliding,
     assert.equal(findConflict(resolved, combo, id), null, `${id} collides with no other command`);
     assert.equal(isReserved(combo), false, `${id} default is not an app-shell reserved combo`);
   }
-  // F12 is NOT a platform-critical combo (only F5/F11 are), so it shadows no
-  // load-bearing native action.
+  // F12 stays a STRUCTURALLY-valid rebind target for goToDefinition (a user may
+  // bind the slot back onto F12, or onto any other key) — the default flip does
+  // not make F12 unbindable.
+  assert.ok(
+    bindingAllowedFor('goToDefinition', 'F12'),
+    'F12 is still an allowed rebind target for goToDefinition',
+  );
+  // Neither F12 nor Ctrl+Click is a platform-critical combo (only F5/F11 are),
+  // so the default shadows no load-bearing native action.
   assert.equal(isPlatformCritical('F12'), false, 'F12 is not platform-critical');
+  assert.equal(isPlatformCritical('Ctrl+Click'), false, 'Ctrl+Click is not platform-critical');
   assert.equal(isPlatformCritical('Alt+ArrowLeft'), false, 'Alt+ArrowLeft is not platform-critical');
 });
 

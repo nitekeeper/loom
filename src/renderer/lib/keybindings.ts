@@ -60,6 +60,13 @@ export interface CommandSpec {
   label: string;
   /** Canonical default combo string (see CANONICAL COMBO FORMAT). */
   defaultBinding: string;
+  /** True when the command needs the POSITION of the trigger to act (e.g.
+   *  goToDefinition needs the symbol under the click/caret). The App-level
+   *  document mouse dispatcher SKIPS positional commands — it has no pane/caret
+   *  context — and leaves the click to the owning view (Viewer.tsx onCodeClick),
+   *  so a positional command's mouse binding never double-fires. Absent/false
+   *  for every event-source-agnostic command. */
+  positional?: boolean;
 }
 
 /** The customizable commands, in panel display order, with their default
@@ -86,12 +93,26 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: 'focusTerminal2', label: 'Focus terminal 2', defaultBinding: 'Ctrl+2' },
   { id: 'focusTerminal3', label: 'Focus terminal 3', defaultBinding: 'Ctrl+3' },
   { id: 'cycleTerminalFocus', label: 'Cycle terminal focus', defaultBinding: 'Ctrl+Alt+`' },
-  // Go to Definition: jump from the symbol under the caret/selection in the
-  // Viewer to where it is defined (IDE-standard F12). NOT an editable-target
-  // command, so the dispatcher's isEditableTarget guard suppresses it inside a
-  // focused terminal/textarea — a modifier-less F12 is safe because it fires
-  // ONLY in the non-editable Viewer.
-  { id: 'goToDefinition', label: 'Go to definition', defaultBinding: 'F12' },
+  // Go to Definition: jump from the symbol under the click/caret/selection in
+  // the Viewer to where it is defined. The REBINDABLE default is now
+  // 'Ctrl+Click' (the IDE/VS-Code Ctrl/Cmd-click affordance), promoted out of
+  // the previously-hardcoded Viewer click handler into the binding system.
+  //
+  // A11Y (WCAG 2.1.1): F12 is NO LONGER this slot's default, but it REMAINS a
+  // FIXED, always-on, NON-rebindable keyboard affordance handled directly in the
+  // App keydown dispatcher (App.tsx — the fixed-F12 branch, mirroring the fixed
+  // Ctrl+, Shortcuts opener), NOT through this binding slot. So a keyboard-only
+  // user — including the topmost-visible-line fallback and the multi-identifier
+  // symbol chooser in Viewer.tsx — always retains go-to-definition regardless of
+  // how this slot is rebound. F12 stays an ordinary REBINDABLE target too
+  // (a user may bind any command, or goToDefinition itself, onto F12).
+  //
+  // POSITIONAL: marked positional so the App document mouse dispatcher SKIPS it
+  // (it can't resolve the symbol under the pointer per-pane); the Viewer's
+  // binding-aware onCodeClick owns the click path. NOT an editable-target
+  // command, so the dispatcher's isEditableTarget guard suppresses the keyboard
+  // F12 inside a focused terminal/textarea.
+  { id: 'goToDefinition', label: 'Go to definition', defaultBinding: 'Ctrl+Click', positional: true },
   // Go Back: return to the prior reading location on the jump-history stack
   // (IDE/browser-standard Alt+ArrowLeft "navigate back").
   { id: 'goBack', label: 'Go back', defaultBinding: 'Alt+ArrowLeft' },
@@ -121,6 +142,19 @@ export interface KeyComboEvent {
   altKey: boolean;
   /** DOM KeyboardEvent.key (e.g. 'k', 'K', 'Escape', '.', 'ArrowLeft'). */
   key: string;
+}
+
+/** A minimal MouseEvent shape (DOM-free, testkit-safe) so a click with
+ *  modifier(s) can be turned into a canonical combo whose FINAL token is a
+ *  mouse token (Click / MiddleClick / RightClick). `button` is the DOM
+ *  MouseEvent.button code (0 primary, 1 middle, 2 secondary). */
+export interface MouseComboEvent {
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  /** DOM MouseEvent.button (0 = primary/left, 1 = middle, 2 = secondary/right). */
+  button: number;
 }
 
 /** Modifier key names that are NOT, on their own, a valid binding key.
@@ -212,6 +246,31 @@ export function eventToCombo(e: KeyComboEvent): string {
   return parts.join('+');
 }
 
+/** The canonical mouse-button "key" tokens (the final segment of a mouse
+ *  combo), keyed by DOM MouseEvent.button. An unknown button has no token. */
+const MOUSE_BUTTON_TOKENS: Readonly<Record<number, string>> = {
+  0: 'Click',
+  1: 'MiddleClick',
+  2: 'RightClick',
+};
+
+/** Turn a mouse-event-like object into the canonical combo string — the SAME
+ *  Ctrl/Alt/Shift prefix assembly + Cmd==Ctrl collapse as eventToCombo, with
+ *  the click token (Click / MiddleClick / RightClick) in the final 'key'
+ *  position. An UNKNOWN button (not 0/1/2) yields '' (no token), which
+ *  isValidBinding then rejects — so a stray button can never produce a binding.
+ *  DOM-free (testkit-safe). */
+export function mouseEventToCombo(e: MouseComboEvent): string {
+  const token = MOUSE_BUTTON_TOKENS[e.button];
+  if (token === undefined) return '';
+  const parts: string[] = [];
+  if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
+  if (e.altKey) parts.push('Alt');
+  if (e.shiftKey) parts.push('Shift');
+  parts.push(token);
+  return parts.join('+');
+}
+
 /** The three canonical modifier tokens, in their FIXED serialization order
  *  (see CANONICAL COMBO FORMAT). A valid combo's leading segments must be a
  *  prefix of this sequence — no repeats, no out-of-order, no unknown token. */
@@ -252,16 +311,46 @@ const NAMED_KEYS: ReadonlySet<string> = new Set([
   'F12',
 ]);
 
-/** True when a single segment is a usable FINAL key token: either a single
- *  printable, non-space character (canonically upper-cased — but we accept any
- *  single char so punctuation like '.' or '/' passes) OR a known named key. */
+/** The canonical MOUSE "key" tokens — the final segment of a mouse combo. A
+ *  combo whose last token is one of these is a mouse combo (isMouseCombo).
+ *  Exported so the panel, the Viewer, and the tests can introspect "is this a
+ *  mouse combo" without re-deriving the spelling. (These spellings are
+ *  PERSISTED — a binding like 'Ctrl+Click' is stored verbatim.) */
+export const MOUSE_KEYS: ReadonlySet<string> = new Set([
+  'Click',
+  'MiddleClick',
+  'RightClick',
+]);
+
+/** True when a single segment is a usable FINAL key token: a single printable,
+ *  non-space character (canonically upper-cased — but we accept any single char
+ *  so punctuation like '.' or '/' passes), a known named key, OR a canonical
+ *  mouse token (Click / MiddleClick / RightClick). The mouse token is
+ *  STRUCTURALLY valid here; the per-command >=1-modifier rule (bindingAllowedFor)
+ *  is what rejects a BARE 'Click' for any command. */
 function isValidKeyToken(token: string): boolean {
   if (token.length === 0) return false;
   if (token.length === 1) {
     // A lone space is never a key token — Space is the canonical name for it.
     return token !== ' ';
   }
+  if (MOUSE_KEYS.has(token)) return true;
   return NAMED_KEYS.has(token);
+}
+
+/** True when `combo`'s final token is a mouse token (Click / MiddleClick /
+ *  RightClick) — i.e. it is a MOUSE combo, not a keyboard one. An empty string
+ *  is not a mouse combo. */
+export function isMouseCombo(combo: string): boolean {
+  return MOUSE_KEYS.has(combo.split('+').pop() ?? '');
+}
+
+/** True when the command with id `id` is POSITIONAL — it needs the trigger's
+ *  position (e.g. goToDefinition needs the symbol under the click). The App
+ *  document mouse dispatcher skips these (the owning view handles the click).
+ *  False for an unknown id or any event-source-agnostic command. */
+export function isPositionalCommand(id: CommandId): boolean {
+  return COMMANDS.find((c) => c.id === id)?.positional === true;
 }
 
 /** True when a canonical combo is a STRUCTURALLY-VALID, usable binding —
@@ -314,6 +403,22 @@ const EDITABLE_TARGET_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
   'cycleTerminalFocus',
 ]);
 
+/** Commands that CANNOT be bound to a MOUSE combo — the App document mouse
+ *  dispatcher HARD-SKIPS them, so a mouse binding would be a SILENT DEAD
+ *  BINDING (the panel would show it as live, yet it could never fire). Reject
+ *  the bind at capture time so the panel surfaces a clear message instead of
+ *  recording an inert binding.
+ *
+ *  closeFile is the unique dead case: the dispatcher skips it because closeFile
+ *  is keyboard-only (its tooltip/focus-rescue needs the KeyboardEvent — see
+ *  App.tsx onMouse + shouldFireMouseCommand's isCloseFile skip). goToDefinition
+ *  is ALSO skipped by the document dispatcher, but it is POSITIONAL and its
+ *  mouse path is handled by the Viewer's onCodeClick, so a mouse binding there
+ *  is LIVE (not dead) — hence it is NOT in this set. */
+const MOUSE_FORBIDDEN_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
+  'closeFile',
+]);
+
 /** True when `combo` is a valid binding FOR THE GIVEN COMMAND. On top of the
  *  structural isValidBinding check, every EDITABLE_TARGET_COMMANDS command must
  *  carry at least one modifier: these fire even inside editable targets, so a
@@ -323,7 +428,28 @@ export function bindingAllowedFor(id: CommandId, combo: string): boolean {
   // isValidBinding guarantees every non-final segment is a modifier, so
   // "has a modifier" reduces to "more than one segment".
   if (EDITABLE_TARGET_COMMANDS.has(id) && combo.split('+').length < 2) return false;
+  // EVERY mouse combo (for ANY command) MUST carry at least one modifier so a
+  // bare 'Click' can never hijack normal clicking. A bare 'Click' is
+  // STRUCTURALLY valid (isValidBinding) but DISALLOWED here for every command —
+  // refused on capture, dropped on resolve, never persisted (mirroring how a
+  // disallowed combo is already treated).
+  if (isMouseCombo(combo) && combo.split('+').length < 2) return false;
+  // A MOUSE-FORBIDDEN command (closeFile) cannot take a mouse combo at all: the
+  // App document mouse dispatcher HARD-SKIPS it, so a mouse binding would be a
+  // SILENT DEAD BINDING. Reject it here so the panel surfaces a clear message
+  // and never records an inert binding (and resolveBindings/diffOverrides drop
+  // any such persisted value, mirroring every other disallowed combo).
+  if (MOUSE_FORBIDDEN_COMMANDS.has(id) && isMouseCombo(combo)) return false;
   return true;
+}
+
+/** True when `id` is a MOUSE-FORBIDDEN command (the App document mouse
+ *  dispatcher hard-skips it, so a mouse binding would be inert). Exported so
+ *  the Shortcuts panel can show a PRECISE "cannot be a mouse shortcut" message
+ *  for a refused mouse combo instead of the generic "needs a modifier" text.
+ *  closeFile is the only such command today (see MOUSE_FORBIDDEN_COMMANDS). */
+export function isMouseForbiddenCommand(id: CommandId): boolean {
+  return MOUSE_FORBIDDEN_COMMANDS.has(id);
 }
 
 /** Merge user overrides onto the defaults, returning the FULL resolved
