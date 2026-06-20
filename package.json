@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
+    "capture": "node scripts/capture-screenshots.mjs",
     "package:win": "node scripts/pack-win.mjs",
     "make:icon": "node scripts/make-icon.mjs",
     "dist:win": "electron-builder --config electron-builder.config.cjs --win nsis portable --publish never",
