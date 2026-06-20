@@ -130,6 +130,7 @@ export function InboxLens(props: InboxLensProps): JSX.Element {
                       className="ib-body"
                       onClick={blockBodyNavigation}
                       onKeyDown={blockBodyNavigation}
+                      // eslint-disable-next-line react/no-danger -- renderInline output is safe: markdown-it runs with html:false (raw HTML emitted escaped), see lib/markdown.ts threat model
                       dangerouslySetInnerHTML={{ __html: renderInline(m.body) }}
                     />
                   </div>

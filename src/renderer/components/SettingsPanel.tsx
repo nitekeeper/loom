@@ -267,7 +267,6 @@ export function SettingsPanel({
     <div
       className="sc-backdrop"
       onMouseDown={onBackdropMouseDown}
-      // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
       onKeyDown={onKeyDown}
     >
       {/* Reuse the shared modal shell (.sc-dialog) for visual parity with the

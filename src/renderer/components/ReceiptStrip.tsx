@@ -35,6 +35,15 @@ function isSeen(r: ReceiptView): boolean {
 export function ReceiptStrip(props: ReceiptStripProps): JSX.Element {
   const { addressing, target, receipts } = props;
   const [open, setOpen] = useState(false);
+  // Hooks must run unconditionally and in a stable order (rules-of-hooks):
+  // the `direct` branch below early-returns, so these are hoisted ABOVE it.
+  // They are only consumed by the @here breakdown, but calling them in every
+  // render keeps the hook order constant if `addressing` ever changes.
+  // Unique per instance (A11Y-10): multiple @here messages render at once, so
+  // a hard-coded id would duplicate and make aria-controls ambiguous.
+  const tipId = useId();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   /* ---- direct: two-state delivered -> seen ---- */
   if (addressing === 'direct') {
@@ -58,11 +67,6 @@ export function ReceiptStrip(props: ReceiptStripProps): JSX.Element {
   const total = receipts.length;
   const full = total > 0 && read === total;
   const pct = total ? (read / total) * 100 : 0;
-  // Unique per instance (A11Y-10): multiple @here messages render at once, so
-  // a hard-coded id would duplicate and make aria-controls ambiguous.
-  const tipId = useId();
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const show = (): void => setOpen(true);
   const hide = (): void => setOpen(false);

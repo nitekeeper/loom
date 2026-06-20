@@ -45,7 +45,6 @@ export function createEventBus(): EventBus {
         // listener) must never poison the others or the publisher.
         // No Electron/console contract here; emit a best-effort warn.
         try {
-          // eslint-disable-next-line no-console
           console.error('[loom:eventbus] subscriber threw:', err);
         } catch {
           /* even logging can fail in odd environments — swallow. */
