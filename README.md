@@ -42,7 +42,7 @@ Every part of Loom is built to obey these (requirements §2.1):
 
 - **Node.js 20+** (`engines.node >= 20.0.0`).
 - **Storage needs no native build.** Storage is [`sql.js`](https://sql.js.org) — SQLite compiled to WebAssembly — so there is no `better-sqlite3`/`node-gyp` compile step for the database. The one native module is [`node-pty`](https://github.com/microsoft/node-pty) (ships prebuilt `.node` binaries), which powers the human-invoked terminal pane; if its prebuilt binary doesn't match your Electron ABI, rebuild it with `npm run rebuild` (`electron-rebuild -f -w node-pty`). Everything else is pure JS/WASM.
-- **Electron 33.4.11** (pinned; cross-platform — a clean `npm install` fetches the per-OS binary). On WSL2 + WSLg only, GPU acceleration and the OS-level renderer sandbox are disabled automatically; on macOS / Windows / non-WSL Linux they stay ON.
+- **Electron 39.8.5** (pinned; cross-platform — a clean `npm install` fetches the per-OS binary). On WSL2 + WSLg only, GPU acceleration and the OS-level renderer sandbox are disabled automatically; on macOS / Windows / non-WSL Linux they stay ON.
 
 ---
 
@@ -137,8 +137,8 @@ For a **proper installer** — a `Loom-Setup-<version>.exe` with a Start Menu sh
 
 - **Tagged release** — push a version tag and the workflow builds *and* publishes a GitHub Release with the installer attached:
   ```bash
-  git tag v0.5.0
-  git push origin v0.5.0
+  git tag v0.11.0
+  git push origin v0.11.0
   ```
 - **Manual** — trigger the workflow with no tag (builds the installer as a downloadable artifact, no Release):
   ```bash
@@ -167,8 +167,8 @@ For macOS, Loom ships a standard **`.dmg` disk image** (drag-to-`/Applications`)
 
 - **Tagged release** — push a version tag and the workflow builds *and* publishes a GitHub Release with the `.dmg`s + `.zip`s attached:
   ```bash
-  git tag v0.5.0
-  git push origin v0.5.0
+  git tag v0.11.0
+  git push origin v0.11.0
   ```
 - **Manual** — trigger the workflow with no tag (builds the installer as a downloadable artifact, no Release):
   ```bash
@@ -196,6 +196,17 @@ For macOS, Loom ships a standard **`.dmg` disk image** (drag-to-`/Applications`)
 > **Apple Silicon "damaged" note.** On Apple Silicon, the block often surfaces as a *"damaged"* message rather than an "unidentified developer" one — the app is **not** actually damaged; it is the quarantine flag on an unsigned/un-notarized build. Clearing the quarantine (option 2) resolves it.
 >
 > **Proper distribution.** Shipping a Mac app that opens with no Gatekeeper friction requires an **Apple Developer ID certificate (~$99/yr)** for code-signing plus **notarization** (Apple's automated malware scan). The pipeline is already wired for both: it signs **and** notarizes automatically once you add the Apple secrets (`MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`) — **no code change needed**. See [`docs/SIGNING.md`](docs/SIGNING.md) for how to obtain the certificate, the exact secret names, and how to verify a signed + notarized build. Until those secrets exist the bypass steps above are required.
+
+### Linux installer (.deb, built by CI)
+
+For Debian/Ubuntu, Loom ships a **`.deb` package** built with [`electron-builder`](https://www.electron.build) via the **`Linux installer`** workflow (`.github/workflows/linux-installer.yml`) on `ubuntu-latest` — or locally with `npm run dist:linux`.
+
+**To build it:** push a version tag (the workflow builds the `.deb` and attaches it to the GitHub Release), or trigger it for a downloadable artifact:
+```bash
+gh workflow run "Linux installer"
+```
+
+**To install:** `sudo apt install ./loom_<version>_amd64.deb` (or `sudo dpkg -i loom_<version>_amd64.deb`). Launched with no folder argument, Loom shows the **"Choose a folder for Loom to open"** picker — pick the project folder to use as the sandbox root.
 
 ---
 
@@ -274,13 +285,13 @@ Five Claude sub-agents register, open channels, and audit `fixtures/acme-api` �
 npm test
 ```
 
-This runs the `node --test` acceptance suite (`test/acceptance.mjs`), which exercises the 10 MCP tools through the pure engine (no Electron needed) plus the schema, dispatch, and content-safety checks. Cases map directly to the acceptance criteria: register + suffix (AC-6), create/join (AC-7), direct/`@here` addressing (AC-8), inbox/read/mark (AC-9), async delivery (AC-10), channel isolation (AC-11), deregister (AC-12), event fanout (AC-13), the SQLite schema (AC-16), render-state badges (AC-19), and link/HTML safety (AC-21/22) — through AC-24.
+This runs the full `node --test` suite — the core acceptance file (`test/acceptance.mjs`) plus the feature suites (terminal, viewer-split, go-to-definition, git-diff, render-window, and more) — exercising the 10 MCP tools through the pure engine (no Electron needed) plus the schema, dispatch, and content-safety checks. The acceptance cases map directly to the acceptance criteria: register + suffix (AC-6), create/join (AC-7), direct/`@here` addressing (AC-8), inbox/read/mark (AC-9), async delivery (AC-10), channel isolation (AC-11), deregister (AC-12), event fanout (AC-13), the SQLite schema (AC-16), render-state badges (AC-19), and link/HTML safety (AC-21/22) — through AC-24.
 
 ---
 
 ## Architecture
 
-Loom is a single Electron app in which the **main process is the single source of truth** (FR-14, NFR-8): it owns the `sql.js` store, the MCP agent transport, the in-process event bus, the chokidar file watcher, the sandbox boundary, and config. The renderer is a hardened, capability-free React view (3 panes — Explorer / Viewer / Chat — inside title-bar + status-bar chrome) that derives all state from main through a thin preload bridge and reduces a stream of `LoomEvent`s. A single canonical write path (`mcp.ts → engine.ts → db.ts → eventbus`) fans every event to the renderer over IPC and, optionally, to external observers over WebSocket. See [`documents/loom-architecture.md`](documents/loom-architecture.md) for the component topology and ADRs, and [`CONTRACTS.md`](CONTRACTS.md) for the frozen tool shapes, IPC channels, event union, and file manifest.
+Loom is a single Electron app in which the **main process is the single source of truth** (FR-14, NFR-8): it owns the `sql.js` store, the MCP agent transport, the in-process event bus, the chokidar file watcher, the sandbox boundary, and config. The renderer is a hardened, capability-free React view (the Explorer / Viewer / Chat panes plus a closable bottom-dock terminal, inside title-bar + status-bar chrome) that derives all state from main through a thin preload bridge and reduces a stream of `LoomEvent`s. A single canonical write path (`mcp.ts → engine.ts → db.ts → eventbus`) fans every event to the renderer over IPC and, optionally, to external observers over WebSocket. See [`documents/loom-architecture.md`](documents/loom-architecture.md) for the component topology and ADRs, and [`CONTRACTS.md`](CONTRACTS.md) for the frozen tool shapes, IPC channels, event union, and file manifest.
 
 ---
 
