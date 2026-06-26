@@ -99,6 +99,24 @@ function coerceTerminalCount(value: unknown): number {
   return DEFAULT_TERMINAL_COUNT;
 }
 
+/** Coerce an unknown value into the optional `tokens` override (atelier
+ *  token_usage.py location). Keeps ONLY non-empty string `atelierScript` /
+ *  `python` entries; returns undefined when nothing usable is present so the
+ *  config shape stays minimal (absent => glob discovery + 'python3'). A damaged
+ *  value never throws (mirrors coerceKeybindings's tolerant object walk). */
+function coerceTokens(value: unknown): LoomConfig['tokens'] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as { atelierScript?: unknown; python?: unknown };
+  const out: { atelierScript?: string; python?: string } = {};
+  if (typeof v.atelierScript === 'string' && v.atelierScript.length > 0) {
+    out.atelierScript = v.atelierScript;
+  }
+  if (typeof v.python === 'string' && v.python.length > 0) {
+    out.python = v.python;
+  }
+  return out.atelierScript !== undefined || out.python !== undefined ? out : undefined;
+}
+
 /** Validate + normalize an unknown parsed object into a LoomConfig. */
 function coerceConfig(parsed: unknown): LoomConfig {
   let theme: Theme = DEFAULT_CONFIG.theme;
@@ -106,6 +124,7 @@ function coerceConfig(parsed: unknown): LoomConfig {
   let maxMessageLength = MAX_BODY_LENGTH;
   let maxMessages = DEFAULT_MAX_MESSAGES;
   let terminalCount = DEFAULT_TERMINAL_COUNT;
+  let tokens: LoomConfig['tokens'];
   if (parsed && typeof parsed === 'object') {
     const t = (parsed as { theme?: unknown }).theme;
     if (t === 'dark' || t === 'light') theme = t;
@@ -119,8 +138,13 @@ function coerceConfig(parsed: unknown): LoomConfig {
     terminalCount = coerceTerminalCount(
       (parsed as { terminalCount?: unknown }).terminalCount,
     );
+    tokens = coerceTokens((parsed as { tokens?: unknown }).tokens);
   }
-  return { theme, keybindings, maxMessageLength, maxMessages, terminalCount };
+  const cfg: LoomConfig = { theme, keybindings, maxMessageLength, maxMessages, terminalCount };
+  // Only attach `tokens` when present so the default config shape is unchanged
+  // for the overwhelming majority of users (absent => glob discovery).
+  if (tokens !== undefined) cfg.tokens = tokens;
+  return cfg;
 }
 
 class FileConfigStore implements ConfigStore {

@@ -62,6 +62,7 @@ import type { SymbolChoice } from './Viewer.js';
 import { Chat } from './Chat.js';
 import { ShortcutsPanel } from './ShortcutsPanel.js';
 import { SettingsPanel } from './SettingsPanel.js';
+import { TokenUsagePanel } from './TokenUsagePanel.js';
 import { TerminalPane } from './TerminalPane.js';
 import {
   clampTerminalHeight,
@@ -1817,6 +1818,12 @@ export function App(): JSX.Element {
   // The control that opened Settings — focus returns here on close (SC 2.4.3).
   const settingsOpenerRef = useRef<HTMLElement | null>(null);
 
+  // Token Usage panel open state (mirrors the Settings/Shortcuts pattern). App
+  // owns it; the Settings panel's "Open Token Usage…" button opens it.
+  const [tokenPanelOpen, setTokenPanelOpen] = useState<boolean>(false);
+  // The control that opened the Token Usage panel — focus returns here on close.
+  const tokenPanelOpenerRef = useRef<HTMLElement | null>(null);
+
   // RENDERED-markdown reading-column width mode, LIFTED to App so the Settings
   // panel (a sibling of the Viewer) can drive it. Lazy init reads the capture
   // hint > localStorage > default ('fit') once, pre-paint (md-width.ts). The
@@ -2403,6 +2410,20 @@ export function App(): JSX.Element {
     requestAnimationFrame(() => opener?.focus());
   }, []);
 
+  // Open the Token Usage panel, remembering the opener so focus returns to it on
+  // close (mirrors openShortcuts / openSettings).
+  const openTokens = useCallback((opener: HTMLElement | null): void => {
+    tokenPanelOpenerRef.current = opener;
+    setTokenPanelOpen(true);
+  }, []);
+  // Close the Token Usage panel and restore focus to the opener (fall back to
+  // the gear), mirroring closeSettings.
+  const closeTokens = useCallback((): void => {
+    setTokenPanelOpen(false);
+    const opener = tokenPanelOpenerRef.current ?? gearButtonRef.current;
+    requestAnimationFrame(() => opener?.focus());
+  }, []);
+
   // Cross-pane coupling (UX-2): each pane's max depends on the OTHER pane's
   // current width (via siblingWidth), so after EITHER changes — a drag, a
   // keyboard nudge, a collapse/expand, or a window resize — re-clamp BOTH so
@@ -2822,6 +2843,7 @@ export function App(): JSX.Element {
       if (
         shortcutsOpen ||
         settingsOpen ||
+        tokenPanelOpen ||
         defPicker !== null ||
         symbolChooser !== null
       ) {
@@ -2940,6 +2962,7 @@ export function App(): JSX.Element {
     // Modal-suspend guards.
     shortcutsOpen,
     settingsOpen,
+    tokenPanelOpen,
     defPicker,
     symbolChooser,
     // Binding resolution + the fixed-opener / Escape / fixed-F12 branches.
@@ -2981,6 +3004,7 @@ export function App(): JSX.Element {
       if (
         shortcutsOpen ||
         settingsOpen ||
+        tokenPanelOpen ||
         defPicker !== null ||
         symbolChooser !== null
       ) {
@@ -3073,6 +3097,7 @@ export function App(): JSX.Element {
   }, [
     shortcutsOpen,
     settingsOpen,
+    tokenPanelOpen,
     defPicker,
     symbolChooser,
     vm?.keybindings,
@@ -3671,6 +3696,14 @@ export function App(): JSX.Element {
             settingsOpenerRef.current = null;
             openShortcuts(gearButtonRef.current);
           }}
+          // Hand off to the Token Usage panel: close Settings first (without
+          // stealing focus back to the gear), then open Tokens with the gear as
+          // the opener so closing it returns focus there (mirrors onOpenShortcuts).
+          onOpenTokens={() => {
+            setSettingsOpen(false);
+            settingsOpenerRef.current = null;
+            openTokens(gearButtonRef.current);
+          }}
           // Reflect the LIVE count so the Terminals radio shows the real
           // selection (1/2/3), not a hard-coded 1 (the panel default).
           terminalCount={terminalCount}
@@ -3689,6 +3722,7 @@ export function App(): JSX.Element {
           onClose={closeShortcuts}
         />
       )}
+      {tokenPanelOpen && <TokenUsagePanel onClose={closeTokens} />}
       {/* Go-to-definition multi-candidate chooser (shown ONLY when >1 candidates;
           exactly 1 auto-jumps, 0 toasts). Enter/Space jumps + closes; Escape
           dismisses with NO jump and NO history mutation and restores Viewer

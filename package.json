@@ -22,7 +22,7 @@
     "start": "electron .",
     "loom": "node bin/loom.cjs",
     "rebuild": "electron-rebuild -f -w node-pty",
-    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs test/mermaid.mjs test/bundle-split.mjs test/copy-serialize.mjs test/md-width.mjs test/window-resize.mjs test/linux-maximize.mjs test/git-diff.mjs test/diff-render.mjs test/agent-remove.mjs test/terminal.mjs test/terminal-pane.mjs test/viewer-split.mjs test/terminal-columns.mjs test/config.mjs test/root-resolve.mjs test/definition.mjs test/caret-column.mjs test/mouse-bindings.mjs",
+    "test": "node --test test/acceptance.mjs test/concurrency.mjs test/render-window.mjs test/retention.mjs test/mcp-concurrency.mjs test/counters.mjs test/mcp-session-reaper.mjs test/filetree.mjs test/markdown.mjs test/anchor-guard.mjs test/mermaid.mjs test/bundle-split.mjs test/copy-serialize.mjs test/md-width.mjs test/window-resize.mjs test/linux-maximize.mjs test/git-diff.mjs test/diff-render.mjs test/tokens.mjs test/token-format.mjs test/agent-remove.mjs test/terminal.mjs test/terminal-pane.mjs test/viewer-split.mjs test/terminal-columns.mjs test/config.mjs test/root-resolve.mjs test/definition.mjs test/caret-column.mjs test/mouse-bindings.mjs",
     "test:e2e": "playwright test",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",

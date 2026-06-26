@@ -36,6 +36,7 @@ import {
   type GitFileStatus,
   type ChangeSet,
   type FileDiff,
+  type DailyTokenResult,
 } from '../shared/types.js';
 import { getGitStatus } from './git.js';
 import {
@@ -44,6 +45,7 @@ import {
   listChangesWithBase,
   resolveFileDiffRequest,
 } from './git-diff.js';
+import { getDailyTokens } from './tokens.js';
 import { removeAgentByName, clearStaleAgents, isStaleAgent } from './engine.js';
 import type { ConfigStore } from './config.js';
 import type { LoomDb } from './db.js';
@@ -329,6 +331,22 @@ class IpcWiringImpl implements IpcWiring {
     // Fail-soft inside getChanges (never throws).
     ipcMain.handle(IPC.GET_CHANGES, (): Promise<ChangeSet> =>
       getChanges(this.deps.rootPath),
+    );
+
+    // A daily token-usage rollup produced by SPAWNING atelier's token_usage.py
+    // CLI in main (execFile, fixed argv, NO shell). The renderer supplies ONLY
+    // the advisory cost/since options (re-validated in getDailyTokens); main
+    // resolves the script PATH itself from config (tokens.atelierScript) or a
+    // glob over the agora atelier plugin cache — a hostile renderer can never
+    // point us at an arbitrary executable. Fail-soft inside getDailyTokens
+    // (a typed {ok:false, reason}; never throws — e.g. atelier_not_found when
+    // the CLI is absent). The CLI stdout is treated as untrusted DATA.
+    ipcMain.handle(
+      IPC.TOKENS_DAILY,
+      // The renderer payload is untrusted `unknown`; getDailyTokens re-validates
+      // it via sanitizeOptions (codebase idiom: never type an IPC arg as trusted).
+      (_evt, opts: unknown): Promise<DailyTokenResult> =>
+        getDailyTokens(opts, { config: this.deps.config }),
     );
 
     // HUMAN roster curation (UI-only — no MCP tool counterpart). main is the
