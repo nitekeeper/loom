@@ -2255,6 +2255,80 @@ mark.search-hit {
   color: var(--text-dim);
 }
 
+/* ---------------------------------------------------------------------------
+   Token Usage panel (TokenUsagePanel) — reuses the shared modal shell
+   (.sc-backdrop / .sc-dialog / .sc-head / .sc-foot). Adds a controls row, a
+   scrollable body, and a readable numeric table (monospace, right-aligned).
+   --------------------------------------------------------------------------- */
+.token-usage-dialog {
+  /* The daily table is wider than the Settings radio groups; give it room. */
+  width: min(760px, 94%);
+}
+.tu-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px 4px;
+}
+/* Push the Refresh button to the right, opposite the cost toggle. */
+.tu-controls .sc-btn {
+  margin-left: auto;
+}
+.tu-body {
+  padding: 8px 16px 12px;
+  overflow: auto;
+  flex: 1;
+}
+/* Loading / empty / error states share the centered, dimmed treatment. */
+.tu-state {
+  padding: 24px 8px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.tu-error {
+  color: var(--text);
+}
+.tu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.tu-table th,
+.tu-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+.tu-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  color: var(--text-dim);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.tu-col-text {
+  text-align: left;
+  color: var(--text);
+}
+/* Numeric columns: right-aligned, tabular monospace so digits line up. */
+.tu-col-num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.tu-totals th,
+.tu-totals td {
+  border-top: 2px solid var(--border);
+  border-bottom: 0;
+  font-weight: 700;
+}
+
 /* Forced-colors: keep the dialog boundary + controls perceivable. */
 @media (forced-colors: active) {
   .sc-dialog { border-color: CanvasText; }

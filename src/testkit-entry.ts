@@ -31,6 +31,12 @@ export { createEventBus } from './main/eventbus.js';
 export type { EventBus, EventHandler } from './main/eventbus.js';
 export { kindOf, dispatchFor, extensionOf } from './shared/dispatch.js';
 
+// Pure presentation formatters (DOM-free). formatTokens (grouped integer) and
+// formatCost ("$X.XX" / em-dash for null) feed the TokenUsagePanel table;
+// re-exported so the node --test tier can pin the grouping + cost/null contract
+// without a DOM.
+export { formatTokens, formatCost } from './renderer/lib/format.js';
+
 // Electron-free main-process git-diff layer (the "Changes" viewer). The PURE
 // parsers (parseNameStatusZ/parseUnifiedDiff) are the direct unit-test target;
 // the async fns (getChanges/getFileDiff/resolveBaseSha) are exercised over a

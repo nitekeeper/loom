@@ -66,6 +66,10 @@ export interface SettingsPanelProps {
   /** Open the Keyboard Shortcuts panel (App closes Settings first, then opens
    *  it returning focus to the gear on close). */
   onOpenShortcuts(): void;
+  /** Open the Token Usage panel (App closes Settings first, then opens it
+   *  returning focus to the gear on close — mirrors onOpenShortcuts). Optional
+   *  for back-compat / a test host that does not wire it. */
+  onOpenTokens?(): void;
   /** Current number of terminal panes (1..MAX_TERMINALS), reflected by the
    *  Terminals radio group. Threaded from App's LIVE terminalCount state (seeded
    *  from the persisted LoomConfig.terminalCount, default 1). Optional +
@@ -113,6 +117,7 @@ export function SettingsPanel({
   theme,
   onSelectTheme,
   onOpenShortcuts,
+  onOpenTokens,
   terminalCount,
   onSelectTerminalCount,
   onClose,
@@ -446,6 +451,28 @@ export function SettingsPanel({
               <span className="set-hint">{OPENER_COMBO}</span>
             </div>
           </section>
+
+          {/* --- Token Usage --------------------------------------------------
+              A real button that opens the (separate) Token Usage panel — the
+              daily per-model token rollup from atelier's usage log. Mirrors the
+              Keyboard Shortcuts hand-off above (App closes Settings first, then
+              opens this with the gear as the opener). Rendered only when App
+              wires onOpenTokens (back-compat / a test host). */}
+          {onOpenTokens && (
+            <section className="set-section">
+              <h3 className="set-section-title">Token Usage</h3>
+              <div className="set-section-row">
+                <button
+                  type="button"
+                  className="sc-btn"
+                  aria-haspopup="dialog"
+                  onClick={onOpenTokens}
+                >
+                  Open Token Usage…
+                </button>
+              </div>
+            </section>
+          )}
         </div>
 
         <div className="sc-foot">

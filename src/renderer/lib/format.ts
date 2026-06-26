@@ -36,6 +36,26 @@ export function formatClock(epochMs: number): string {
   return `${hh}:${mm}`;
 }
 
+/** Grouped integer token count, e.g. 1234567 -> "1,234,567". Non-finite or
+ *  negative/garbage inputs coerce to "0" (the data layer already coerces rows,
+ *  but the renderer stays defensive). Truncates any fractional part — token
+ *  counts are whole numbers. */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '0';
+  return Math.trunc(n)
+    .toString()
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+/** USD cost as "$X.XX". `null`/`undefined`/non-finite render as an em dash
+ *  ("—") — the CLI omits cost without `--cost`, and a row may legitimately
+ *  carry a null cost. Negative values keep the sign before the dollar. */
+export function formatCost(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return '—';
+  const sign = v < 0 ? '-' : '';
+  return `${sign}$${Math.abs(v).toFixed(2)}`;
+}
+
 /** Human label for a file extension, e.g. "TypeScript", "PNG image". */
 export function typeLabel(ext: string): string {
   const e = ext.toLowerCase().replace(/^\./, '');
