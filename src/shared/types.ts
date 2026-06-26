@@ -656,6 +656,76 @@ export interface FileDiff {
   hunks: DiffHunk[] | null;
 }
 
+/* ------------------------------------------------------------------ */
+/* 7b-tokens. Daily token-usage rollup (TOKENS_DAILY) — a fail-soft     */
+/*   union produced by SPAWNING atelier's token_usage.py CLI in main     */
+/*   (execFile, fixed argv, NO shell). The CLI stdout is UNTRUSTED data: */
+/*   the renderer escapes every field before render (Law 1), exactly     */
+/*   like ChangedFile.path / SearchMatch.lineText.                       */
+/* ------------------------------------------------------------------ */
+
+/** One day's per-model token-usage rollup, mirroring atelier's
+ *  `token_usage.py daily --format json` row schema. RAW CLI output (Law 1) —
+ *  the renderer MUST escape `day`/`model` before render. Token counts are
+ *  whatever the CLI emitted (treated as data; never re-derived here). */
+export interface DailyTokenRow {
+  /** Calendar day key, e.g. "2026-06-26" (the CLI's bucket label). */
+  day: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  /** Model id the row aggregates (e.g. "claude-opus-4-7"). */
+  model: string;
+  /** USD cost for the row when the CLI was run with `--cost`; null/absent
+   *  otherwise (the CLI omits it without the flag). */
+  cost_usd?: number | null;
+}
+
+/** The optional grand-totals object atelier's CLI emits ALONGSIDE the rows
+ *  when run with `--cost` (the `{ rows, totals }` shape). Absent on the bare
+ *  rows-array shape. */
+export interface DailyTokenTotals {
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+  /** Grand-total USD cost (present only under `--cost`). */
+  cost_usd?: number | null;
+}
+
+/** Why a TOKENS_DAILY run could not produce rows. Mirrors the GitRun fail-soft
+ *  idiom: every failure is a typed, benign value (the handler NEVER throws).
+ *   - atelier_not_found: no token_usage.py resolved (config unset + glob empty);
+ *   - spawn_failed:      the python/script could not be launched (ENOENT, etc.);
+ *   - nonzero_exit:      the CLI ran but exited non-zero;
+ *   - bad_json:          stdout was not parseable / not a known shape;
+ *   - timeout:           the CLI exceeded the per-call timeout. */
+export type DailyTokenReason =
+  | 'atelier_not_found'
+  | 'spawn_failed'
+  | 'nonzero_exit'
+  | 'bad_json'
+  | 'timeout';
+
+/** Result of a daily token-usage rollup (TOKENS_DAILY). Fail-soft union: on
+ *  success `ok:true` carries the parsed rows (+ optional totals under --cost);
+ *  on any failure `ok:false` carries a typed `reason` + a human-readable
+ *  `error`. The renderer renders a graceful empty/error state, never a throw
+ *  (mirrors ChangeSet's available:false contract). */
+export type DailyTokenResult =
+  | { ok: true; rows: DailyTokenRow[]; totals?: DailyTokenTotals }
+  | { ok: false; error: string; reason: DailyTokenReason };
+
+/** Renderer-facing options for a daily rollup. `cost` adds the CLI's `--cost`
+ *  flag (USD per row + a totals object); `since` bounds the window to days on
+ *  or after the given key (`--since`). main RE-VALIDATES both (never trusts the
+ *  renderer); the script path + python command are resolved by main alone. */
+export interface DailyTokenOptions {
+  cost?: boolean;
+  since?: string;
+}
+
 /** Persisted config file shape (userData/loom-config.json) (FR-37). */
 export interface LoomConfig {
   theme: Theme;
@@ -685,6 +755,18 @@ export interface LoomConfig {
    *  back to 1 (back-compat no-op for single-terminal users). Additive — a
    *  missing field on an older config is tolerated (no migration runner). */
   terminalCount?: number;
+  /** OPTIONAL atelier token-usage CLI location override (TOKENS_DAILY). When
+   *  `atelierScript` is set it is used VERBATIM as the script path, bypassing
+   *  the default ~/.claude/plugins/cache/agora/atelier/<ver>/scripts/token_usage.py
+   *  glob discovery; `python` overrides the interpreter (default 'python3').
+   *  Absent => glob discovery + 'python3'. Additive — a missing field on an
+   *  older config is tolerated (dropped to undefined, never throws). */
+  tokens?: {
+    /** Absolute path to atelier's token_usage.py (overrides glob discovery). */
+    atelierScript?: string;
+    /** Python command to run the script with (default 'python3'). */
+    python?: string;
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -873,6 +955,13 @@ export const IPC = {
    *  read (never trust the renderer; the git show object-store read bypasses the
    *  fs sandbox, so this re-check is mandatory). */
   READ_FILE_DIFF: 'loom:git:diff',
+  /** invoke(opts?: DailyTokenOptions): DailyTokenResult — a daily token-usage
+   *  rollup produced by SPAWNING atelier's token_usage.py CLI in main
+   *  (execFile, fixed argv, NO shell). main resolves the script path itself
+   *  (config override or glob discovery) — the renderer supplies ONLY the
+   *  advisory cost/since options, never a path/command. Fail-soft union: a
+   *  typed {ok:false, reason} on any failure (never throws). */
+  TOKENS_DAILY: 'loom:tokens:daily',
   /** invoke(p: TerminalOpenParams): TerminalOpenResult — spawn a terminal PTY
    *  session in main, cwd = the launch root. Up to 3 concurrent sessions, each
    *  addressed by its sessionId. open() at capacity (3) returns sessionId:null
@@ -964,6 +1053,12 @@ export interface LoomBridge {
   /** Fetch the before->after diff for ONE changed file. `path` is a root-relative
    *  POSIX path from a ChangedFile; main re-confines it to the sandbox. */
   readFileDiff(path: string): Promise<FileDiff>;
+  /** Fetch a daily token-usage rollup by spawning atelier's token_usage.py CLI
+   *  in main. `opts.cost` adds per-row USD + a totals object; `opts.since`
+   *  bounds the window. Resolves a fail-soft union: {ok:true, rows[, totals]}
+   *  or {ok:false, reason} (e.g. atelier_not_found when the CLI is absent) —
+   *  never rejects. main owns the script path; the renderer supplies no path. */
+  getDailyTokens(opts?: DailyTokenOptions): Promise<DailyTokenResult>;
   /** HUMAN roster curation: remove ONE agent from the roster (force-deregister
    *  when still active). main re-validates the name + deletes the row; messages
    *  are preserved. Resolves true when a row was removed (fail-soft false). */

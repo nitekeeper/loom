@@ -38,6 +38,8 @@ import type {
   GitFileStatus,
   ChangeSet,
   FileDiff,
+  DailyTokenOptions,
+  DailyTokenResult,
   TerminalOpenParams,
   TerminalOpenResult,
   TerminalDataPush,
@@ -74,6 +76,7 @@ const INVOKE_CHANNELS: ReadonlySet<string> = new Set([
   IPC.GIT_STATUS,
   IPC.GET_CHANGES,
   IPC.READ_FILE_DIFF,
+  IPC.TOKENS_DAILY,
   IPC.REMOVE_AGENT,
   IPC.CLEAR_STALE_AGENTS,
   IPC.TERMINAL_OPEN,
@@ -203,6 +206,15 @@ export function createBridge(): LoomBridge {
       // bypasses the fs sandbox — never trust the renderer; Law 3). The renderer
       // cannot widen scope: an out-of-root path returns an empty FileDiff.
       return ipcRenderer.invoke(assertInvoke(IPC.READ_FILE_DIFF), filePath);
+    },
+    getDailyTokens(opts?: DailyTokenOptions): Promise<DailyTokenResult> {
+      // The cost/since options are forwarded as-is; main is the authority — it
+      // RE-VALIDATES them and resolves the script PATH itself (config override
+      // or glob over the atelier plugin cache; the renderer never supplies a
+      // path/command). main spawns the CLI via execFile (NO shell) and returns
+      // a fail-soft union — never trust the renderer; the renderer cannot widen
+      // scope. A nullish opts is fine (a bare daily rollup).
+      return ipcRenderer.invoke(assertInvoke(IPC.TOKENS_DAILY), opts);
     },
     removeAgent(name: string): Promise<boolean> {
       // The name is forwarded as-is; main is the authority — it RE-VALIDATES

@@ -50,6 +50,21 @@ export {
 } from './main/git-diff.js';
 export type { ChangesWithBase, FileDiffRequest } from './main/git-diff.js';
 
+// Electron-free daily token-usage rollup (TOKENS_DAILY data layer). It SPAWNS
+// atelier's token_usage.py via execFile (fixed argv, NO shell) and returns a
+// fail-soft union. Re-exported so the node --test tier can drive getDailyTokens
+// over an INJECTED fake script (hermetic — no real atelier/python needed): valid
+// rows JSON => ok:true, --cost {rows,totals} parsed, a missing script =>
+// atelier_not_found, a non-zero exit => nonzero_exit, garbage => bad_json. The
+// pure parseStdout + resolveTokenScript surface too for direct shape/precedence
+// pinning. Electron-free: node:child_process/fs/os/path + shared types only.
+export {
+  getDailyTokens,
+  parseStdout,
+  resolveTokenScript,
+} from './main/tokens.js';
+export type { TokenScriptLocation, DailyTokenDeps } from './main/tokens.js';
+
 // Pure DOM-free diff-row view model (the "Changes" viewer's render core).
 // Re-exported so the jsdom Tier-1 suite can pin the visual contract (add/del/
 // context classes + sigils + accessible-name suffixes, NFR-12) and prove Law-1
