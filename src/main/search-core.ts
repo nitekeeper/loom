@@ -88,12 +88,24 @@ export function matchFile(
   const maxPerFile = clampPositive(opts.maxPerFile, DEFAULT_MAX_PER_FILE);
   const maxLineLength = clampPositive(opts.maxLineLength, DEFAULT_MAX_LINE_LENGTH);
 
+  // Unicode NFC-normalize BOTH sides before matching so composed vs decomposed
+  // Hangul still matches: macOS filenames/content arrive NFD ('한' = ㅎ+ㅏ+ㄴ, 3
+  // code units) while an IME query is NFC (1 code unit), so a raw indexOf never
+  // hits. NFC is canonically equivalent to the on-disk NFD (renders identically),
+  // and because EVERY downstream coordinate (col, matchStart/End, lineText) is
+  // derived from this SAME normalized text, the emitted highlight offsets stay
+  // self-consistent.
+  const normText = text.normalize('NFC');
   // Same line model as highlightCode/computeFoldRanges: trim ONE trailing
   // newline, then split on "\n", so line indices align 1:1 with the Viewer.
-  const lines = text.replace(/\n$/, '').split('\n');
-  // The needle we actually search with (folded to lower-case when insensitive).
-  const needle = caseSensitive ? query : query.toLowerCase();
-  const needleLen = query.length;
+  const lines = normText.replace(/\n$/, '').split('\n');
+  // The needle we actually search with (NFC-normalized, then folded to lower-case
+  // when insensitive). needleLen is measured on the SAME searched needle so match
+  // spans land correctly.
+  const needle = caseSensitive
+    ? query.normalize('NFC')
+    : query.normalize('NFC').toLowerCase();
+  const needleLen = needle.length;
 
   for (let li = 0; li < lines.length; li++) {
     const fullLine = lines[li]!;

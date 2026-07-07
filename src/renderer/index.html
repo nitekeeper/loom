@@ -25,6 +25,14 @@
     />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Loom</title>
+    <!-- Preload the bundled Korean/CJK fonts so 한국어 renders on the FIRST
+         paint — on a host with no system Korean font the fallback would
+         otherwise flash tofu (□) until the @font-face swaps in. Same-origin,
+         satisfies font-src 'self'; stable paths emitted by build.mjs. -->
+    <link rel="preload" as="font" type="font/woff2" href="./fonts/notosanskr-kr.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="./fonts/notosanskr-kr-bold.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="./fonts/d2coding-kr.woff2" crossorigin />
+    <link rel="preload" as="font" type="font/woff2" href="./fonts/d2coding-kr-bold.woff2" crossorigin />
     <link rel="stylesheet" href="./renderer.css" />
   </head>
   <body>

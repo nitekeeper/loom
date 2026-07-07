@@ -163,20 +163,50 @@ export function createSearch(sandbox: Sandbox): Search {
     // MAX_FILE_NAME_MATCHES; reuses `truncated`. The needle is folded to match
     // the haystack casing (default insensitive; caseSensitive opt honored).
     const fileMatches: FileNameMatch[] = [];
-    const nameNeedle = caseSensitive ? query : query.toLowerCase();
+    // NFC-normalize the needle so an NFC (IME-typed) query matches an NFD (macOS)
+    // filename. The matched PATH is emitted in its NFC form so the stored
+    // [matchStart,matchEnd) span — computed against the normalized haystack —
+    // stays valid against the string the UI highlights (NFC renders identically
+    // to the on-disk NFD, and macOS/Linux both open a file by its NFC name). Same
+    // normalization as search-core.matchFile for the content path.
+    const nameNeedle0 = query.normalize('NFC');
+    const nameNeedle = caseSensitive ? nameNeedle0 : nameNeedle0.toLowerCase();
     for (const file of files) {
       if (fileMatches.length >= MAX_FILE_NAME_MATCHES) {
         truncatedNames = true;
         break;
       }
-      const hayPath = caseSensitive ? file.path : file.path.toLowerCase();
+      const nfcPath = file.path.normalize('NFC');
+      const hayPath = caseSensitive ? nfcPath : nfcPath.toLowerCase();
       const span = locateNameMatch(hayPath, nameNeedle);
       if (span !== null) {
-        fileMatches.push({
-          path: file.path,
-          matchStart: span.matchStart,
-          matchEnd: span.matchEnd,
-        });
+        // Emit the RAW on-disk path so the file OPENS: the sandbox resolves paths
+        // byte-exactly, so an NFC identifier for a file stored NFD would ENOENT on
+        // Linux/Windows (and content results already emit raw file.path, so this
+        // also keeps the name/content de-dup keys identical). When the raw path is
+        // ALREADY NFC (the common case — Linux/Windows names) the NFC-space span
+        // is valid against it verbatim; only for a genuinely decomposed on-disk
+        // name do we fall back to highlighting the whole basename (still opens,
+        // and the span never dangles into a mismatched length).
+        let matchStart: number;
+        let matchEnd: number;
+        if (file.path === nfcPath) {
+          // Raw path is already NFC: the NFC-space span is valid verbatim.
+          matchStart = span.matchStart;
+          matchEnd = span.matchEnd;
+        } else if (span.matchStart >= nfcPath.lastIndexOf('/') + 1) {
+          // Decomposed on-disk name AND the match fell in the basename: the
+          // NFC offsets don't map to the raw bytes, so highlight the whole
+          // (raw) basename rather than a mismatched sub-span.
+          matchStart = file.path.lastIndexOf('/') + 1;
+          matchEnd = file.path.length;
+        } else {
+          // Decomposed name, match only in the DIRECTORY portion: emit no
+          // highlight rather than mislabel the basename (the row still opens).
+          matchStart = 0;
+          matchEnd = 0;
+        }
+        fileMatches.push({ path: file.path, matchStart, matchEnd });
       }
     }
 

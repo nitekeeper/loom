@@ -58,6 +58,19 @@ test.beforeAll(() => {
 test('clicking Close closes the window', async () => {
   const dir = makeFixtureDir();
   const { app, page } = await launch(dir);
+  // Collect the main process's stderr/stdout: the window-close crash guard below
+  // asserts the 'closed' handler no longer throws "Object has been destroyed".
+  // Every main window registers a per-window terminal manager keyed by
+  // win.webContents (main.ts createMainWindow), so the closed-time
+  // windowTerminals.delete(...) runs on THIS close even with no terminal opened —
+  // reading win.webContents there (pre-fix) threw after the window was destroyed.
+  const proc = app.process();
+  let mainOutput = '';
+  const collect = (buf: Buffer): void => {
+    mainOutput += buf.toString();
+  };
+  proc.stderr?.on('data', collect);
+  proc.stdout?.on('data', collect);
   try {
     expect(app.windows().length).toBe(1);
     await page.getByRole('button', { name: 'Close window' }).click();
@@ -69,4 +82,22 @@ test('clicking Close closes the window', async () => {
     await app.close().catch(() => undefined);
     rmSync(dir, { recursive: true, force: true });
   }
+  // DRAIN before asserting: the "Object has been destroyed" throw is written to
+  // stderr synchronously inside the 'closed' handler, but its 'data' events may
+  // not have been delivered yet — waitForEvent('close')/app.close() resolve on
+  // process teardown, NOT on stderr flush. Wait for the main process to fully
+  // exit (stdio then closes = all output delivered) so this negative assertion
+  // can never silently no-op past the crash; bounded so a hung process fails
+  // rather than hangs the suite.
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      if (proc.exitCode !== null || proc.signalCode !== null) resolve();
+      else proc.once('exit', () => resolve());
+    }),
+    new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+  ]);
+  await new Promise<void>((resolve) => setTimeout(resolve, 250));
+  // The 'closed' handler must tear the window down cleanly — no post-destroy
+  // webContents deref. Guards the "Object has been destroyed" close crash.
+  expect(mainOutput).not.toContain('Object has been destroyed');
 });

@@ -452,6 +452,7 @@ export {
   createTerminalManager,
   defaultShell,
   stripLoomRoot,
+  withUtf8Locale,
   OUTPUT_BUFFER_CAP,
   MAX_TERMINALS,
 } from './main/terminal.js';

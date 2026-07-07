@@ -899,7 +899,13 @@ function createMainWindow(services: Services): BrowserWindow {
     factory: createNodePtyFactory(),
     rootDir: services.rootDir,
   });
-  windowTerminals.set(win.webContents, terminal);
+  // Capture the webContents ONCE while the window is alive. The 'closed' handler
+  // below fires AFTER the window is destroyed, where the `win.webContents` getter
+  // THROWS "Object has been destroyed" — so the Map key (used for both the set
+  // here and the closed-time delete) must be this captured reference, never a
+  // fresh getter read inside 'closed'.
+  const wc = win.webContents;
+  windowTerminals.set(wc, terminal);
   // Linux frameless maximize / fullscreen correction: some WMs apply a ~1cm
   // frame-decoration offset to frameless windows when maximizing or entering
   // fullscreen. Override with the correct display geometry after the WM fires,
@@ -977,7 +983,7 @@ function createMainWindow(services: Services): BrowserWindow {
     detachRenderer();
     detachTerminal();
     terminal.disposeAll();
-    windowTerminals.delete(win.webContents);
+    windowTerminals.delete(wc);
   });
   return win;
 }

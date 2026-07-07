@@ -195,7 +195,17 @@ export function TerminalPane({
   useEffect(() => {
     const host = hostRef.current;
     if (host === null) return;
-    const term = new Terminal({ scrollback: 5000, theme: readXtermTheme() });
+    const term = new Terminal({
+      scrollback: 5000,
+      // Bundled "D2Coding" (@font-face in renderer.css) after JetBrains Mono so
+      // Korean renders offline (no tofu). xterm's DOM renderer allots 2 cells
+      // per Hangul regardless of the fallback glyph's advance, so columns stay
+      // aligned; D2Coding's exact 2.0 half/full ratio keeps them aligned even
+      // when it also serves Latin (host without JetBrains Mono). "Noto Sans KR"
+      // tails it to cover conjoining jamo (U+1100–11FF) that D2Coding lacks.
+      fontFamily: '"JetBrains Mono", "D2Coding", "Noto Sans KR", ui-monospace, monospace',
+      theme: readXtermTheme(),
+    });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);

@@ -299,6 +299,14 @@ This runs the full `node --test` suite — the core acceptance file (`test/accep
 
 ---
 
+## Fonts & international text
+
+Loom **bundles** a Korean/CJK-capable fallback font pair — [D2Coding](https://github.com/naver/d2codingfont) (a half-width-Latin / full-width-Hangul monospace, for code, diffs and the terminal) and [Noto Sans KR](https://fonts.google.com/noto/specimen/Noto+Sans+KR) (proportional, for UI/chat prose), both under the SIL Open Font License and subsetted to the Korean range. They ship inside the app (`src/renderer/styles/fonts/`, loaded via same-origin `@font-face` under the strict `font-src 'self'` CSP), so **한국어 and other CJK text renders correctly offline on every platform**, even on a host with no system Korean font installed — no more `□` tofu.
+
+The bundled families sit **last among the named families** (just ahead of the trailing generic keyword) in each font fallback chain, so Latin text keeps its existing look and only the glyphs the Latin fonts lack fall through to them. All file text is decoded as **UTF-8**; the integrated terminal is also given a UTF-8 locale when the host launched Loom without one, so Korean typed or printed in the shell is never mojibaked. Filename and content search is **NFC-normalized**, so a composed (IME-typed) query still finds a decomposed (e.g. macOS `NFD`) Korean filename or file body.
+
+---
+
 ## Architecture
 
 Loom is a single Electron app in which the **main process is the single source of truth** (FR-14, NFR-8): it owns the `sql.js` store, the MCP agent transport, the in-process event bus, the chokidar file watcher, the sandbox boundary, and config. The renderer is a hardened, capability-free React view (the Explorer / Viewer / Chat panes plus a closable bottom-dock terminal, inside title-bar + status-bar chrome) that derives all state from main through a thin preload bridge and reduces a stream of `LoomEvent`s. A single canonical write path (`mcp.ts → engine.ts → db.ts → eventbus`) fans every event to the renderer over IPC and, optionally, to external observers over WebSocket. See [`documents/loom-architecture.md`](documents/loom-architecture.md) for the component topology and ADRs, and [`CONTRACTS.md`](CONTRACTS.md) for the frozen tool shapes, IPC channels, event union, and file manifest.

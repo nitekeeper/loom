@@ -98,6 +98,53 @@ export function stripLoomRoot(
   return rest;
 }
 
+/** Ensure the child PTY has a UTF-8 locale so Korean/CJK I/O is not mojibaked.
+ *
+ *  WHY: node-pty inherits Loom's OWN environment verbatim. When Loom is launched
+ *  WITHOUT a UTF-8 locale — the classic macOS GUI-launch case (LANG unset) or a
+ *  minimal Linux / cron launch (LANG=C / POSIX) — the shell and child programs
+ *  treat multibyte (Korean) bytes as the C charset and emit mojibake at the pty
+ *  layer, before xterm or fonts are ever involved.
+ *
+ *  Pure + non-mutating (returns a SHALLOW copy). NO-OP on win32 (conpty/
+ *  PowerShell drives Unicode via its code page, not POSIX locale vars) and NO-OP
+ *  when the GOVERNING charset category — the highest-precedence of LC_ALL >
+ *  LC_CTYPE > LANG that is set — ALREADY selects UTF-8 (never override the user's
+ *  deliberate locale). Otherwise forces UTF-8 by writing ONLY the governing
+ *  variable (LC_ALL when it is set, else LC_CTYPE, which outranks LANG for the
+ *  charset category); LANG is deliberately LEFT INTACT so the user's collation/
+ *  messages are preserved. The target keeps the governing locale's language
+ *  (`ko_KR` -> `ko_KR.UTF-8`), else defaults to C.UTF-8 on Linux (present on
+ *  minimal glibc, keeps C collation) / en_US.UTF-8 on macOS (which has no C.UTF-8). */
+export function withUtf8Locale(
+  env: Record<string, string | undefined>,
+  platform: string,
+): Record<string, string | undefined> {
+  if (platform === 'win32') return env;
+  const isUtf8 = (v: string | undefined): boolean =>
+    typeof v === 'string' && /utf-?8/i.test(v);
+  // Treat an empty string as unset (POSIX ignores empty locale vars).
+  const val = (v: string | undefined): string | undefined =>
+    typeof v === 'string' && v !== '' ? v : undefined;
+  const lcAll = val(env.LC_ALL);
+  // The EFFECTIVE charset is governed by POSIX precedence LC_ALL > LC_CTYPE > LANG.
+  const governingVal = lcAll ?? val(env.LC_CTYPE) ?? val(env.LANG);
+  // Already UTF-8 via the WINNING category → never override the user's locale
+  // (a UTF-8 LANG does NOT count if a non-UTF-8 LC_ALL/LC_CTYPE outranks it).
+  if (isUtf8(governingVal)) return env;
+  // Preserve the governing locale's language (`de_DE.ISO-8859-1` -> `de_DE.UTF-8`),
+  // else a UTF-8 locale that EXISTS on the platform: C.UTF-8 on Linux (present on
+  // minimal glibc without locale-gen, and keeps C collation/formatting), and
+  // en_US.UTF-8 on macOS (which ships no C.UTF-8).
+  const m = /^([a-z]{2,3}_[A-Z]{2})/.exec(governingVal ?? '');
+  const target = m ? `${m[1]}.UTF-8` : platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8';
+  // LC_CTYPE cannot override an LC_ALL, so when LC_ALL is set it MUST be the var
+  // we change; otherwise set LC_CTYPE (it outranks LANG for the charset category)
+  // and leave LANG's collation/messages exactly as the user had them.
+  const setVar = lcAll !== undefined ? 'LC_ALL' : 'LC_CTYPE';
+  return { ...env, [setVar]: target };
+}
+
 /** Drop-oldest flow-control bound (bytes) on PENDING (unflushed) PTY output.
  *  Bounds the renderer-bound backlog when the sink is detached or the pump is
  *  behind a flood — the oldest chunks are dropped, the tail is preserved. */
@@ -270,8 +317,9 @@ export function createTerminalManager(deps: {
           rows,
           // Strip LOOM_ROOT so a nested `loom` inside this terminal can never
           // inherit Loom's own (possibly stale) sandbox root — keeping all other
-          // vars (SHELL included).
-          env: stripLoomRoot(env),
+          // vars (SHELL included) — then guarantee a UTF-8 locale so Korean/CJK
+          // I/O is never mojibaked when Loom itself was launched without one.
+          env: withUtf8Locale(stripLoomRoot(env), platform),
         });
       } catch {
         // Graceful "terminal unavailable" (node-pty load/spawn failure).

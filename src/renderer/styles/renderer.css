@@ -13,9 +13,53 @@
      - .render-tag.preview styled DISTINCTLY from .rendered (OQ-5).
    ============================================================ */
 
+/* Bundled Korean/CJK fallback fonts (OFL). Referenced by RELATIVE url() so they
+   load same-origin under the strict CSP (font-src 'self'); esbuild's file loader
+   (build.mjs) emits the .woff2 under STABLE (unhashed) names into dist/fonts/ and
+   rewrites these urls to the same relative ./fonts/<name> (so index.html can
+   preload them by a fixed path). Bundled so 한국어 renders OFFLINE on hosts with NO system Korean font
+   (otherwise Hangul falls back to .notdef tofu □). NO unicode-range: each family
+   sits LAST in its fallback chain below, so Latin metrics are unchanged and the
+   bundled font is reached only for glyphs the Latin families lack (Hangul, CJK
+   punctuation, ₩). D2Coding is a true half-width-Latin / full-width-Hangul
+   monospace (advance ratio exactly 2.0) so Korean stays column-aligned in code,
+   diffs and the terminal. */
+@font-face {
+  font-family: "D2Coding";
+  src: url("./fonts/d2coding-kr.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "D2Coding";
+  src: url("./fonts/d2coding-kr-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Noto Sans KR";
+  src: url("./fonts/notosanskr-kr.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Noto Sans KR";
+  src: url("./fonts/notosanskr-kr-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --font-ui: "Hanken Grotesk", system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  /* Korean fallbacks sit LAST. "Noto Sans KR" also tails --font-mono AFTER
+     D2Coding because D2Coding carries no conjoining-jamo (U+1100–11FF) glyphs,
+     so decomposed (NFD) Hangul in code/diffs/terminal falls through to Noto
+     rather than tofu; precomposed Hangul still uses D2Coding (2.0 half/full). */
+  --font-ui: "Hanken Grotesk", system-ui, -apple-system, "Noto Sans KR", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, "D2Coding", "Noto Sans KR", monospace;
 
   /* agent hues (shared chroma/lightness, vary hue) */
   --a-lead:    oklch(0.78 0.13 80);

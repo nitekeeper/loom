@@ -94,7 +94,14 @@ const rendererBuild = {
   format: 'iife',
   target: 'chrome130',
   // React et al. are bundled into the IIFE. No node builtins here.
-  loader: { '.css': 'css' },
+  // '.woff2': 'file' — the @font-face url()s in renderer.css (bundled Korean
+  // fonts) are copied into dist/ and their urls rewritten to a same-origin
+  // relative path, satisfying the CSP font-src 'self'. STABLE (unhashed) names
+  // under dist/fonts/ so index.html can <link rel="preload"> them by a fixed
+  // path — the preload lets Korean render on the FIRST paint (no fallback-tofu
+  // flash on a host without a system Korean font).
+  loader: { '.css': 'css', '.woff2': 'file' },
+  assetNames: 'fonts/[name]',
 };
 
 // LAZY mermaid chunk — its OWN browser IIFE, kept OUT of renderer.js.
@@ -141,6 +148,15 @@ async function copyAssets() {
     console.warn('[build] WARNING: sql.js wasm not found at', wasm, '(run npm install)');
   }
   await cp(path.join(__dirname, 'src/renderer/index.html'), path.join(DIST, 'index.html'));
+  // Ship the OFL license texts beside the bundled Korean fonts (dist/fonts/, the
+  // dir esbuild's file loader emits the woff2 into), so every packaged artifact
+  // carries the human-readable SIL OFL notice alongside the fonts (OFL clause 2),
+  // not only inside the font name-table metadata.
+  const fontsDir = path.join(DIST, 'fonts');
+  await mkdir(fontsDir, { recursive: true });
+  for (const lic of ['D2Coding-LICENSE.txt', 'NotoSansKR-OFL.txt']) {
+    await cp(path.join(__dirname, 'src/renderer/styles/fonts', lic), path.join(fontsDir, lic));
+  }
 }
 
 async function run() {
